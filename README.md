@@ -277,6 +277,7 @@ requirements, known limitations, configuration, and tests.
 | `remote-mobile-control` | Experimental Linux remote-host and outbound-control flows | [Docs](linux-features/remote-mobile-control/README.md) |
 | `shallow-repository-watches` | Avoid recursive main-thread walks for transient repository previews | [Docs](linux-features/shallow-repository-watches/README.md) |
 | `shared-app-server-socket` | Share one protocol-transparent Unix app-server socket | [Docs](linux-features/shared-app-server-socket/README.md) |
+| `subagent-model-metadata` | Preserve child model and effort through summary caching | [Docs](linux-features/subagent-model-metadata/README.md) |
 | `thorium-chrome-plugin` | Add Thorium to the official bundled Chrome integration | [Docs](linux-features/thorium-chrome-plugin/README.md) |
 | `tray-usage` | Show usage remaining in the Linux system-tray menu | [Docs](linux-features/tray-usage/README.md) |
 | `ui-tweaks` | Optional visual and interaction customizations | [Docs](linux-features/ui-tweaks/README.md) |

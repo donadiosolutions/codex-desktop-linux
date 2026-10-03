@@ -1,0 +1,9 @@
+{
+  "id": "subagent-model-metadata",
+  "title": "Subagent Model Metadata",
+  "description": "Preserve each subagent's model and reasoning effort in cached desktop state and its details header.",
+  "defaultEnabled": false,
+  "entrypoints": {
+    "patchDescriptors": "./patch.js"
+  }
+}
