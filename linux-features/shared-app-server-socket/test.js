@@ -666,7 +666,7 @@ function fakeChild() {
   return child;
 }
 
-function loadInjectedTransport({ spawnImpl, WebSocketImpl = null, fsImpl = fs, timeoutCapMs = null } = {}) {
+function loadInjectedTransport({ spawnImpl, WebSocketImpl = null, fsImpl = fs, netImpl = net, timeoutCapMs = null } = {}) {
   class DefaultWebSocket extends EventEmitter {
     constructor(_url, options) {
       super();
@@ -704,6 +704,7 @@ function loadInjectedTransport({ spawnImpl, WebSocketImpl = null, fsImpl = fs, t
     require(id) {
       if (id === "node:child_process") return { spawn: spawnImpl };
       if (id === "node:fs") return fsImpl;
+      if (id === "node:net") return netImpl;
       return require(id);
     },
     setTimeout(callback, delay, ...args) {
@@ -2113,7 +2114,8 @@ test("socket hook exports an instance-scoped path without starting a process", (
   }
 });
 
-test("socket hook selects a secure canonical authority for adoption", () => {
+for (const alias of [false, true]) {
+test(`socket hook selects a secure canonical authority for adoption (${alias ? "alias" : "direct"})`, () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-canonical-"));
   const appDir = path.join(tempDir, "app");
   const codexHome = path.join(tempDir, "codex-home");
@@ -2126,10 +2128,12 @@ test("socket hook selects a secure canonical authority for adoption", () => {
     path.join(markerDir, "desktop-app-server-remote-control-enabled"),
     "version=1\nowner=desktop\n",
   );
+  const target = alias ? path.join(tempDir, "daemon.sock") : socketPath;
   const server = net.createServer();
   try {
-    server.listen(socketPath);
-    fs.chmodSync(socketPath, 0o600);
+    server.listen(target);
+    fs.chmodSync(target, 0o600);
+    if (alias) fs.symlinkSync(target, socketPath);
     const env = {
       ...process.env,
       CODEX_HOME: codexHome,
@@ -2139,7 +2143,17 @@ test("socket hook selects a secure canonical authority for adoption", () => {
       XDG_RUNTIME_DIR: tempDir,
     };
     delete env.CODEX_LINUX_APP_SERVER_BRIDGE_SOCKET;
-    const result = spawnSync(socketEnvHook, [], { encoding: "utf8", env });
+    let hook = socketEnvHook;
+    if (alias) {
+      hook = path.join(markerDir, "launcher.d", "socket-env.sh");
+      const validator = path.join(markerDir, "features", "shared-app-server-socket", "socket-path.js");
+      fs.mkdirSync(path.dirname(hook), { recursive: true });
+      fs.mkdirSync(path.dirname(validator), { recursive: true });
+      fs.copyFileSync(socketEnvHook, hook);
+      fs.copyFileSync(path.join(__dirname, "socket-path.js"), validator);
+      fs.chmodSync(hook, 0o755);
+    }
+    const result = spawnSync(hook, [], { encoding: "utf8", env, timeout: 2000 });
     assert.equal(result.status, 0, result.stderr);
     assert.match(
       result.stdout,
@@ -2150,6 +2164,8 @@ test("socket hook selects a secure canonical authority for adoption", () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+}
 
 test("socket hook rejects an insecure canonical authority and keeps the private fallback", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-canonical-unsafe-"));
@@ -2303,14 +2319,17 @@ test("launcher clears inherited adoption proof for an explicit canonical overrid
   }
 });
 
-test("injected transport adopts but never stops a secure canonical authority", async () => {
+for (const alias of [false, true]) {
+test(`injected transport adopts but never stops a secure canonical authority (${alias ? "alias" : "direct"})`, async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-adopt-"));
   const codexHome = path.join(tempDir, "codex-home");
   const controlDir = path.join(codexHome, "app-server-control");
   const socketPath = path.join(controlDir, "app-server-control.sock");
   fs.mkdirSync(controlDir, { recursive: true, mode: 0o700 });
-  const server = await listenUnix(socketPath);
-  fs.chmodSync(socketPath, 0o600);
+  const target = alias ? path.join(tempDir, "daemon.sock") : socketPath;
+  const server = await listenUnix(target);
+  fs.chmodSync(target, 0o600);
+  if (alias) fs.symlinkSync(target, socketPath);
   const previousCodexHome = process.env.CODEX_HOME;
   const previousAdopt = process.env.CODEX_LINUX_ADOPT_CANONICAL_APP_SERVER;
   const previousRuntimeDir = process.env.XDG_RUNTIME_DIR;
@@ -2339,7 +2358,8 @@ test("injected transport adopts but never stops a secure canonical authority", a
     assert.equal(attached.status, 10, attached.stderr);
     assert.equal(attached.stdout, "");
     transport.dispose();
-    assert.equal(fs.lstatSync(socketPath).isSocket(), true);
+    assert.equal(fs.lstatSync(socketPath).isSymbolicLink(), alias);
+    assert.equal(fs.lstatSync(target).isSocket(), true);
   } finally {
     if (previousCodexHome == null) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = previousCodexHome;
@@ -2352,15 +2372,20 @@ test("injected transport adopts but never stops a secure canonical authority", a
   }
 });
 
-test("adopted transport falls back privately when the canonical authority disappears", async () => {
+}
+
+for (const alias of [false, true]) {
+test(`adopted transport falls back privately when the canonical authority disappears (${alias ? "alias" : "direct"})`, async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-adopt-fallback-"));
   const codexHome = path.join(tempDir, "codex-home");
   const controlDir = path.join(codexHome, "app-server-control");
   const canonicalSocket = path.join(controlDir, "app-server-control.sock");
   const privateSocket = path.join(tempDir, "private", "app-server.sock");
   fs.mkdirSync(controlDir, { recursive: true, mode: 0o700 });
-  const server = await listenUnix(canonicalSocket);
-  fs.chmodSync(canonicalSocket, 0o600);
+  const target = alias ? path.join(tempDir, "daemon.sock") : canonicalSocket;
+  const server = await listenUnix(target);
+  fs.chmodSync(target, 0o600);
+  if (alias) fs.symlinkSync(target, canonicalSocket);
   const previousAdopt = process.env.CODEX_LINUX_ADOPT_CANONICAL_APP_SERVER;
   const previousCodexHome = process.env.CODEX_HOME;
   const previousCli = process.env.CODEX_CLI_PATH;
@@ -2383,6 +2408,7 @@ test("adopted transport falls back privately when the canonical authority disapp
     await closeServer(server);
     await assert.rejects(transport.ensureAuthority(), /stop after fallback argument capture/);
     assert.equal(transport.adoptedAuthority, false);
+    if (alias) assert.equal(fs.lstatSync(canonicalSocket).isSymbolicLink(), true);
     assert.equal(transport.socketPath, privateSocket);
     assert.deepEqual(Array.from(observedArgs), [
       "app-server",
@@ -2400,6 +2426,186 @@ test("adopted transport falls back privately when the canonical authority disapp
     else process.env.CODEX_LINUX_APP_SERVER_PRIVATE_FALLBACK_SOCKET = previousFallback;
     await closeServer(server);
     fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+}
+
+// Connect failures must be inconclusive for cleanup, but never prove adoption.
+for (const outcome of ["timeout", "EACCES", "ECONNREFUSED", "ENOENT"]) {
+  test(`canonical adoption requires successful connect despite ${outcome}`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "csa-"));
+    const controlDir = path.join(root, "app-server-control");
+    const socketPath = path.join(controlDir, "app-server-control.sock");
+    fs.mkdirSync(controlDir, { mode: 0o700 });
+    const server = await listenUnix(socketPath);
+    fs.chmodSync(socketPath, 0o600);
+    const previousHome = process.env.CODEX_HOME;
+    const previousAdopt = process.env.CODEX_LINUX_ADOPT_CANONICAL_APP_SERVER;
+    process.env.CODEX_HOME = root;
+    process.env.CODEX_LINUX_ADOPT_CANONICAL_APP_SERVER = "1";
+    const { Transport } = loadInjectedTransport({
+      timeoutCapMs: 10,
+      netImpl: { createConnection() {
+        const socket = new EventEmitter();
+        socket.destroy = () => {};
+        if (outcome !== "timeout") queueMicrotask(() => socket.emit("error", { code: outcome }));
+        return socket;
+      } },
+    });
+    const transport = new Transport(socketPath);
+    try {
+      assert.equal(await transport.adoptCanonicalAuthority(), false);
+      transport.adoptedAuthority = true;
+      transport.privateFallbackSocketPath = path.join(root, "private.sock");
+      transport.startAuthority = async () => {};
+      await transport.ensureAuthority();
+      assert.equal(transport.socketPath, path.join(root, "private.sock"));
+      transport.socketPath = socketPath;
+      transport.lockPath = `${socketPath}.lock`;
+      assert.equal(await transport.socketPathIsLive(), ["timeout", "EACCES"].includes(outcome));
+      if (["timeout", "EACCES"].includes(outcome)) {
+        fs.writeFileSync(`${socketPath}.lock`, "99999999 1\n", { mode: 0o600 });
+        assert.equal(await transport.reclaimStaleLock(), false);
+        assert.equal(fs.readFileSync(`${socketPath}.lock`, "utf8"), "99999999 1\n");
+        fs.unlinkSync(`${socketPath}.lock`);
+      }
+      assert.equal(fs.lstatSync(socketPath).isSocket(), true);
+      assert.equal(fs.existsSync(`${socketPath}.lock`), false);
+    } finally {
+      if (previousHome == null) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousHome;
+      if (previousAdopt == null) delete process.env.CODEX_LINUX_ADOPT_CANONICAL_APP_SERVER;
+      else process.env.CODEX_LINUX_ADOPT_CANONICAL_APP_SERVER = previousAdopt;
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("canonical hook and transport reject unsafe aliases without changing daemon paths", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "csa-"));
+  const appDir = path.join(root, "app");
+  const controlDir = path.join(root, "app-server-control");
+  const daemonDir = path.join(root, "daemon");
+  const alias = path.join(controlDir, "app-server-control.sock");
+  const target = path.join(daemonDir, "socket");
+  const markerDir = path.join(appDir, ".codex-linux");
+  fs.mkdirSync(controlDir, { mode: 0o700 });
+  fs.mkdirSync(daemonDir, { mode: 0o700 });
+  fs.mkdirSync(markerDir, { recursive: true });
+  fs.writeFileSync(path.join(markerDir, "desktop-app-server-remote-control-enabled"), "version=1\nowner=desktop\n");
+  const server = await listenUnix(target);
+  fs.chmodSync(target, 0o600);
+  const previousHome = process.env.CODEX_HOME;
+  const previousAdopt = process.env.CODEX_LINUX_ADOPT_CANONICAL_APP_SERVER;
+  process.env.CODEX_HOME = root;
+  process.env.CODEX_LINUX_ADOPT_CANONICAL_APP_SERVER = "1";
+  try {
+    const indirect = path.join(daemonDir, "indirect");
+    fs.symlinkSync(target, indirect);
+    for (const [name, link, directoryMode, socketMode] of [
+      ["relative", "../daemon/socket", 0o700, 0o600],
+      ["unnormalized", `${daemonDir}/../daemon/socket`, 0o700, 0o600],
+      ["indirect", indirect, 0o700, 0o600],
+      ["dangling", path.join(daemonDir, "missing"), 0o700, 0o600],
+      ["unsafe target directory", target, 0o755, 0o600],
+      ["unsafe target mode", target, 0o700, 0o666],
+      ["unsafe canonical directory", target, 0o700, 0o600],
+      ["symlink canonical directory", target, 0o700, 0o600],
+    ]) {
+      fs.chmodSync(daemonDir, directoryMode);
+      fs.chmodSync(target, socketMode);
+      fs.chmodSync(controlDir, name === "unsafe canonical directory" ? 0o755 : 0o700);
+      if (name === "symlink canonical directory") {
+        fs.renameSync(controlDir, `${controlDir}.real`);
+        fs.symlinkSync(`${controlDir}.real`, controlDir);
+      }
+      fs.symlinkSync(link, alias);
+      const { Transport } = loadInjectedTransport();
+      assert.equal(await new Transport(alias).adoptCanonicalAuthority(), false, name);
+      const env = { ...process.env, CODEX_LINUX_APP_DIR: appDir, XDG_RUNTIME_DIR: root,
+        CODEX_LINUX_APP_ID: "test", CODEX_LINUX_APP_STATE_DIR: root };
+      delete env.CODEX_LINUX_APP_SERVER_BRIDGE_SOCKET;
+      const result = spawnSync(socketEnvHook, [], { encoding: "utf8", env, timeout: 2000 });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout.split("\n")[0],
+        `env CODEX_LINUX_APP_SERVER_BRIDGE_SOCKET=${root}/test/app-server-bridge/app-server.sock`, name);
+      assert.equal(fs.readlinkSync(alias), link);
+      assert.equal(fs.lstatSync(target).isSocket(), true);
+      fs.unlinkSync(alias);
+      if (name === "symlink canonical directory") {
+        fs.unlinkSync(controlDir);
+        fs.renameSync(`${controlDir}.real`, controlDir);
+      }
+    }
+    fs.chmodSync(controlDir, 0o700);
+    fs.symlinkSync(target, alias);
+    for (const wrongOwner of [alias, controlDir, daemonDir, target]) {
+      const fsImpl = Object.create(fs);
+      fsImpl.lstatSync = (p) => {
+        const stat = fs.lstatSync(p);
+        if (p === wrongOwner) stat.uid += 1;
+        return stat;
+      };
+      const { Transport } = loadInjectedTransport({ fsImpl });
+      assert.equal(await new Transport(alias).adoptCanonicalAuthority(), false, wrongOwner);
+    }
+  } finally {
+    if (previousHome == null) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousHome;
+    if (previousAdopt == null) delete process.env.CODEX_LINUX_ADOPT_CANONICAL_APP_SERVER;
+    else process.env.CODEX_LINUX_ADOPT_CANONICAL_APP_SERVER = previousAdopt;
+    await closeServer(server);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("canonical adoption rechecks alias, parents, and target identities after connect", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "csa-"));
+  const controlDir = path.join(root, "app-server-control");
+  const daemonDir = path.join(root, "daemon");
+  const alias = path.join(controlDir, "app-server-control.sock");
+  const target = path.join(daemonDir, "socket");
+  fs.mkdirSync(controlDir, { mode: 0o700 });
+  fs.mkdirSync(daemonDir, { mode: 0o700 });
+  const server = await listenUnix(target);
+  fs.chmodSync(target, 0o600);
+  fs.symlinkSync(target, alias);
+  const previousHome = process.env.CODEX_HOME;
+  const previousAdopt = process.env.CODEX_LINUX_ADOPT_CANONICAL_APP_SERVER;
+  process.env.CODEX_HOME = root;
+  process.env.CODEX_LINUX_ADOPT_CANONICAL_APP_SERVER = "1";
+  try {
+    for (const changedPath of [alias, controlDir, daemonDir, target]) {
+      let connected = false;
+      const fsImpl = Object.create(fs);
+      fsImpl.lstatSync = (p) => {
+        const stat = fs.lstatSync(p);
+        if (connected && p === changedPath) stat.ino += 1;
+        return stat;
+      };
+      const { Transport } = loadInjectedTransport({ fsImpl, netImpl: {
+        createConnection() {
+          const socket = new EventEmitter();
+          socket.destroy = () => {};
+          queueMicrotask(() => { connected = true; socket.emit("connect"); });
+          return socket;
+        },
+      } });
+      const transport = new Transport(alias);
+      assert.equal(await transport.adoptCanonicalAuthority(), false, changedPath);
+      assert.equal(connected, true, "safe alias must reach the connect probe");
+      assert.equal(fs.lstatSync(alias).isSymbolicLink(), true);
+      assert.equal(fs.lstatSync(target).isSocket(), true);
+    }
+  } finally {
+    if (previousHome == null) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousHome;
+    if (previousAdopt == null) delete process.env.CODEX_LINUX_ADOPT_CANONICAL_APP_SERVER;
+    else process.env.CODEX_LINUX_ADOPT_CANONICAL_APP_SERVER = previousAdopt;
+    await closeServer(server);
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -2446,8 +2652,8 @@ test("socket hook emits no launcher environment during after-exit cleanup", () =
   }
 });
 
-test("after-exit preserves canonical adoption and reaps only the private fallback", () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-after-exit-adopted-"));
+test("after-exit preserves canonical adoption and reaps only the private fallback", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "csa-"));
   const appDir = path.join(tempDir, "app");
   const codexHome = path.join(tempDir, "codex-home");
   const canonicalSocket = path.join(
@@ -2455,6 +2661,11 @@ test("after-exit preserves canonical adoption and reaps only the private fallbac
     "app-server-control",
     "app-server-control.sock",
   );
+  fs.mkdirSync(path.dirname(canonicalSocket), { recursive: true, mode: 0o700 });
+  const target = path.join(tempDir, "daemon.sock");
+  const server = await listenUnix(target);
+  fs.chmodSync(target, 0o600);
+  fs.symlinkSync(target, canonicalSocket);
   const privateSocket = path.join(tempDir, "private", "app-server.sock");
   const observedPaths = path.join(tempDir, "reaper-paths");
   const stagedReaper = path.join(
@@ -2482,8 +2693,11 @@ test("after-exit preserves canonical adoption and reaps only the private fallbac
     const result = spawnSync(socketEnvHook, [], { encoding: "utf8", env });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "");
+    assert.equal(fs.readlinkSync(canonicalSocket), target);
+    assert.equal(fs.lstatSync(target).isSocket(), true);
     assert.equal(fs.readFileSync(observedPaths, "utf8"), `${privateSocket}\n`);
   } finally {
+    await closeServer(server);
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });

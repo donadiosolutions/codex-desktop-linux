@@ -1,13 +1,37 @@
 "use strict";
 
 // Keep this function self-contained: the ASAR patch embeds it in the transport.
-function readSocketPath(socketPath, fs = require("node:fs"), uid = process.getuid?.()) {
+function readSocketPath(socketPath, fs = require("node:fs"), uid = process.getuid?.(),
+  { requirePrivate = false, previous = null } = {}) {
   const path = require("node:path");
   const identity = fs.lstatSync(socketPath);
   const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
   const owned = (stat) => uid == null || stat.uid === uid;
+  const privateDirectory = (stat) => stat.isDirectory() && !stat.isSymbolicLink() &&
+    owned(stat) && (stat.mode & 0o777) === 0o700;
+  const canonicalParentPath = path.dirname(socketPath);
+  const canonicalParent = requirePrivate ? fs.lstatSync(canonicalParentPath) : null;
+  if (requirePrivate && !privateDirectory(canonicalParent)) {
+    throw new Error("shared app-server canonical directory is unsafe");
+  }
+  const finish = (snapshot) => {
+    if (requirePrivate && (!snapshot.target || !owned(snapshot.target) ||
+        (snapshot.target.mode & 0o777) !== 0o600)) {
+      throw new Error("shared app-server canonical target is unsafe");
+    }
+    if (!same(identity, fs.lstatSync(socketPath)) ||
+        (snapshot.target && !same(snapshot.target, fs.lstatSync(snapshot.targetPath))) ||
+        (canonicalParent && !same(canonicalParent, fs.lstatSync(canonicalParentPath))) ||
+        (previous && (previous.targetPath !== snapshot.targetPath ||
+          !same(previous.identity, identity) || !same(previous.target, snapshot.target) ||
+          !same(previous.canonicalParent, canonicalParent) ||
+          (previous.parent && !same(previous.parent, snapshot.parent))))) {
+      throw new Error("shared app-server socket changed during verification");
+    }
+    return { ...snapshot, canonicalParent };
+  };
   if (!owned(identity)) throw new Error("shared app-server socket has unexpected owner");
-  if (identity.isSocket()) return { identity, target: identity, targetPath: socketPath };
+  if (identity.isSocket()) return finish({ identity, target: identity, targetPath: socketPath });
   if (!identity.isSymbolicLink()) throw new Error("shared app-server path is not a socket");
 
   const targetPath = fs.readlinkSync(socketPath);
@@ -34,7 +58,7 @@ function readSocketPath(socketPath, fs = require("node:fs"), uid = process.getui
       !same(parent, fs.lstatSync(parentPath))) {
     throw new Error("shared app-server socket alias changed during verification");
   }
-  return { identity, target, targetPath, parent };
+  return finish({ identity, target, targetPath, parent });
 }
 
 module.exports = { readSocketPath };

@@ -6,17 +6,41 @@ runtime_dir="$runtime_root/${CODEX_LINUX_APP_ID:-codex-desktop}/app-server-bridg
 socket_path="${CODEX_LINUX_APP_SERVER_BRIDGE_SOCKET:-$runtime_dir/app-server.sock}"
 adopted_canonical=0
 node_bin="$(command -v node || true)"
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+reaper_path="$script_dir/orphan-reaper.js"
+validator_path="$script_dir/socket-path.js"
+
+if [ -n "${CODEX_LINUX_APP_DIR:-}" ]; then
+    feature_dir="$CODEX_LINUX_APP_DIR/.codex-linux/features/shared-app-server-socket"
+    if [ -f "$feature_dir/orphan-reaper.js" ]; then
+        reaper_path="$feature_dir/orphan-reaper.js"
+    fi
+    if [ -f "$feature_dir/socket-path.js" ]; then
+        validator_path="$feature_dir/socket-path.js"
+    fi
+fi
 
 socket_is_live() {
-    [ -n "$node_bin" ] || return 1
+    [ -n "$node_bin" ] && [ -f "$validator_path" ] || return 1
     "$node_bin" -e '
+const fs = require("node:fs");
 const net = require("node:net");
+const { readSocketPath } = require(process.argv[2]);
+let snapshot;
+try { snapshot = readSocketPath(process.argv[1], fs, process.getuid(), { requirePrivate: true }); }
+catch { process.exit(1); }
 const socket = net.createConnection({ path: process.argv[1] });
 const finish = (ok) => { socket.destroy(); process.exit(ok ? 0 : 1); };
 const timer = setTimeout(() => finish(false), 500);
-socket.once("connect", () => { clearTimeout(timer); finish(true); });
+socket.once("connect", () => {
+    clearTimeout(timer);
+    try {
+        readSocketPath(process.argv[1], fs, process.getuid(), { requirePrivate: true, previous: snapshot });
+        finish(true);
+    } catch { finish(false); }
+});
 socket.once("error", () => { clearTimeout(timer); finish(false); });
-' "$1"
+' "$1" "$validator_path"
 }
 
 canonical_socket="${CODEX_HOME:-$HOME/.codex}/app-server-control/app-server-control.sock"
@@ -29,22 +53,9 @@ elif [ -z "${CODEX_LINUX_APP_SERVER_BRIDGE_SOCKET:-}" ] &&
     [ -f "$remote_control_marker" ] && [ ! -L "$remote_control_marker" ] &&
     [ "$(cat "$remote_control_marker" 2>/dev/null || true)" = "version=1
 owner=desktop" ] &&
-    [ -S "$canonical_socket" ] && [ ! -L "$canonical_socket" ] &&
-    [ "$(stat -c '%u:%a' "$canonical_socket" 2>/dev/null || true)" = "$(id -u):600" ] &&
-    [ "$(stat -c '%u:%a' "$(dirname "$canonical_socket")" 2>/dev/null || true)" = "$(id -u):700" ] &&
     socket_is_live "$canonical_socket"; then
     socket_path="$canonical_socket"
     adopted_canonical=1
-fi
-
-script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-reaper_path="$script_dir/orphan-reaper.js"
-
-if [ -n "${CODEX_LINUX_APP_DIR:-}" ]; then
-    staged_reaper="$CODEX_LINUX_APP_DIR/.codex-linux/features/shared-app-server-socket/orphan-reaper.js"
-    if [ -f "$staged_reaper" ]; then
-        reaper_path="$staged_reaper"
-    fi
 fi
 
 if [ "$adopted_canonical" -eq 0 ] && [ -n "$node_bin" ] && [ -f "$reaper_path" ]; then

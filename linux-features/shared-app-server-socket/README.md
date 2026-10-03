@@ -50,8 +50,11 @@ The default socket is scoped by Linux app id under `XDG_RUNTIME_DIR`, preventing
 side-by-side Desktop instances from sharing an authority accidentally. When the
 Remote Mobile Control owner marker is valid, Desktop adopts a live canonical
 Codex control-plane socket under `CODEX_HOME` only when the socket is a
-non-symlink `0600` endpoint owned by the current user inside a non-symlink
-current-user `0700` directory. An adopted authority is never stopped, unlinked,
+direct `0600` endpoint or a validated absolute, normalized alias owned by the
+current user inside a non-symlink current-user `0700` directory. An alias must
+point directly to a current-user `0600` socket in a real current-user `0700`
+directory. Adoption and reconnect require a successful connection within 500 ms
+and unchanged socket, alias, and directory identities across that probe. An adopted authority is never stopped, unlinked,
 or passed to Desktop's orphan cleanup. If no secure canonical authority exists,
 Desktop falls back to its private instance socket. Override the default with
 `CODEX_LINUX_APP_SERVER_BRIDGE_SOCKET` when a stable private path is required,
