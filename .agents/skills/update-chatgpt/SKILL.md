@@ -1,6 +1,6 @@
 ---
 name: update-chatgpt
-description: Use when updating codex-desktop-linux from origin/main, repairing Fedora feature drift, or producing or installing the signed-upstream Fedora RPM on the update branch.
+description: Use when updating donadiosolutions/codex-desktop-linux from origin/main, repairing Fedora feature drift, or producing or installing the signed-upstream Fedora RPM on the custom branch.
 ---
 
 # Update ChatGPT
@@ -29,7 +29,7 @@ patch drift requires it. Never produce a downstream `.deb` deliverable.
 ## Procedure
 
 1. Read `AGENTS.md`. In a secondary worktree, locate the primary and read its `AGENTS.local.md` when present. Run `lcm search` for the package version and failing feature.
-2. Inventory status, branch, remotes, worktrees, and unrelated dirty state. Local `fix/updates` pushes to `bcdonadio/fix/updates`. Require the build host itself to be Fedora and build only its current supported architecture:
+2. Inventory status, branch, remotes, worktrees, and unrelated dirty state. Local `custom` pushes to `donadiosolutions/custom` in `https://github.com/donadiosolutions/codex-desktop-linux.git`; `custom` is the repository default branch. Upstream remains `origin/main`. Require the build host itself to be Fedora and build only its current supported architecture:
 
    ```bash
    . /etc/os-release
@@ -228,8 +228,8 @@ patch drift requires it. Never produce a downstream `.deb` deliverable.
 9. Review the exact diff and reports. Commit remaining source/skill changes with `git commit -S --signoff`, then:
 
    ```bash
-   git push bcdonadio HEAD:fix/updates
-   git ls-remote bcdonadio refs/heads/fix/updates
+   git push donadiosolutions HEAD:custom
+   git ls-remote donadiosolutions refs/heads/custom
    ```
 
    Require remote SHA = local `HEAD`. Persist version-specific drift and accepted-package evidence with `lcm store`.
