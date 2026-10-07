@@ -53,8 +53,16 @@ cd codex-desktop-linux
 | Fedora | `make bootstrap-native` | 构建并安装 RPM |
 | openSUSE | `make bootstrap-native` | 构建并安装 RPM |
 | Arch、Manjaro、EndeavourOS | `make bootstrap-native` | 构建并安装 pacman 软件包 |
+| Gentoo | `make bootstrap-native` | 构建本地 ebuild 并通过 Portage 安装；仅默认功能、不含更新器 |
 | NixOS 或其他 Nix 系统 | `nix run github:ilysenko/codex-desktop-linux` | 构建并运行 flake；参阅 [Nix](docs/nix.md) |
 | Atomic 桌面或其他发行版 | `make build-app && make appimage` | 生成不含原生更新器的本地 AppImage |
+
+Gentoo 的应用合并会忽略 `EMERGE_DEFAULT_OPTS`，从生成的 ebuild 安装载荷，而非复用
+二进制包缓存；不会修改全局 Portage 配置。
+Gentoo 已提供分阶段依赖和包资源框架，供后续逐项审查并接入功能；目前尚未将任何
+仓库功能声明为已支持。字段约定见[Gentoo 功能契约](docs/linux-features-architecture.md#gentoo-feature-contract)。
+Gentoo 本地 ebuild 安装路径已在 OpenRC 环境测试，尚未测试 Gentoo systemd
+环境；验证范围见[Gentoo 原生安装说明](docs/native-setup.md#gentoo-local-ebuild)。
 
 推荐的原生安装命令：
 
@@ -157,6 +165,10 @@ sudo zypper remove codex-desktop
 
 # Arch / Manjaro
 sudo pacman -R codex-desktop
+
+# Gentoo
+sudo emerge --deselect app-misc/codex-desktop
+sudo emerge --unmerge app-misc/codex-desktop
 ```
 
 原生包卸载时会禁用用户更新服务。若旧安装或手动安装仍留下服务：
@@ -255,6 +267,7 @@ Nix 用户应从 profile、Home Manager 配置或 NixOS module 中删除该包�
 | `shallow-repository-watches` | 避免临时 repo preview 在主线程递归遍历 | [文档](linux-features/shallow-repository-watches/README.md) |
 | `shared-app-server-socket` | 共享 protocol-transparent Unix app-server socket | [文档](linux-features/shared-app-server-socket/README.md) |
 | `subagent-model-metadata` | 在摘要缓存中保留子 agent 的模型和 effort | [文档](linux-features/subagent-model-metadata/README.md) |
+| `start-minimized-to-tray` | 在常规设置中添加默认关闭的启动到系统托盘选项，可选择每次启动或仅登录自动启动时隐藏窗口 | [文档](linux-features/start-minimized-to-tray/README.md) |
 | `thorium-chrome-plugin` | 为官方 Chrome integration 添加 Thorium | [文档](linux-features/thorium-chrome-plugin/README.md) |
 | `tray-usage` | 在 Linux 系统托盘菜单显示剩余用量 | [文档](linux-features/tray-usage/README.md) |
 | `ui-tweaks` | 可选 UI 与交互自定义 | [文档](linux-features/ui-tweaks/README.md) |

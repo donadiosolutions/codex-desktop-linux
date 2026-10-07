@@ -57,8 +57,17 @@ cd codex-desktop-linux
 | Fedora | `make bootstrap-native` | Builds and installs an RPM |
 | openSUSE | `make bootstrap-native` | Builds and installs an RPM |
 | Arch, Manjaro, EndeavourOS | `make bootstrap-native` | Builds and installs a pacman package |
+| Gentoo | `make bootstrap-native` | Builds a local ebuild and installs through Portage; default features only, no updater |
 | NixOS or another Nix system | `nix run github:ilysenko/codex-desktop-linux` | Builds and runs the flake output; see [Nix](docs/nix.md) |
 | Atomic desktops or another distribution | `make build-app && make appimage` | Produces a local AppImage without the native updater |
+
+Gentoo's application merge ignores `EMERGE_DEFAULT_OPTS` to install through the
+generated ebuild rather than reuse a binary package. Global Portage settings are unchanged.
+Gentoo has a phase-aware dependency and package-resource framework for future
+audited features; no repository feature is declared supported yet. See the
+[Gentoo feature contract](docs/linux-features-architecture.md#gentoo-feature-contract).
+Gentoo's local ebuild path has been tested on OpenRC; a Gentoo systemd
+environment has not been tested. See [Gentoo validation scope](docs/native-setup.md#gentoo-local-ebuild).
 
 The recommended native installation is:
 
@@ -175,6 +184,10 @@ sudo zypper remove codex-desktop
 
 # Arch / Manjaro
 sudo pacman -R codex-desktop
+
+# Gentoo
+sudo emerge --deselect app-misc/codex-desktop
+sudo emerge --unmerge app-misc/codex-desktop
 ```
 
 Native package removal disables the user update service. If a service from an
@@ -278,6 +291,7 @@ requirements, known limitations, configuration, and tests.
 | `shallow-repository-watches` | Avoid recursive main-thread walks for transient repository previews | [Docs](linux-features/shallow-repository-watches/README.md) |
 | `shared-app-server-socket` | Share one protocol-transparent Unix app-server socket | [Docs](linux-features/shared-app-server-socket/README.md) |
 | `subagent-model-metadata` | Preserve child model and effort through summary caching | [Docs](linux-features/subagent-model-metadata/README.md) |
+| `start-minimized-to-tray` | Add opt-in General settings to start hidden in the tray, either on every launch or only at login autostart | [Docs](linux-features/start-minimized-to-tray/README.md) |
 | `thorium-chrome-plugin` | Add Thorium to the official bundled Chrome integration | [Docs](linux-features/thorium-chrome-plugin/README.md) |
 | `tray-usage` | Show usage remaining in the Linux system-tray menu | [Docs](linux-features/tray-usage/README.md) |
 | `ui-tweaks` | Optional visual and interaction customizations | [Docs](linux-features/ui-tweaks/README.md) |
