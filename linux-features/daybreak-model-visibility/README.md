@@ -9,8 +9,9 @@ The feature admits that one model through the desktop catalog allowlist only
 for ChatGPT-authenticated sessions and retains it in the model picker only
 when the server marks it explicitly non-hidden. It leaves all other model
 visibility decisions unchanged. Existing picker availability checks still
-apply, including the server-provided access-program metadata and disabled
-reason shown for an incompatible selection.
+apply, including the server-provided access-program metadata, explicit model-ID
+availability lists, and disabled reason shown for an incompatible selection.
+The upstream API-key Daybreak support guard and red-alias exclusion remain intact.
 
 The feature does not grant Daybreak access, change the Daybreak toggle, alter
 submission validation, or modify model-transition rules. Authentication and
@@ -31,3 +32,8 @@ Validate the feature with:
 ```bash
 node --test linux-features/daybreak-model-visibility/test.js
 ```
+
+To validate against the current extracted official bundle, set
+`DAYBREAK_MODEL_VISIBILITY_OFFICIAL_ASSETS` to its `webview/assets` directory
+when running the test command. The patches require one matching current catalog
+helper and picker filter; missing or ambiguous anchors fail closed.

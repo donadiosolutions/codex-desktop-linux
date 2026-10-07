@@ -23,20 +23,28 @@ function applyDaybreakCatalogVisibilityPatch(source) {
     return source;
   }
   const pattern = new RegExp(
-    `(function ${IDENT}\\(\\{additionalAvailableModels:(${IDENT}),authMethod:(${IDENT}),` +
-      `availableModels:(${IDENT}),hasConfiguredModelCatalog:(${IDENT}),` +
-      `isCustomModelProvider:(${IDENT}),model:(${IDENT}),useHiddenModels:(${IDENT})\\}\\)\\{return )` +
-      `(\\2\\?\\.has\\(\\7\\.model\\)===!0\\|\\|\\7\\.model!==\\\`codex-auto-review\\\`&&` +
-      `\\(\\5&&!\\7\\.hidden\\|\\|\\(\\8&&!\\6&&\\3!==\\\`amazonBedrock\\\`` +
-      `\\?\\4\\.has\\(\\7\\.model\\):!\\7\\.hidden\\)\\)\\})`,
+    `(?<prefix>function ${IDENT}\\(\\{additionalAvailableModels:(?<additional>${IDENT}),` +
+      `apiKeyDaybreakSupported:(?<supported>${IDENT}),authMethod:(?<auth>${IDENT}),` +
+      `availableModels:(?<available>${IDENT}),hasConfiguredModelCatalog:(?<configured>${IDENT}),` +
+      `isCustomModelProvider:(?<custom>${IDENT}),model:(?<model>${IDENT}),useHiddenModels:(?<hidden>${IDENT})\\}\\)` +
+      `\\{let (?<cyber>${IDENT})=\\k<model>\\.availableAccessPrograms\\?\\.cyber;return ` +
+      "\\k<auth>===`apikey`&&!\\k<supported>&&\\k<cyber>!=null&&\\k<cyber>\\.length>0&&" +
+      "!\\k<cyber>\\.includes\\(`standard`\\)\\?!1:)" +
+      "(?<suffix>\\k<additional>\\?\\.has\\(\\k<model>\\.model\\)===!0\\|\\|" +
+      "\\k<model>\\.model!==`codex-auto-review`&&\\(\\k<configured>&&!\\k<model>\\.hidden\\|\\|" +
+      "\\(\\k<hidden>&&!\\k<custom>&&\\k<auth>!==`amazonBedrock`\\?\\k<available>\\.has\\(\\k<model>\\.model\\)" +
+      "\\|\\|\\k<auth>===`apikey`&&\\k<supported>&&!\\k<model>\\.hidden&&\\k<cyber>\\?\\.some\\(" +
+      `(?<program>${IDENT})=>\\k<program>!==\`standard\`\\)===!0:!\\k<model>\\.hidden\\)\\)\\})`,
   );
   return replaceUnique(
     source,
     pattern,
-    (_match, prefix, _additional, authMethod, _available, _configured, _custom, model, _hidden, suffix) =>
-      `${prefix}(${authMethod}===\`chatgpt\`||${authMethod}===\`chatgptAuthTokens\`)&&` +
-      `${model}.model===\`${ALIAS}\`&&${model}.hidden===!1` +
-      `/*${CATALOG_MARKER}*/||${suffix}`,
+    (...args) => {
+      const { prefix, auth, model, suffix } = args.at(-1);
+      return `${prefix}(${auth}===\`chatgpt\`||${auth}===\`chatgptAuthTokens\`)&&` +
+        `${model}.model===\`${ALIAS}\`&&${model}.hidden===!1` +
+        `/*${CATALOG_MARKER}*/||${suffix}`;
+    },
     "Daybreak catalog visibility helper",
   );
 }
@@ -46,9 +54,9 @@ function applyDaybreakPickerVisibilityPatch(source) {
     return source;
   }
   const pattern = new RegExp(
-    `(function ${IDENT}\\((${IDENT}),(${IDENT}),${IDENT}=!1\\)\\{return \\2\\?\\.filter\\()` +
-      `\\(\\{model:(${IDENT})\\}\\)=>\\3==null\\|\\|\\4!==\\\`${ALIAS}\\\`` +
-      `(\\&\\&\\4!==\\\`${RED_ALIAS}\\\`)?` +
+    `(function ${IDENT}\\((${IDENT}),(${IDENT}),${IDENT}=!1,${IDENT}\\)\\{return \\2\\?\\.filter\\()` +
+      `\\(\\{model:(${IDENT})\\}\\)=>\\3==null\\|\\|\\4!==\`${ALIAS}\`` +
+      `(&&\\4!==\`${RED_ALIAS}\`)` +
       `(\\)\\.map\\()`,
   );
   return replaceUnique(
@@ -57,7 +65,7 @@ function applyDaybreakPickerVisibilityPatch(source) {
     (_match, prefix, _models, _access, model, redAliasExclusion, suffix) =>
       `${prefix}({model:${model},hidden:codexLinuxDaybreakHidden})=>` +
       `(${model}!==\`${ALIAS}\`||` +
-      `codexLinuxDaybreakHidden===!1/*${PICKER_MARKER}*/)${redAliasExclusion ?? ""}${suffix}`,
+      `codexLinuxDaybreakHidden===!1/*${PICKER_MARKER}*/)${redAliasExclusion}${suffix}`,
     "Daybreak picker visibility filter",
   );
 }
@@ -65,6 +73,7 @@ function applyDaybreakPickerVisibilityPatch(source) {
 function matchesCatalogContract(source) {
   return typeof source === "string" &&
     source.includes("additionalAvailableModels:") &&
+    source.includes("apiKeyDaybreakSupported:") &&
     source.includes("hasConfiguredModelCatalog:") &&
     source.includes("`codex-auto-review`") &&
     source.includes("useHiddenModels:");
