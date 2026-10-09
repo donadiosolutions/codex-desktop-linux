@@ -5,6 +5,7 @@ const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js"
 const IDENT = "[A-Za-z_$][\\w$]*";
 const MARKER = "codexLinuxForwardAutomationPipe";
 const PIPE_NAME = "CODEX_APP_TOOLS_PIPE_PATH";
+const DEFERRED_ENV = "(?:,CODEX_APP_TOOLS_DEFERRED:" + IDENT + "\\?`1`:`0`)?";
 const CONFIG_FUNCTION = new RegExp(
   "async function " + IDENT + "\\(\\{useWsl:" + IDENT + ",resourcesPath:" + IDENT +
     "=process\\.resourcesPath\\}\\)\\{if\\(!process\\.env\\." + PIPE_NAME +
@@ -25,7 +26,7 @@ function findPipeForwardTargets(source) {
     if (servers.length !== 1) continue;
     const server = servers[0][1];
     const envMatches = [
-      ...body.matchAll(new RegExp(`,(${IDENT})=\\{\\.\\.\\.${server}\\.env\\},`, "gu")),
+      ...body.matchAll(new RegExp(`(?:,|;let )(${IDENT})=\\{\\.\\.\\.${server}\\.env${DEFERRED_ENV}\\},`, "gu")),
     ];
     if (envMatches.length !== 1) continue;
     const env = envMatches[0][1];
@@ -35,6 +36,7 @@ function findPipeForwardTargets(source) {
       replaceEnd: functionOpen + envMatches[0].index + envMatches[0][0].length,
       replaceStart: functionOpen + envMatches[0].index,
       server,
+      original: envMatches[0][0],
     });
   }
   return targets;
@@ -55,7 +57,7 @@ function findPatchedPipeContracts(source) {
     const envMatches = [
       ...body.matchAll(
         new RegExp(
-          `,(${IDENT})=\\{\\.\\.\\.${server}\\.env,${PIPE_NAME}:process\\.env\\.${PIPE_NAME}/\\*${MARKER}\\*/\\},`,
+          `(?:,|;let )(${IDENT})=\\{\\.\\.\\.${server}\\.env,${PIPE_NAME}:process\\.env\\.${PIPE_NAME}/\\*${MARKER}\\*/${DEFERRED_ENV}\\},`,
           "gu",
         ),
       ),
@@ -79,9 +81,11 @@ function applyAutomationPluginPipePatch(source) {
     throw new Error("Automation plugin pipe patch did not match the current bundle exactly once");
   }
 
-  const { env, replaceEnd, replaceStart, server } = targets[0];
-  const replacement =
-    `,${env}={...${server}.env,${PIPE_NAME}:process.env.${PIPE_NAME}/*${MARKER}*/},`;
+  const { original, replaceEnd, replaceStart, server } = targets[0];
+  const replacement = original.replace(
+    `...${server}.env`,
+    `...${server}.env,${PIPE_NAME}:process.env.${PIPE_NAME}/*${MARKER}*/`,
+  );
   return source.slice(0, replaceStart) + replacement + source.slice(replaceEnd);
 }
 

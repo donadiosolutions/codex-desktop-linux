@@ -171,6 +171,30 @@ test("adopted app servers receive the Desktop automation pipe explicitly", async
   );
 });
 
+test("current plugin pipe preserves deferred-tool configuration", async () => {
+  const source = [
+    "const process={env:{CODEX_APP_TOOLS_PIPE_PATH:`/pipe`},resourcesPath:`/resources`};",
+    "const base={mcpServers:{codex_app:{env:{BASE:`preserved`},omit_tools_from:[`deferred`,`other`]}}};",
+    "let defer=true;function el(){return null}function K(){return{deferCodexAppTools:defer}}",
+    "async function $c({useWsl:e,resourcesPath:t=process.resourcesPath}){if(!process.env.CODEX_APP_TOOLS_PIPE_PATH)return el(`missing-pipe`);let{mcpServers:{codex_app:a}}=base,{deferCodexAppTools:o}=K();o&&(a.omit_tools_from=a.omit_tools_from?.filter(e=>e!==`deferred`));let s={...a.env,CODEX_APP_TOOLS_DEFERRED:o?`1`:`0`},u=null;return{...a,enabled:!1,env:s}}",
+    "globalThis.read=$c;globalThis.disableDefer=()=>defer=false;",
+  ].join("");
+  const descriptor = descriptors.find(({ id }) => id === "automation-plugin-pipe");
+  const patched = descriptor.apply(source);
+  const context = vm.createContext({});
+  vm.runInContext(patched, context);
+  const config = await context.read({useWsl:false});
+  assert.equal(config.env.BASE, "preserved");
+  assert.equal(config.env.CODEX_APP_TOOLS_PIPE_PATH, "/pipe");
+  assert.equal(config.env.CODEX_APP_TOOLS_DEFERRED, "1");
+  assert.deepEqual(Array.from(config.omit_tools_from), ["other"]);
+  context.disableDefer();
+  const eagerConfig = await context.read({useWsl:false});
+  assert.equal(eagerConfig.env.CODEX_APP_TOOLS_DEFERRED, "0");
+  assert.equal(eagerConfig.env.CODEX_APP_TOOLS_PIPE_PATH, "/pipe");
+  assert.equal(descriptor.apply(patched), patched);
+});
+
 test("automation pipe forwarding fails closed on drift and incomplete markers", () => {
   const descriptor = descriptors.find(({ id }) => id === "automation-plugin-pipe");
 

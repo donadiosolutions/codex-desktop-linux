@@ -25,7 +25,7 @@ function prepare(source) {
   const activation = block(source, `function ${IDENT}\\((${IDENT})\\)\\{(?=return\\{id:\\1\\.conversationId,)`);
   const hydration = block(source, `async hydrateCollabThreads\\((${IDENT})\\)\\{`);
   const turn = one(source,
-    `(${IDENT})===${IDENT}\\((${IDENT})\\)&&\\((?:/\\*${markers[3]}\\*/)?` +
+    `(${IDENT})===${IDENT}(?:\\.${IDENT})?\\((${IDENT})\\)&&\\((?:/\\*${markers[3]}\\*/)?` +
     `\\2\\.latestModel=\\1\\.params\\.model(?<operator>\\?\\?|\\|\\|)\\2\\.latestModel,` +
     `\\2\\.latestReasoningEffort=\\1\\.params\\.effort\\?\\?\\2\\.latestReasoningEffort,` +
     `\\2\\.latestCollaborationMode=\\1\\.params\\.collaborationMode\\?\\?\\2\\.latestCollaborationMode\\)`);

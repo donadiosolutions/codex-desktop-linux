@@ -24,7 +24,7 @@ function evaluate(source) {
     wl: (conversation) => conversation.turns,
     ia: (conversation, predicate) => conversation.turns.findLast(predicate),
     ra: (conversation, predicate) => conversation.turns.find(predicate),
-    ta: (conversation) => conversation.turns.at(-1),
+    a: { o: (conversation) => conversation.turns.at(-1) },
     oa: (conversation, fn) => conversation.turns.forEach(fn),
     Cu: (conversation, turn) => { conversation.turns.push(turn); return turn; },
   };
