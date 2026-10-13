@@ -57,15 +57,17 @@ cd codex-desktop-linux
 | Fedora | `make bootstrap-native` | Builds and installs an RPM |
 | openSUSE | `make bootstrap-native` | Builds and installs an RPM |
 | Arch, Manjaro, EndeavourOS | `make bootstrap-native` | Builds and installs a pacman package |
-| Gentoo | `make bootstrap-native` | Builds a local ebuild and installs through Portage; supports `ui-tweaks`, no updater |
+| Gentoo | `make bootstrap-native` | Builds a local ebuild and installs through Portage; supports `ui-tweaks` and `remote-mobile-control`, no updater |
 | NixOS or another Nix system | `nix run github:ilysenko/codex-desktop-linux` | Builds and runs the flake output; see [Nix](docs/nix.md) |
 | Atomic desktops or another distribution | `make build-app && make appimage` | Produces a local AppImage without the native updater |
 
 Gentoo's application merge ignores `EMERGE_DEFAULT_OPTS` to install through the
 generated ebuild rather than reuse a binary package. Global Portage settings are unchanged.
 Gentoo has a phase-aware dependency and package-resource framework for audited
-features. `ui-tweaks` is supported and remains disabled by default; other
-repository features require their own support declarations. See the
+features. `ui-tweaks` and `remote-mobile-control` are supported and remain
+disabled by default; other repository features require their own support
+declarations. Remote mobile control uses the existing Desktop-owned app-server;
+the ebuild does not install or enable a remote-control service. See the
 [Gentoo feature contract](docs/linux-features-architecture.md#gentoo-feature-contract).
 Gentoo's local ebuild path has been tested on OpenRC; a Gentoo systemd
 environment has not been tested. See [Gentoo validation scope](docs/native-setup.md#gentoo-local-ebuild).
@@ -335,9 +337,15 @@ The optional `ui-tweaks` sub-option `tweaks.selection.moreDetails.enabled`
 restores **More details** in the Codex reply selection menu, asking ChatGPT
 Quick Chat to explain the selected text with its source context. It is disabled
 by default; see the [UI Tweaks configuration](linux-features/ui-tweaks/README.md#selectionmoredetails).
+
 When testing a local build, launch `codex-app/start.sh` with the same Electron
 flags as your normal desktop entry, including any required `--proxy-server=...`
 argument. Quick Chat becomes available after ChatGPT account initialization.
+
+The optional `ui-tweaks` sub-option `tweaks.selection.annotationSubmit.enabled`
+makes Ctrl+Enter send the active selected-text annotation editor's text without
+being intercepted by the regular composer; it is disabled by default.
+See the [annotation submit configuration](linux-features/ui-tweaks/README.md#selectionannotationsubmit).
 
 ## Configure optional features
 

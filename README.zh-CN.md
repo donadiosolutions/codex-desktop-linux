@@ -53,13 +53,15 @@ cd codex-desktop-linux
 | Fedora | `make bootstrap-native` | 构建并安装 RPM |
 | openSUSE | `make bootstrap-native` | 构建并安装 RPM |
 | Arch、Manjaro、EndeavourOS | `make bootstrap-native` | 构建并安装 pacman 软件包 |
-| Gentoo | `make bootstrap-native` | 构建本地 ebuild 并通过 Portage 安装；支持 `ui-tweaks`，不含更新器 |
+| Gentoo | `make bootstrap-native` | 构建本地 ebuild 并通过 Portage 安装；支持 `ui-tweaks` 和 `remote-mobile-control`，不含更新器 |
 | NixOS 或其他 Nix 系统 | `nix run github:ilysenko/codex-desktop-linux` | 构建并运行 flake；参阅 [Nix](docs/nix.md) |
 | Atomic 桌面或其他发行版 | `make build-app && make appimage` | 生成不含原生更新器的本地 AppImage |
 
 Gentoo 的应用合并会忽略 `EMERGE_DEFAULT_OPTS`，从生成的 ebuild 安装载荷，而非复用
 二进制包缓存；不会修改全局 Portage 配置。
-Gentoo 已提供分阶段依赖和包资源框架；现已支持 `ui-tweaks`，且仍默认关闭。
+Gentoo 已提供分阶段依赖和包资源框架；现已支持 `ui-tweaks` 和
+`remote-mobile-control`，且仍默认关闭。手机远程控制沿用由 Desktop 管理的
+app-server；ebuild 不安装或启用远程控制服务。
 其他仓库功能需单独审查并声明支持。字段约定见[Gentoo 功能契约](docs/linux-features-architecture.md#gentoo-feature-contract)。
 Gentoo 本地 ebuild 安装路径已在 OpenRC 环境测试，尚未测试 Gentoo systemd
 环境；验证范围见[Gentoo 原生安装说明](docs/native-setup.md#gentoo-local-ebuild)。
@@ -303,9 +305,14 @@ GNOME 辅助功能开启。它不会自动启动；详见 [Linux Computer Use](d
 `ui-tweaks` 的可选子选项 `tweaks.selection.moreDetails.enabled` 可恢复 Codex
 回复正文选中文字菜单中的“更多详情”，让 ChatGPT Quick Chat 结合原对话上下文解释
 所选文字。此子选项默认关闭；详见 [UI Tweaks 配置](linux-features/ui-tweaks/README.md#selectionmoredetails)。
+
 测试本地构建时，通过 `codex-app/start.sh` 启动，并保留正常桌面启动器中的
 Electron 参数，包括需要的 `--proxy-server=...`。ChatGPT 账号初始化完成后，
 Quick Chat 入口才会可用。
+
+`ui-tweaks` 的可选子选项 `tweaks.selection.annotationSubmit.enabled` 默认关闭：
+选中文字后，当前有活动的批注文字编辑器时，Ctrl+Enter 发送批注文字，不被常规输入框拦截。
+详见[批注发送配置](linux-features/ui-tweaks/README.md#selectionannotationsubmit)。
 
 ## 配置可选扩展
 
