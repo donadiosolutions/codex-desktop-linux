@@ -54,10 +54,10 @@ function applyDaybreakPickerVisibilityPatch(source) {
     return source;
   }
   const pattern = new RegExp(
-    `(function ${IDENT}\\((${IDENT}),(${IDENT}),${IDENT}=!1,${IDENT}\\)\\{return \\2\\?\\.filter\\()` +
+    `(function ${IDENT}\\((${IDENT}),(${IDENT}),${IDENT}=!1,${IDENT}(?:,${IDENT})?\\)\\{return \\2\\?\\.filter\\()` +
       `\\(\\{model:(${IDENT})\\}\\)=>\\3==null\\|\\|\\4!==\`${ALIAS}\`` +
       `(&&\\4!==\`${RED_ALIAS}\`)` +
-      `(\\)\\.map\\()`,
+      `(\\)\\.(?:map|flatMap)\\()`,
   );
   return replaceUnique(
     source,

@@ -53,7 +53,7 @@ module.exports = [
     phase: "webview-asset",
     order: 20_120,
     ciPolicy: "optional",
-    pattern: /^app-shared-[^.]+\.js$/,
+    pattern: /^app-(?:initial|shared)-[^.]+\.js$/,
     assetMatch: matchesAutomationPluginEnableContract,
     missingDescription: "Desktop MCP dynamic-tool config",
     skipDescription: "automation plugin enable patch",

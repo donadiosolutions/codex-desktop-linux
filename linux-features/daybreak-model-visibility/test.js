@@ -19,7 +19,7 @@ function catalogFixture() {
 }
 
 function pickerFixture() {
-  return "function aW(e,t,n=!1,r){return e?.filter(({model:e})=>t==null||e!==`gpt-daybreak-blue-latest`&&e!==`gpt-daybreak-red-latest`).map(e=>{let i=null,a=r==null?typeof t==`boolean`&&!_re(e,t):!r.includes(e.model);return(t===!1?a:t===`standard`&&Hi(e.model))?i=Nl({id:`composer.modelPicker.daybreak.modelDisabled`,defaultMessage:`Turn on Daybreak to use this model`}):(typeof t==`boolean`?t&&a:t!=null&&wd(e.model,t,n))&&(i=Nl({id:`composer.modelPicker.daybreak.modelUnavailable`,defaultMessage:`Turn off Daybreak to use this model`})),{model:e,disabledReason:i}})}";
+  return "function aW(e,t,n=!1,r,i){return e?.filter(({model:e})=>t==null||e!==`gpt-daybreak-blue-latest`&&e!==`gpt-daybreak-red-latest`).flatMap(e=>{let a=r==null?typeof t==`boolean`&&!_re(e,t):!r.includes(e.model);if(typeof t==`boolean`&&a&&(i==null?!_re(e,!t):!i.includes(e.model)))return[];let o=null;return(t===!1?a:t===`standard`&&Hi(e.model))?o=Nl({id:`composer.modelPicker.daybreak.modelDisabled`,defaultMessage:`Turn on Daybreak to use this model`}):(typeof t==`boolean`?t&&a:t!=null&&wd(e.model,t,n))&&(o=Nl({id:`composer.modelPicker.daybreak.modelUnavailable`,defaultMessage:`Turn off Daybreak to use this model`})),[{model:e,disabledReason:o}]})}";
 }
 
 function evaluateCatalog(source, authMethod, model, availableModels = new Set(), options = {}) {
@@ -55,7 +55,7 @@ function evaluatePicker(source, models, access, { modelIds } = {}) {
     (model, program) => program !== "standard" && (model === "gpt-6-astra" || model === "gpt-6-astra-wm"),
     (message) => message,
   );
-  return picker(models, access, false, modelIds).map(({ model, disabledReason }) => ({
+  return picker(models, access, false, null, modelIds).map(({ model, disabledReason }) => ({
     disabledReason,
     model: model.model,
   }));
@@ -158,14 +158,21 @@ test("catalog preserves upstream API-key Daybreak support and metadata guards", 
 
 test("picker preserves explicit model-ID availability checks", () => {
   const patched = applyDaybreakPickerVisibilityPatch(pickerFixture());
-  const models = [{ model: "gpt-daybreak-blue-latest", hidden: false }];
-  assert.equal(evaluatePicker(patched, models, false, { modelIds: [] }).length, 1);
-  assert.equal(evaluatePicker(patched, models, false, { modelIds: [] })[0].disabledReason.id,
+  const model = {
+    model: "gpt-daybreak-blue-latest",
+    hidden: false,
+    availableAccessPrograms: { cyber: ["daybreakBlue"] },
+  };
+  assert.equal(evaluatePicker(patched, [model], false, { modelIds: [] }).length, 0);
+  assert.equal(evaluatePicker(patched, [model], false, { modelIds: [model.model] })[0].disabledReason.id,
     "composer.modelPicker.daybreak.modelDisabled");
-  assert.equal(evaluatePicker(patched, models, false, { modelIds: [models[0].model] })[0].disabledReason, null);
-  assert.equal(evaluatePicker(patched, models, true, { modelIds: [] })[0].disabledReason.id,
+  const standardModel = {
+    ...model,
+    availableAccessPrograms: { cyber: ["standard"] },
+  };
+  assert.equal(evaluatePicker(patched, [standardModel], true, { modelIds: [] }).length, 0);
+  assert.equal(evaluatePicker(patched, [standardModel], true, { modelIds: [model.model] })[0].disabledReason.id,
     "composer.modelPicker.daybreak.modelUnavailable");
-  assert.equal(evaluatePicker(patched, models, true, { modelIds: [models[0].model] })[0].disabledReason, null);
 });
 
 test("patches are idempotent and fail closed on missing or ambiguous contracts", () => {

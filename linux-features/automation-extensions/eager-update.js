@@ -68,15 +68,30 @@ function enclosingAsyncFunction(source, index) {
 }
 
 function hasDynamicToolFlatteningContract(source, match, configBody) {
-  const valueMatch = new RegExp(
-    `:\\s*(${IDENT})\\.map\\(\\(\\{name:(${IDENT})\\}\\)=>\\2\\)`,
-    "u",
-  ).exec(configBody);
-  if (valueMatch == null) return false;
   const owner = enclosingAsyncFunction(source, match.index);
   if (owner == null) return false;
   const prefix = source.slice(owner.open + 1, match.index);
-  const escaped = valueMatch[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const direct = new RegExp(
+    `:\\s*(${IDENT})\\.map\\(\\(\\{name:(${IDENT})\\}\\)=>\\2\\)`,
+    "u",
+  ).exec(configBody);
+  const indirect = direct == null
+    ? new RegExp(`:\\s*(${IDENT})(?=[,}])`, "u").exec(configBody)
+    : null;
+  if (direct == null && indirect == null) return false;
+
+  const configValue = direct?.[1] ?? indirect[1];
+  const escapedConfigValue = configValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const mapping = direct == null
+    ? [...prefix.matchAll(new RegExp(
+      `(?:let |const |var |,)${escapedConfigValue}=(${IDENT})\\.map\\(\\(\\{name:(${IDENT})\\}\\)=>\\2\\)`,
+      "gu",
+    ))]
+    : null;
+  if (mapping != null && mapping.length !== 1) return false;
+  const names = direct?.[1] ?? mapping?.[0]?.[1];
+  if (names == null) return false;
+  const escaped = names.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(
     `(?:let |const |var |,)${escaped}=${IDENT}\\.flatMap\\((${IDENT})=>` +
       `\\1\\.type===\`namespace\`\\?\\1\\.tools:\\[\\1\\]\\)`,

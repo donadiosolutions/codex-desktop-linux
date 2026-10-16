@@ -103,7 +103,7 @@ test("current shared bundle selects the local Desktop MCP plugin config owner", 
   ].join(";");
   const descriptor = descriptors.find(({ id }) => id === "automation-plugin-enable");
   assert.equal(descriptor.pattern.test("app-shared-current.js"), true);
-  assert.equal(descriptor.pattern.test("app-initial-current.js"), false);
+  assert.equal(descriptor.pattern.test("app-initial-current.js"), true);
   assert.equal(descriptor.assetMatch(source), true);
   const patched = descriptor.apply(source);
   const context = vm.createContext({});
@@ -112,6 +112,38 @@ test("current shared bundle selects the local Desktop MCP plugin config owner", 
   assert.equal((await context.build(true, true))["plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled"], true);
   assert.equal((await context.build(true, false))["mcp_servers.codex_app.enabled"], true);
   assert.deepEqual(Object.keys(await context.build(false, true)), ["unrelated"]);
+  assert.equal(descriptor.apply(patched), patched);
+});
+
+test("current initial bundle enables its precomputed local Desktop MCP tools", async () => {
+  const source = [
+    "const pluginKey=`plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled_tools`,legacyKey=`mcp_servers.codex_app.enabled_tools`;",
+    "function Qe(version){return version?pluginKey:legacyKey}",
+    "async function build(e,r,t){let o={config:{unrelated:7}};if(t.readDynamicTools!=null&&(e.registerDynamicTools!==!1||e.usesDesktopMcp)){let n=await t.readDynamicTools();let i=n.flatMap(e=>e.type===`namespace`?e.tools:[e]),a=i.map(({name:e})=>e);e.usesDesktopMcp&&(o.config={...o.config,[Qe(r.getAppServerVersion())]:a})}return o.config}",
+    "globalThis.build=build;",
+  ].join("");
+  const descriptor = descriptors.find(({ id }) => id === "automation-plugin-enable");
+  assert.equal(descriptor.pattern.test("app-initial-current.js"), true);
+  assert.equal(descriptor.assetMatch(source), true);
+  const patched = descriptor.apply(source);
+  const context = vm.createContext({});
+  vm.runInContext(patched, context);
+
+  const pluginConfig = await context.build(
+    { usesDesktopMcp: true, registerDynamicTools: false },
+    { getAppServerVersion: () => true },
+    { readDynamicTools: async () => [{ name: "automation_update" }] },
+  );
+  assert.deepEqual(Array.from(pluginConfig["plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled_tools"]), ["automation_update"]);
+  assert.equal(pluginConfig["plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled"], true);
+  assert.equal(pluginConfig.unrelated, 7);
+
+  const nonDesktopConfig = await context.build(
+    { usesDesktopMcp: false, registerDynamicTools: false },
+    { getAppServerVersion: () => true },
+    { readDynamicTools: async () => [{ name: "automation_update" }] },
+  );
+  assert.deepEqual(Object.keys(nonDesktopConfig), ["unrelated"]);
   assert.equal(descriptor.apply(patched), patched);
 });
 
