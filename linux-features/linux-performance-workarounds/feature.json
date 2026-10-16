@@ -1,7 +1,7 @@
 {
   "id": "linux-performance-workarounds",
   "title": "Linux Performance Workarounds",
-  "description": "Optional measured renderer workarounds for affected Linux systems.",
+  "description": "Optional measured GUI performance workarounds for affected Linux systems.",
   "defaultEnabled": false,
   "entrypoints": {
     "patchDescriptors": "./patch.js"

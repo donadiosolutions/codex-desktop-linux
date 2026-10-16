@@ -279,7 +279,7 @@ requirements, known limitations, configuration, and tests.
 | `frameless-titlebar` | Hide official Linux overlay buttons for compositor-managed decorations | [Docs](linux-features/frameless-titlebar/README.md) |
 | `global-dictation` | X11 and XDG portal global dictation hotkeys | [Docs](linux-features/global-dictation/README.md) |
 | `global-dictation-gnome` | Optional GNOME Shell paste companion without RemoteDesktop sessions; requires `global-dictation` and explicit extension activation | [Docs](linux-features/global-dictation-gnome/README.md) |
-| `linux-performance-workarounds` | Measured renderer workarounds for affected systems | [Docs](linux-features/linux-performance-workarounds/README.md) |
+| `linux-performance-workarounds` | Measured GUI workarounds, including redundant feature-sync suppression | [Docs](linux-features/linux-performance-workarounds/README.md) |
 | `mcp-helper-reaper` | Reap orphaned MCP helpers without touching live sessions | [Docs](linux-features/mcp-helper-reaper/README.md) |
 | `model-picker-default-presets` | Configure ordered model/effort pairs behind ChatGPT Default | [Docs](linux-features/model-picker-default-presets/README.md) |
 | `node-repl-reaper` | Reap Browser Use `node_repl` helpers leaked after owner exit | [Docs](linux-features/node-repl-reaper/README.md) |

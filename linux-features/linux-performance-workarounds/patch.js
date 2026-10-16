@@ -1,6 +1,7 @@
 "use strict";
 
-const { webviewAssetPatch } = require("../../scripts/patches/descriptor.js");
+const { mainBundlePatch, webviewAssetPatch } = require("../../scripts/patches/descriptor.js");
+const { applyFeatureEnablementDedupPatch } = require("./feature-enablement.js");
 const {
   applyLinuxAppShellTabLayoutPerformancePatch,
   applyLinuxMarkdownAnimationPerformancePatch,
@@ -11,6 +12,12 @@ const {
 } = require("./implementation.js");
 
 module.exports = [
+  mainBundlePatch({
+    id: "feature-enablement-dedup",
+    order: 20_090,
+    ciPolicy: "optional",
+    apply: applyFeatureEnablementDedupPatch,
+  }),
   webviewAssetPatch({
     id: "sidebar-scroll",
     phase: "webview-asset",
