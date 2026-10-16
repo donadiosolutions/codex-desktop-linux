@@ -1,6 +1,7 @@
 "use strict";
 
 const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
+const LINUX_PLUGIN_ROOT_PARAMETER = "codexLinuxComputerUsePluginRoot";
 
 function enclosingFunction(source, targetIndex) {
   const functions = /(?:async )?function [A-Za-z_$][\w$]*\([^)]*\)\{/gu;
@@ -94,13 +95,16 @@ function applyUnifiedComputerUsePatch(source) {
   if (banner.groups.services !== service.groups.services) {
     throw new Error("Linux unified Computer Use contract drift: changed native banner relationship");
   }
-  if (patched && (service.groups.path !== root.groups.path || service.groups.pluginRoot !== root.groups.pluginRoot ||
-      banner.groups.path !== root.groups.path || banner.groups.pluginRoot !== root.groups.pluginRoot ||
-      builder.groups.pluginRoot !== root.groups.pluginRoot || calls[0].groups.pluginRoot !== root.groups.pluginRoot)) {
+  if (patched && (service.groups.path !== root.groups.path ||
+      service.groups.pluginRoot !== LINUX_PLUGIN_ROOT_PARAMETER ||
+      banner.groups.path !== root.groups.path || banner.groups.pluginRoot !== LINUX_PLUGIN_ROOT_PARAMETER ||
+      builder.groups.pluginRoot !== LINUX_PLUGIN_ROOT_PARAMETER ||
+      calls[0].groups.pluginRoot !== root.groups.pluginRoot)) {
     throw new Error("Linux unified Computer Use contract drift: changed native service path relationship");
   }
   if (patched) return source;
   const pluginRoot = root.groups.pluginRoot;
+  const builderPluginRoot = LINUX_PLUGIN_ROOT_PARAMETER;
   const pathAlias = root.groups.path;
   const edits = [
     {
@@ -114,7 +118,7 @@ function applyUnifiedComputerUsePatch(source) {
     {
       index: builderOwner.start + service.index,
       length: service[0].length,
-      replacement: `${surfaces}.includes(\`computer\`)&&(${service.groups.services}.sky=${pathAlias}.default.join(${pluginRoot},\`scripts\`,\`native-service.mjs\`))`,
+      replacement: `${surfaces}.includes(\`computer\`)&&(${service.groups.services}.sky=${pathAlias}.default.join(${builderPluginRoot},\`scripts\`,\`native-service.mjs\`))`,
     },
     {
       index: builderOwner.start + banner.index,
@@ -122,13 +126,13 @@ function applyUnifiedComputerUsePatch(source) {
       replacement:
         `CUA_REPL_ENABLED_SURFACES:${surfaces}.join(\`,\`),` +
         `CODEX_LINUX_CUA_HOST_SOCKET:process.env.CODEX_LINUX_CUA_HOST_SOCKET,` +
-        `NODE_REPL_JS_BANNER:\`await import("@oai/cua/tinyskyAlt");await(await import(\${JSON.stringify(${pathAlias}.default.join(${pluginRoot},\`scripts\`,\`native-client.mjs\`))})).installLinuxComputerUse(cua);\`,` +
+        `NODE_REPL_JS_BANNER:\`await import("@oai/cua/tinyskyAlt");await(await import(\${JSON.stringify(${pathAlias}.default.join(${builderPluginRoot},\`scripts\`,\`native-client.mjs\`))})).installLinuxComputerUse(cua);\`,` +
         `[${banner.groups.constants}.${banner.groups.constant}]:JSON.stringify(${banner.groups.services})`,
     },
     {
       index: builder.index + builder[0].length - 2,
       length: 1,
-      replacement: `,${pluginRoot})`,
+      replacement: `,${builderPluginRoot})`,
     },
     {
       index: calls[0].index,

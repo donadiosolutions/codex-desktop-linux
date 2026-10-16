@@ -20,10 +20,20 @@ test("unified Linux native selection uses the native setting and retains browser
   assert.deepEqual(surfaces(selector, "linux"), ["browser"]);
   assert.deepEqual(surfaces(patch(selector), "linux"), ["browser", "computer"]);
   assert.match(patch(selector), /build\(e,i\)/);
-  assert.match(patch(selector), /function build\(\{browserBackends:b,deferTools:d,surfaces:s,nodeRepl:n\},i\)/);
-  assert.match(patch(selector), /\.sky=path\.default\.join\(i,`scripts`,`native-service\.mjs`\)/);
+  assert.match(patch(selector), /function build\(\{browserBackends:b,deferTools:d,surfaces:s,nodeRepl:n\},codexLinuxComputerUsePluginRoot\)/);
+  assert.match(patch(selector), /\.sky=path\.default\.join\(codexLinuxComputerUsePluginRoot,`scripts`,`native-service\.mjs`\)/);
   assert.match(patch(selector), /NODE_REPL_JS_BANNER:.*native-client\.mjs/);
   assert.match(patch(selector), /CODEX_LINUX_CUA_HOST_SOCKET:process\.env\.CODEX_LINUX_CUA_HOST_SOCKET/);
+});
+test("unified builder avoids colliding with a minified nodeRepl parameter", () => {
+  const collision = selector
+    .replace("nodeRepl:n", "nodeRepl:r")
+    .replace("let i=pluginRoot(),a=path.default.join(i,", "let r=pluginRoot(),a=path.default.join(r,");
+  const patched = patch(collision);
+
+  assert.doesNotThrow(() => new vm.Script(patched));
+  assert.match(patched, /nodeRepl:r\},codexLinuxComputerUsePluginRoot\)/);
+  assert.match(patched, /\.sky=path\.default\.join\(codexLinuxComputerUsePluginRoot,`scripts`,`native-service\.mjs`\)/);
 });
 test("unified prerequisites, native feature flag, and other platforms retain their gates", () => {
   const result = patch(selector);
@@ -63,7 +73,7 @@ test("unified service patch scopes the plugin root and current env-key alias to 
     selector.replace("[constants.Il]", "[constants.Gl]");
   const patched = patch(current);
 
-  assert.match(patched, /path\.default\.join\(i,`scripts`,`native-service\.mjs`\)/u);
+  assert.match(patched, /path\.default\.join\(codexLinuxComputerUsePluginRoot,`scripts`,`native-service\.mjs`\)/u);
   assert.match(patched, /\[constants\.Gl\]:JSON\.stringify\(l\)/u);
   assert.doesNotMatch(patched, /path\.default\.join\(otherRoot,`scripts`,`native-service\.mjs`\)/u);
   assert.equal(patch(patched), patched);
