@@ -4,6 +4,12 @@ Disabled-by-default GUI workarounds for machines where feature synchronization,
 sidebar scrolling, app-shell tab layout, or streaming Markdown animations regress.
 Enable only after a measured problem on the official Linux runtime.
 
+Chrome native-host CLI verification hashes files incrementally instead of loading
+the complete executable into one Node Buffer. This preserves SHA-256 equality
+checks and read failures while allowing provisioned CLI binaries larger than
+2 GiB to pass reconciliation. The reproduced failure otherwise retries on focus
+and prevents subsequent bundled-plugin configuration repair.
+
 Feature synchronization remembers successfully applied flags per host connection
 and serializes in-flight writes. Unchanged flags skip the server request, avoiding
 its reload of every loaded thread. Failed sends remain retryable, changed flags
