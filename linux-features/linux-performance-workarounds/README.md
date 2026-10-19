@@ -15,6 +15,9 @@ and serializes in-flight writes. Each uncached map first checks the server's
 effective feature list, so a fresh connection also skips a write when every
 requested flag is already present with the same boolean value. Missing flags,
 partial listings, and discovery failures retain the original update path.
+For mismatches, an additional config read recognizes explicit authoritative
+feature origins that already override runtime assignments. Consistent protected
+values also skip the ineffective write, preserving user preferences.
 Unchanged flags skip the server write, avoiding
 its reload of every loaded thread. Failed sends remain retryable, changed flags
 are applied in order, and reconnecting clears the cache. Upstream readiness checks,
