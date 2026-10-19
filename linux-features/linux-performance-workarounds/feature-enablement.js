@@ -14,7 +14,44 @@ async function codexLinuxSyncFeatureEnablement(connectionState, enablement, read
   const task = state.tail.then(async () => {
     ready();
     if (state.applied === key) return;
-    await send();
+    let unchanged = false;
+    try {
+      const response = await connectionState.connection.sendAppServerRequest(
+        `experimentalFeature/list`, {}, ready,
+      );
+      if (Array.isArray(response?.data) && response.nextCursor == null) {
+        const features = new Map(response.data.map(feature => [feature.name, feature.enabled]));
+        const requested = Object.entries(enablement);
+        const complete = features.size === response.data.length && requested.every(([name, enabled]) =>
+          typeof enabled === "boolean" && features.has(name) && typeof features.get(name) === "boolean");
+        if (complete) {
+          const mismatches = requested.filter(([name, enabled]) => features.get(name) !== enabled);
+          unchanged = mismatches.length === 0;
+          if (!unchanged) {
+            ready();
+            const config = await connectionState.connection.sendAppServerRequest(
+              `config/read`, { includeLayers: false }, ready,
+            );
+            const sourceKinds = new Set([
+              "packagedDefaults", "mdm", "system", "enterpriseManaged", "user", "project",
+              "sessionFlags", "legacyManagedConfigTomlFromFile", "legacyManagedConfigTomlFromMdm",
+            ]);
+            unchanged = mismatches.every(([name]) => {
+              const prefix = `features.${name}`;
+              return config?.config?.features?.[name] === features.get(name) &&
+                Object.entries(config?.origins ?? {}).some(([key, origin]) =>
+                  (key === prefix || key.startsWith(`${prefix}.`)) &&
+                  typeof origin?.version === "string" && origin.version.length > 0 &&
+                  sourceKinds.has(origin?.name?.type));
+            });
+          }
+        }
+      }
+    } catch {
+      // Older servers and failed discovery retain the original write path.
+    }
+    ready();
+    if (!unchanged) await send();
     state.applied = key;
   });
   state.tail = task.catch(() => {});

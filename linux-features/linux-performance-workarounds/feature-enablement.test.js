@@ -11,15 +11,23 @@ function deferred() {
   const promise = new Promise((a, b) => { resolve = a; reject = b; });
   return { promise, resolve, reject };
 }
-function setup(source = fixture) {
+function setup(source = fixture, readFeatures = async () => ({ data: [], nextCursor: null }), readConfig = async () => ({config:{},origins:{}})) {
   let policyChanged, connected, gates = { example: true };
-  const calls = [], changed = [], errors = [];
+  const calls = [], reads = [], configReads = [], changed = [], errors = [];
   const connection = {
     hostId: "local", state: "connected",
     getConnectionState() { return this.state; },
     registerInternalConnectionStateHandler(fn) { connected = fn; return () => {}; },
     sendAppServerRequest(method, params, ready) {
       ready();
+      if (method === "experimentalFeature/list") {
+        reads.push({ method, params, ready });
+        return readFeatures();
+      }
+      if (method === "config/read") {
+        configReads.push({method, params, ready});
+        return readConfig();
+      }
       const done = deferred();
       calls.push({ method, params, ready, ...done });
       return done.promise;
@@ -39,7 +47,7 @@ function setup(source = fixture) {
     { onDidChange(fn) { policyChanged = fn; return () => {}; }, async readExecutionAssignments() { return assignments(); }, readReadyExecutionAssignments: assignments },
     host => changed.push(host),
   );
-  return { owner, calls, changed, errors, connection, sync: () => policyChanged(), reconnect() { connection.state = "disconnected"; connected(); connection.state = "connected"; connected(); }, setFlags(flags) { gates = flags; } };
+  return { owner, calls, reads, configReads, changed, errors, connection, sync: () => policyChanged(), reconnect() { connection.state = "disconnected"; connected(); connection.state = "connected"; connected(); }, setFlags(flags) { gates = flags; } };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
@@ -167,4 +175,117 @@ test("patching is idempotent and fails closed for missing, duplicated, and parti
     ]) assert.equal(applyFeatureEnablementDedupPatch(source), source);
     assert.equal(warnings.length, 4);
   } finally { console.warn = warn; }
+});
+
+const matchingFeatures = () => ({ data: [
+  { name: "example", enabled: true },
+  { name: "codex_apps_mcp_2026_07_28", enabled: true },
+  { name: "windows_sandbox_service", enabled: true },
+], nextCursor: null });
+test("fresh connections skip writes when the server already has all requested effective flags", async () => {
+  const first = setup(fixture, async () => matchingFeatures());
+  const second = setup(fixture, async () => matchingFeatures());
+  await flush();
+  for (const h of [first, second]) {
+    assert.equal(h.calls.length, 0);
+    assert.equal(h.reads.length, 1);
+    assert.deepEqual(h.changed, ["local"]);
+    h.sync(); await flush();
+    assert.equal(h.reads.length, 1);
+  }
+  first.reconnect(); await flush();
+  assert.equal(first.calls.length, 0);
+  assert.equal(first.reads.length, 2);
+});
+test("a different effective value still sends the original complete map", async () => {
+  const h = setup(fixture, async () => ({...matchingFeatures(), data: matchingFeatures().data.map(e=>({...e, enabled:false}))}));
+  await flush();
+  assert.equal(h.reads.length, 1);
+  assert.equal(h.calls.length, 1);
+  assert.deepEqual(h.calls[0].params.enablement, {example:true,codex_apps_mcp_2026_07_28:true,windows_sandbox_service:true});
+  h.calls[0].reject(new Error("write failed")); await flush();
+  h.sync(); await flush();
+  assert.equal(h.reads.length, 2);
+  assert.equal(h.calls.length, 2);
+  h.calls[1].resolve({}); await flush();
+});
+test("missing unknown malformed or paginated flags and failed reads preserve the write", async () => {
+  for (const response of [
+    {data: matchingFeatures().data.slice(1), nextCursor:null},
+    {data: matchingFeatures().data.map(e=>({...e, name:"unknown"})), nextCursor:null},
+    {...matchingFeatures(), nextCursor:"3"},
+    {data: matchingFeatures().data.map(e=>({...e,enabled:"true"})), nextCursor:null},
+    {data: [...matchingFeatures().data, matchingFeatures().data[0]], nextCursor:null},
+    null,
+    new Error("unavailable"),
+  ]) {
+    const h = setup(fixture, async () => {if(response instanceof Error)throw response;return response;});
+    await flush();
+    assert.equal(h.reads.length, 1);
+    assert.equal(h.calls.length, 1);
+    h.calls[0].resolve({}); await flush();
+  }
+});
+test("a stale generation after the effective-state read never dispatches a write", async () => {
+  const first = deferred(); let reads = 0;
+  const h = setup(fixture, () => ++reads===1?first.promise:Promise.resolve(matchingFeatures()));
+  await flush(); h.sync(); await flush();
+  first.resolve({data:[],nextCursor:null}); await flush();
+  assert.equal(h.calls.length,0);
+  assert.equal(h.reads.length,2);
+  assert.deepEqual(h.changed,["local"]);
+});
+
+const protectedFeatures = () => ({data:[...matchingFeatures().data,{name:"memories",enabled:true}],nextCursor:null});
+const userMemoryConfig = () => ({config:{features:{memories:true}},origins:{"features.memories":{name:{type:"user",file:"/config.toml"},version:"sha256:fixture"}}});
+test("an explicit user memories preference outranks the GUI false assignment without a reload", async () => {
+  const h = setup(fixture, async()=>protectedFeatures(), async()=>userMemoryConfig());
+  h.setFlags({example:true,memories:false});h.sync();
+  await flush();
+  assert.equal(h.calls.length,0);
+  assert.equal(h.configReads.length,1);
+  assert.deepEqual(h.configReads[0].params,{includeLayers:false});
+  assert.deepEqual(h.changed,["local"]);
+});
+test("only consistent authoritative config origins protect mismatched effective values", async () => {
+  const valid=userMemoryConfig();
+  for (const config of [
+    {config:valid.config, origins:{}},
+    {...valid, origins:{"features.memories":{name:{type:"unexpected"},version:"v"}}},
+    {...valid, origins:{"features.memories":{name:null,version:"v"}}},
+    {...valid, config:{features:{memories:false}}},
+    {...valid, config:{features:{memories:"true"}}},
+    {...valid, origins:{"features.memoriesExtra":{name:{type:"user"},version:"v"}}},
+    null,
+    new Error("config unavailable"),
+  ]) {
+    const h=setup(fixture,async()=>protectedFeatures(),async()=>{if(config instanceof Error)throw config;return config;});
+    h.setFlags({example:true,memories:false});h.sync();await flush();
+    assert.equal(h.calls.length,1);
+    h.calls[0].resolve({});await flush();
+  }
+});
+test("a descendant origin protects only its named feature and stale config reads cannot write", async()=>{
+  const config=userMemoryConfig();config.origins={"features.memories.enabled":{name:{type:"project",path:"/project"},version:"v"}};
+  const h=setup(fixture,async()=>protectedFeatures(),async()=>config);
+  h.setFlags({example:true,memories:false});h.sync();await flush();
+  assert.equal(h.calls.length,0);
+  const pending=deferred();let count=0;
+  const stale=setup(fixture,async()=>protectedFeatures(),()=>++count===1?pending.promise:Promise.resolve(config));
+  stale.setFlags({example:true,memories:false});stale.sync();await flush();
+  stale.sync();await flush();pending.resolve({config:{},origins:{}});await flush();
+  assert.equal(stale.calls.length,0);
+  assert.equal(stale.configReads.length,2);
+});
+
+test("malformed effective booleans cannot be protected by matching malformed config", async()=>{
+  for(const bad of [undefined,"true",null]) {
+    const response=protectedFeatures();response.data.find(e=>e.name==="memories").enabled=bad;
+    const config=userMemoryConfig();config.config.features.memories=bad;
+    const h=setup(fixture,async()=>response,async()=>config);
+    h.setFlags({example:true,memories:false});h.sync();await flush();
+    assert.equal(h.calls.length,1);
+    assert.equal(h.configReads.length,0);
+    h.calls[0].resolve({});await flush();
+  }
 });

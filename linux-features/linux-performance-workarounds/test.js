@@ -6,6 +6,7 @@ const test = require("node:test");
 const manifest = require("./feature.json");
 const descriptors = require("./patch.js");
 require("./feature-enablement.test.js");
+require("./plugin-cli-hash.test.js");
 const {
   applyLinuxAppShellTabLayoutPerformancePatch,
   applyLinuxMarkdownAnimationPerformancePatch,
@@ -26,17 +27,18 @@ test("linux-performance-workarounds remains an opt-in performance feature", () =
   assert.deepEqual(
     descriptors.map(({ id, phase }) => [id, phase]),
     [
+      ["plugin-cli-streaming-hash", "extracted-app:pre-webview"],
       ["feature-enablement-dedup", "main-bundle"],
       ["sidebar-scroll", "webview-asset"],
       ["app-shell-tab-layout", "webview-asset"],
       ["markdown-animation", "webview-asset"],
     ],
   );
-  assert.equal(descriptors[1].pattern.test("app-primary-a0bff570446b.js"), false);
-  assert.equal(descriptors[1].pattern.test("app-initial-cccb87527a41.js"), true);
+  assert.equal(descriptors[2].pattern.test("app-primary-a0bff570446b.js"), false);
   assert.equal(descriptors[2].pattern.test("app-initial-cccb87527a41.js"), true);
-  assert.equal(descriptors[3].pattern.test("app-primary-a0bff570446b.css"), true);
-  assert.equal(descriptors[3].pattern.test("app-initial-cccb87527a41.css"), true);
+  assert.equal(descriptors[3].pattern.test("app-initial-cccb87527a41.js"), true);
+  assert.equal(descriptors[4].pattern.test("app-primary-a0bff570446b.css"), true);
+  assert.equal(descriptors[4].pattern.test("app-initial-cccb87527a41.css"), true);
 });
 
 test("current app-shell tab workaround disables mount animation and defers overflow measurement", () => {
