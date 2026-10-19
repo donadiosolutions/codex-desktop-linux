@@ -11,7 +11,11 @@ checks and read failures while allowing provisioned CLI binaries larger than
 and prevents subsequent bundled-plugin configuration repair.
 
 Feature synchronization remembers successfully applied flags per host connection
-and serializes in-flight writes. Unchanged flags skip the server request, avoiding
+and serializes in-flight writes. Each uncached map first checks the server's
+effective feature list, so a fresh connection also skips a write when every
+requested flag is already present with the same boolean value. Missing flags,
+partial listings, and discovery failures retain the original update path.
+Unchanged flags skip the server write, avoiding
 its reload of every loaded thread. Failed sends remain retryable, changed flags
 are applied in order, and reconnecting clears the cache. Upstream readiness checks,
 completion notifications, and rollout compression remain in place.

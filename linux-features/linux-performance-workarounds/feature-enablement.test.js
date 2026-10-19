@@ -11,15 +11,19 @@ function deferred() {
   const promise = new Promise((a, b) => { resolve = a; reject = b; });
   return { promise, resolve, reject };
 }
-function setup(source = fixture) {
+function setup(source = fixture, readFeatures = async () => ({ data: [], nextCursor: null })) {
   let policyChanged, connected, gates = { example: true };
-  const calls = [], changed = [], errors = [];
+  const calls = [], reads = [], changed = [], errors = [];
   const connection = {
     hostId: "local", state: "connected",
     getConnectionState() { return this.state; },
     registerInternalConnectionStateHandler(fn) { connected = fn; return () => {}; },
     sendAppServerRequest(method, params, ready) {
       ready();
+      if (method === "experimentalFeature/list") {
+        reads.push({ method, params, ready });
+        return readFeatures();
+      }
       const done = deferred();
       calls.push({ method, params, ready, ...done });
       return done.promise;
@@ -39,7 +43,7 @@ function setup(source = fixture) {
     { onDidChange(fn) { policyChanged = fn; return () => {}; }, async readExecutionAssignments() { return assignments(); }, readReadyExecutionAssignments: assignments },
     host => changed.push(host),
   );
-  return { owner, calls, changed, errors, connection, sync: () => policyChanged(), reconnect() { connection.state = "disconnected"; connected(); connection.state = "connected"; connected(); }, setFlags(flags) { gates = flags; } };
+  return { owner, calls, reads, changed, errors, connection, sync: () => policyChanged(), reconnect() { connection.state = "disconnected"; connected(); connection.state = "connected"; connected(); }, setFlags(flags) { gates = flags; } };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
@@ -167,4 +171,63 @@ test("patching is idempotent and fails closed for missing, duplicated, and parti
     ]) assert.equal(applyFeatureEnablementDedupPatch(source), source);
     assert.equal(warnings.length, 4);
   } finally { console.warn = warn; }
+});
+
+const matchingFeatures = () => ({ data: [
+  { name: "example", enabled: true },
+  { name: "codex_apps_mcp_2026_07_28", enabled: true },
+  { name: "windows_sandbox_service", enabled: true },
+], nextCursor: null });
+test("fresh connections skip writes when the server already has all requested effective flags", async () => {
+  const first = setup(fixture, async () => matchingFeatures());
+  const second = setup(fixture, async () => matchingFeatures());
+  await flush();
+  for (const h of [first, second]) {
+    assert.equal(h.calls.length, 0);
+    assert.equal(h.reads.length, 1);
+    assert.deepEqual(h.changed, ["local"]);
+    h.sync(); await flush();
+    assert.equal(h.reads.length, 1);
+  }
+  first.reconnect(); await flush();
+  assert.equal(first.calls.length, 0);
+  assert.equal(first.reads.length, 2);
+});
+test("a different effective value still sends the original complete map", async () => {
+  const h = setup(fixture, async () => ({...matchingFeatures(), data: matchingFeatures().data.map(e=>({...e, enabled:false}))}));
+  await flush();
+  assert.equal(h.reads.length, 1);
+  assert.equal(h.calls.length, 1);
+  assert.deepEqual(h.calls[0].params.enablement, {example:true,codex_apps_mcp_2026_07_28:true,windows_sandbox_service:true});
+  h.calls[0].reject(new Error("write failed")); await flush();
+  h.sync(); await flush();
+  assert.equal(h.reads.length, 2);
+  assert.equal(h.calls.length, 2);
+  h.calls[1].resolve({}); await flush();
+});
+test("missing unknown malformed or paginated flags and failed reads preserve the write", async () => {
+  for (const response of [
+    {data: matchingFeatures().data.slice(1), nextCursor:null},
+    {data: matchingFeatures().data.map(e=>({...e, name:"unknown"})), nextCursor:null},
+    {...matchingFeatures(), nextCursor:"3"},
+    {data: matchingFeatures().data.map(e=>({...e,enabled:"true"})), nextCursor:null},
+    {data: [...matchingFeatures().data, matchingFeatures().data[0]], nextCursor:null},
+    null,
+    new Error("unavailable"),
+  ]) {
+    const h = setup(fixture, async () => {if(response instanceof Error)throw response;return response;});
+    await flush();
+    assert.equal(h.reads.length, 1);
+    assert.equal(h.calls.length, 1);
+    h.calls[0].resolve({}); await flush();
+  }
+});
+test("a stale generation after the effective-state read never dispatches a write", async () => {
+  const first = deferred(); let reads = 0;
+  const h = setup(fixture, () => ++reads===1?first.promise:Promise.resolve(matchingFeatures()));
+  await flush(); h.sync(); await flush();
+  first.resolve({data:[],nextCursor:null}); await flush();
+  assert.equal(h.calls.length,0);
+  assert.equal(h.reads.length,2);
+  assert.deepEqual(h.changed,["local"]);
 });

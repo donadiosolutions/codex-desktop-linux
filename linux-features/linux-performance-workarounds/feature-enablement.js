@@ -14,7 +14,22 @@ async function codexLinuxSyncFeatureEnablement(connectionState, enablement, read
   const task = state.tail.then(async () => {
     ready();
     if (state.applied === key) return;
-    await send();
+    let unchanged = false;
+    try {
+      const response = await connectionState.connection.sendAppServerRequest(
+        `experimentalFeature/list`, {}, ready,
+      );
+      if (Array.isArray(response?.data) && response.nextCursor == null) {
+        const features = new Map(response.data.map(feature => [feature.name, feature.enabled]));
+        unchanged = features.size === response.data.length &&
+          Object.entries(enablement).every(([name, enabled]) =>
+            typeof enabled === "boolean" && features.has(name) && features.get(name) === enabled);
+      }
+    } catch {
+      // Older servers and failed discovery retain the original write path.
+    }
+    ready();
+    if (!unchanged) await send();
     state.applied = key;
   });
   state.tail = task.catch(() => {});
