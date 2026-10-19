@@ -11,13 +11,13 @@ const repoRoot = path.resolve(__dirname, "..");
 const isFedora = /^ID=(?:"fedora"|fedora)$/m.test(fs.readFileSync("/etc/os-release", "utf8"));
 const nativeArch = { x64: "x86_64", arm64: "aarch64" }[process.arch];
 
-test("Fedora RPM preserves stripped and debug ELF payloads byte-for-byte", {
+test("Fedora RPM strips debug ELF payloads and preserves executable behavior", {
   skip: !isFedora || nativeArch == null,
   timeout: 120_000,
 }, (t) => {
   const temporaryRoot = path.join(repoRoot, ".tmp", "native-update");
   fs.mkdirSync(temporaryRoot, { recursive: true });
-  const workspace = fs.mkdtempSync(path.join(temporaryRoot, "rpm-preserve-elf-"));
+  const workspace = fs.mkdtempSync(path.join(temporaryRoot, "rpm-strip-elf-"));
   t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
   const run = (command, args, options = {}) => execFileSync(command, args, {
     cwd: workspace,
@@ -32,10 +32,13 @@ test("Fedora RPM preserves stripped and debug ELF payloads byte-for-byte", {
   fs.writeFileSync(path.join(workspace, "fixture.c"), "int main(void) { return 0; }\n");
   const debugElf = path.join(app, "ChatGPT");
   const strippedElf = path.join(app, "resources", "codex");
+  const updaterElf = path.join(app, "update-builder", "linux-features", "local", "runtime", "codex-code-mode-host");
+  fs.mkdirSync(path.dirname(updaterElf), { recursive: true });
   run("cc", ["-g", "-O0", "fixture.c", "-o", debugElf]);
   fs.copyFileSync(debugElf, strippedElf);
+  fs.copyFileSync(debugElf, updaterElf);
   run("strip", ["--strip-all", strippedElf]);
-  const expected = new Map([debugElf, strippedElf].map((file) => [file, fs.readFileSync(file)]));
+  const originalDebugSize = fs.statSync(debugElf).size;
   assert.match(run("readelf", ["-S", debugElf], { encoding: "utf8" }), /\.debug_info/);
   assert.match(run("readelf", ["-S", strippedElf], { encoding: "utf8" }), /\.comment/);
 
@@ -79,10 +82,13 @@ test("Fedora RPM preserves stripped and debug ELF payloads byte-for-byte", {
     cwd: extracted,
     input: archive,
   });
-  for (const [original, bytes] of expected) {
+  for (const original of [debugElf, strippedElf, updaterElf]) {
     const payload = path.join(extracted, path.relative(staging, original));
-    assert.deepEqual(fs.readFileSync(payload), bytes, `${path.relative(staging, original)} changed during RPM packaging`);
+    assert.doesNotMatch(run("readelf", ["-S", payload], { encoding: "utf8" }), /\.debug_info/);
+    run(payload, []);
   }
+  assert.ok(fs.statSync(path.join(extracted, "opt/codex-desktop/ChatGPT")).size < originalDebugSize,
+    "debug stripping reduces the installed executable size");
   assert.match(
     fs.readFileSync(path.join(extracted, "usr/bin/codex-desktop"), "utf8"),
     /^#!\/usr\/bin\/bash\n/,
