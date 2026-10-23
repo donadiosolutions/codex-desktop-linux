@@ -241,7 +241,9 @@ Nix 用户应从 profile、Home Manager 配置或 NixOS module 中删除该包�
 | `authenticated-proxy` | 带用户名和密码的 HTTP proxy | [文档](linux-features/authenticated-proxy/README.md) |
 | `automation-extensions` | 多时间调度、可靠的本地 `automation_update` 暴露及可观测的查看结果 | [文档](linux-features/automation-extensions/README.md) |
 | `browser-proxy` | 让 Browser Use 的网络辅助进程继承显式代理设置 | [文档](linux-features/browser-proxy/README.zh-CN.md) |
+| `chatgpt-dil-markdown-fallback` | 交互式 ChatGPT 回复渲染失败时显示已保存的 Markdown 正文 | [文档](linux-features/chatgpt-dil-markdown-fallback/README.md) |
 | `chatgpt-dots-any-country` | 当账号响应受到国家限制时，仍显示 ChatGPT Dots 入口和可用性说明 | [文档](linux-features/chatgpt-dots-any-country/README.md) |
+| `chatgpt-sidebar-separate-history` | ChatGPT 历史记录默认仅显示聊天，并记住聊天 / Work / 全部筛选选项 | [文档](linux-features/chatgpt-sidebar-separate-history/README.md) |
 | `chronicle-skysight` | 可选的 Linux 桌面活动记忆与受限 Skysight MCP 工具 | [文档](linux-features/chronicle-skysight/README.md) |
 | `codex-micro` | 使用上游 `node-hid` 的 Codex Micro hotplug/hidraw policy | [文档](linux-features/codex-micro/README.md) |
 | `community-profile-isolation` | 将 Community 的 Codex/Electron 状态与子进程 CLI 解析和官方 ChatGPT 隔离 | [文档](linux-features/community-profile-isolation/README.md) |
@@ -253,6 +255,7 @@ Nix 用户应从 profile、Home Manager 配置或 NixOS module 中删除该包�
 | `flatpak-chrome-native-messaging` | 将官方 Chrome 扩展连接到 Flatpak Google Chrome | [文档](linux-features/flatpak-chrome-native-messaging/README.md) |
 | `frameless-titlebar` | 隐藏官方 Linux overlay 按钮，改由 compositor 管理窗口装饰 | [文档](linux-features/frameless-titlebar/README.md) |
 | `global-dictation` | X11 / XDG portal 全局听写快捷键 | [文档](linux-features/global-dictation/README.md) |
+| `wayland-global-shortcuts` | 为弹出聊天、Mini/Pet 等全局快捷键提供原生 Wayland 支持；可独立于听写启用 | [文档](linux-features/wayland-global-shortcuts/README.md) |
 | `global-dictation-gnome` | 无需 RemoteDesktop 会话的可选 GNOME Shell 粘贴扩展；依赖 `global-dictation`，必须显式启用扩展 | [文档](linux-features/global-dictation-gnome/README.md) |
 | `linux-performance-workarounds` | 针对受影响系统的 GUI 性能优化，包括抑制重复的功能同步 | [文档](linux-features/linux-performance-workarounds/README.md) |
 | `mcp-helper-reaper` | 安全清理孤立 MCP helper | [文档](linux-features/mcp-helper-reaper/README.md) |
@@ -266,6 +269,7 @@ Nix 用户应从 profile、Home Manager 配置或 NixOS module 中删除该包�
 | `project-task-sort` | 恢复 alternate Projects 的 Created 排序 | [文档](linux-features/project-task-sort/README.md) |
 | `read-aloud` | 为 assistant response 添加 Linux 朗读控件 | [文档](linux-features/read-aloud/README.md) |
 | `read-aloud-mcp` | 让 agent 通过 Linux Read Aloud backend 发声 | [文档](linux-features/read-aloud-mcp/README.md) |
+| `reasoning-visibility` | 在常规设置中添加默认关闭且已翻译的推理摘要开关；重启后生效 | [文档](linux-features/reasoning-visibility/README.md) |
 | `record-and-replay` | 将 Linux 操作演示录制为可复用 skill | [文档](linux-features/record-and-replay/README.md) |
 | `remote-control-ui` | 显示实验性 remote-control 设置 | [文档](linux-features/remote-control-ui/README.md) |
 | `remote-mobile-control` | 实验性 Linux remote-host / outbound-control flow | [文档](linux-features/remote-mobile-control/README.md) |
