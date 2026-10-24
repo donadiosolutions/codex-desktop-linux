@@ -82,10 +82,7 @@ function captureWarns(fn) {
 function syntheticMainBundle() {
   return [
     "let c=require(`node:child_process`),o=require(`node:fs`),i=require(`node:path`);",
-    "class Host{handlers(){return {",
-    '"get-global-state":async({key:t})=>({value:this.globalState.get(t)}),',
-    '"set-global-state":async({key:t,value:n})=>(this.globalState.set(t,n),{success:!0})',
-    "}}}",
+    'class Host{handlers={"set-remote-wsl-connections-enabled":async()=>({})};handleVSCodeRequest(origin,key,params){return this.handlers[key]({...params,origin})}}',
   ].join("");
 }
 
@@ -136,7 +133,7 @@ function buildBridgeHarness({ env = {}, globalState = new Map(), execFile, spawn
       globalState.set(key, value);
     },
   };
-  return { handlers: host.handlers(), execCalls, spawnCalls };
+  return { handlers: host.handlers, execCalls, spawnCalls };
 }
 
 function syntheticCurrentSettingsMetadata() {
@@ -499,10 +496,7 @@ test("main bridge patch captures explicit Node modules despite nearby require ca
   const quotedBundle = [
     "function distractors(){let __codexChild=require(`node:child_process`).spawn(`true`);let t=require('node:path').join(`a`,`b`);let n=require(\"node:fs\").existsSync(`a`)}",
     "let c=require(\"node:child_process\"),o=require('node:fs'),i=require(`node:path`);",
-    "class Host{handlers(){return {",
-    '"get-global-state":async({key:t})=>({value:this.globalState.get(t)}),',
-    '"set-global-state":async({key:t,value:n})=>(this.globalState.set(t,n),{success:!0})',
-    "}}}",
+    'class Host{handlers={"set-remote-wsl-connections-enabled":async()=>({})};handleVSCodeRequest(origin,key,params){return this.handlers[key]({...params,origin})}}',
   ].join("");
   const patched = applyAgentWorkspaceMainBridgePatch(quotedBundle);
   assert.match(patched, /"linux-agent-workspace":async/);
@@ -581,11 +575,13 @@ test("main bridge patch adds an allowlisted linux-agent-workspace handler", () =
     '"linux-agent-workspace-copy-browser-data":async',
     '"linux-agent-workspace-copy-browser-data-old":async',
   );
-  assert.match(applyAgentWorkspaceMainBridgePatch(stalePatched), /"linux-agent-workspace-copy-browser-data":async/);
+  const stale = captureWarns(() => applyAgentWorkspaceMainBridgePatch(stalePatched));
+  assert.equal(stale.value, stalePatched);
+  assert.ok(stale.warnings.length);
 
   const { value, warnings } = captureWarns(() => applyAgentWorkspaceMainBridgePatch("real bundle"));
   assert.equal(value, "real bundle");
-  assert.match(warnings.join("\n"), /Could not find global-state handler insertion point/);
+  assert.match(warnings.join("\n"), /Expected one live FetchHandler request map/);
 });
 
 test("main bridge generator does not carry removed conversation monitor observe code", () => {
@@ -597,32 +593,11 @@ test("main bridge generator does not carry removed conversation monitor observe 
   assert.doesNotMatch(patchSource, /codex-linux-agent-workspace-panel/);
 });
 
-test("main bridge patch upgrades stale installed agent workspace handlers", () => {
-  const legacyHandler = [
-    '"linux-agent-workspace-copy-browser-data":async()=>({ok:true,action:`copyBrowserData`}),',
-    '"linux-agent-workspace":async({action:__codexAction}={})=>{let __codexActionName=__codexAction;',
-    'try{switch(__codexActionName){case`profileList`:return{ok:true,json:{profiles:[]}};',
-    'case`workspaceList`:return{ok:true,json:{workspaces:[]}};',
-    'default:throw Error(`unsupported agent workspace action`)}}',
-    'catch(e){return{ok:false,action:__codexActionName,message:e instanceof Error?e.message:String(e)}}},',
-  ].join("");
-  const legacy = syntheticMainBundle().replace('"get-global-state":async({key:t})=>', `${legacyHandler}"get-global-state":async({key:t})=>`);
-
-  const upgraded = applyAgentWorkspaceMainBridgePatch(legacy);
-  assert.match(upgraded, /"linux-agent-workspace-pick-app":async/);
-  assert.match(upgraded, /"linux-agent-workspace-pick-mount":async/);
-  assert.match(upgraded, /"linux-agent-workspace-pick-browser-data":async/);
-  assert.match(upgraded, /"linux-agent-workspace-copy-browser-data":async/);
-  assert.match(upgraded, /case`permissionConfig`/);
-  assert.match(upgraded, /case`installRuntime`/);
-  assert.match(upgraded, /__codexPermissionConfig/);
-  assert.doesNotMatch(upgraded, /case`mcpConfig`/);
-  assert.doesNotMatch(upgraded, /config\.toml/);
-  assert.match(upgraded, /case`workspaceOpenViewer`/);
-  assert.match(upgraded, /case`workspaceStart`/);
-  assert.match(upgraded, /case`profileTemplate`/);
-  assert.doesNotMatch(upgraded, /case`profileList`:return\{ok:true,json:\{profiles:\[\]\}\}/);
-  assert.equal(applyAgentWorkspaceMainBridgePatch(upgraded), upgraded);
+test("main bridge rejects obsolete handler shapes without upgrading generated output", () => {
+  const legacy = 'class Host{handlers(){return {"linux-agent-workspace":async()=>({})}}}';
+  const {value,warnings} = captureWarns(() => applyAgentWorkspaceMainBridgePatch(legacy));
+  assert.equal(value,legacy);
+  assert.ok(warnings.length);
 });
 
 test("app picker converts desktop launchers into startup app commands", async () => {
@@ -1966,4 +1941,67 @@ test("feature patch list is intentionally small", () => {
       ["settings-page", "extracted-app:post-webview"],
     ],
   );
+});
+
+test("26.1021 settings runtime ignores adjacent lazy frame React owners", () => {
+  const tempApp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-agent-workspace-split-"));
+  try {
+    const {assetsDir} = writeSyntheticExtractedApp(tempApp);
+    fs.writeFileSync(path.join(assetsDir,"settings-page-lazy-current.js"), syntheticCurrentSettingsNavigation().split("var nn=")[0]);
+    const result = patchAgentWorkspaceSettingsAssets(tempApp);
+    assert.equal(result.matched, true, result.reason);
+  } finally { fs.rmSync(tempApp, {recursive:true,force:true}); }
+});
+
+test("26.1021 bridge uses the surviving fetch handler table with feature-owned preference keys", async () => {
+  const source = 'class Host{globalState;handlers={"set-remote-wsl-connections-enabled":async({enabled:e,origin:t})=>this.windowManager.getPrimaryWindows().some(e=>e.webContents===t)?this.remoteConnectionsHandler.setRemoteWslConnectionsEnabled(e):{remoteWslConnections:this.remoteConnectionsHandler.catalog.read().wsl??[]}};handleVSCodeRequest(origin,key,params){return this.handlers[key]({...params,origin})}}';
+  const patched = applyAgentWorkspaceMainBridgePatch(source);
+  assert.notEqual(patched, source);
+  assert.equal(applyAgentWorkspaceMainBridgePatch(patched), patched);
+  const Host = new Function(patched + ";return Host")();
+  const host = new Host();
+  const values = new Map();
+  host.globalState = {get:(key)=>values.get(key),set:(key,value)=>values.set(key,value)};
+  await host.handlers["set-global-state"]({key:SETTINGS_COMMAND_KEY,value:"/bin/workspace"});
+  assert.deepEqual(await host.handlers["get-global-state"]({key:SETTINGS_COMMAND_KEY}), {value:"/bin/workspace"});
+  await assert.rejects(host.handlers["set-global-state"]({key:"unrelated",value:1}), /unsupported/i);
+  assert.ok(host.handlers["linux-agent-workspace"]);
+});
+
+test("26.1021 settings patches split title metadata, routes, and catalog atomically", () => {
+  const tempApp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-agent-workspace-routing-"));
+  try {
+    const {assetsDir} = writeSyntheticExtractedApp(tempApp);
+    fs.writeFileSync(path.join(assetsDir,"app-initial-test.js"), "let untouched=1;");
+    const metadata = syntheticCurrentSettingsMetadata();
+    const titleStart = metadata.indexOf("function m(");
+    fs.writeFileSync(path.join(assetsDir,"settings-nav-title-message-current.js"),metadata.slice(0,titleStart));
+    fs.writeFileSync(path.join(assetsDir,"settings-shared-current.js"),metadata.slice(titleStart));
+    fs.writeFileSync(path.join(assetsDir,"settings-lazy-routes-current.js"),syntheticCurrentAppInitialBundle().split("var c=r(")[0]);
+    fs.writeFileSync(path.join(assetsDir,"app-primary-current.js"),syntheticCurrentSettingsCatalog());
+    const result = patchAgentWorkspaceSettingsAssets(tempApp);
+    assert.equal(result.matched,true,result.reason);
+    assert.match(fs.readFileSync(path.join(assetsDir,"settings-shared-current.js"),"utf8"), /settings.section.agent-workspaces/);
+    assert.equal(patchAgentWorkspaceSettingsAssets(tempApp).changed,0);
+  } finally {fs.rmSync(tempApp,{recursive:true,force:true});}
+});
+
+test("26.1021 settings request service preserves the fetch bridge envelope", async () => {
+  const tempApp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-agent-workspace-service-"));
+  try {
+    const {assetsDir} = writeSyntheticExtractedApp(tempApp);
+    fs.unlinkSync(path.join(assetsDir,"setting-storage-test.js"));
+    fs.writeFileSync(path.join(assetsDir,"app-initial-service.js"),
+      'var requestService;function init(){return(init=once(()=>{requestService=class Client{getRestartBlockers(){return[`web-fetch.pending-request`]}static getInstance(){return this.instance??=new Client}async post(url,body,headers){return this.sendRequest(`POST`,url,{body,headers})}async sendRequest(method,url,options){if(!url.startsWith(`vscode://codex/`))throw Error(`url`);return{body:{method,url,options}}}}}))()}export{requestService as Service,init as Init};');
+    const result=patchAgentWorkspaceSettingsAssets(tempApp);
+    assert.equal(result.matched,true,result.reason);
+    const source=fs.readFileSync(path.join(assetsDir,SETTINGS_ASSET),"utf8");
+    assert.match(source,/import\{Service as __requestService,Init as __initRequestService\}/);
+    const requestSource=source.slice(source.indexOf("async function __post"),source.indexOf("var React="));
+    const calls=[];
+    const post=new Function("__requestService",requestSource+";return __post")({getInstance:()=>({post:async(...args)=>{calls.push(args);return{body:{success:true}}}})});
+    assert.deepEqual(await post("linux-agent-workspace",{params:{action:"doctor"}}),{success:true});
+    assert.deepEqual(calls,[["vscode://codex/linux-agent-workspace",'{"action":"doctor"}',{"Content-Type":"application/json"}]]);
+    assert.equal(patchAgentWorkspaceSettingsAssets(tempApp).changed,0);
+  } finally {fs.rmSync(tempApp,{recursive:true,force:true});}
 });

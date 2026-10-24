@@ -40,6 +40,7 @@ function codexLinuxGlobalDictationReleaseWatcher(accelerator, onReleased) {
   child.once("error", finish);
   child.once("exit", () => finish());
   return {
+    get isActive() { return !finished; },
     dispose: () => {
       finished = true;
       child.kill();
@@ -80,9 +81,15 @@ function applyLinuxGlobalDictationMainProcessPatch(source) {
   }
 
   try {
-    const { name: registerFunction, bareModifier: bareModifierTestFunction } = registrationContract(source);
+    // The shared portal engine still validates the pre-notification ownership shape.
+    // Normalize only that verified prefix while it runs, then restore the upstream callback.
+    const notificationPrefix = source.match(/let ([A-Za-z_$][\w$]*)=n\?\.ownership,([A-Za-z_$][\w$]*)=t\.onReleased,([A-Za-z_$][\w$]*)=t\.onCancelled,([A-Za-z_$][\w$]*)=\1==null\?t:\{onRegistrationChanged:t\.onRegistrationChanged,/u)?.[0];
+    const legacyPrefix = notificationPrefix?.replace("onRegistrationChanged:t.onRegistrationChanged,", "");
+    const contractSource = notificationPrefix == null ? source :
+      replaceUnique(source, new RegExp(escapeRegexLiteral(notificationPrefix), "u"), legacyPrefix, "shortcut registration notification");
+    const { name: registerFunction, bareModifier: bareModifierTestFunction } = registrationContract(contractSource);
     const registerFunctionPattern = escapeRegexLiteral(registerFunction);
-    let patched = helperSource() + source;
+    let patched = helperSource() + contractSource;
     const currentValidation = new RegExp(
       `function (${IDENT})\\(e\\)\\{(?=if\\(process\\.platform===\`win32\`&&${IDENT}\\(e\\)\\)return[\\s\\S]{0,220}?;let ${IDENT}=${IDENT}\\(e,process\\.platform,\\{allowUnmodified:!0\\}\\))`,
       "u",
@@ -97,8 +104,8 @@ function applyLinuxGlobalDictationMainProcessPatch(source) {
 
     patched = replaceUnique(
       patched,
-      /case`aix`:case`android`:case`cygwin`:case`freebsd`:case`haiku`:case`linux`:case`netbsd`:case`openbsd`:case`sunos`:throw Error\(`Global dictation hotkey release watching is not supported\.`\)/u,
-      "case`linux`:{let n=codexLinuxGlobalDictationReleaseWatcher(e,t);if(n==null)throw Error(`Global dictation hotkey release watching is not supported.`);return n}case`aix`:case`android`:case`cygwin`:case`freebsd`:case`haiku`:case`netbsd`:case`openbsd`:case`sunos`:throw Error(`Global dictation hotkey release watching is not supported.`)",
+      /(case`win32`:)?case`aix`:case`android`:case`cygwin`:case`freebsd`:case`haiku`:case`linux`:case`netbsd`:case`openbsd`:case`sunos`:throw Error\(`Global dictation hotkey release watching is not supported\.`\)/u,
+      (_original, windowsCase = "") => "case`linux`:{let n=codexLinuxGlobalDictationReleaseWatcher(e,t);if(n==null)throw Error(`Global dictation hotkey release watching is not supported.`);return n}" + windowsCase + "case`aix`:case`android`:case`cygwin`:case`freebsd`:case`haiku`:case`netbsd`:case`openbsd`:case`sunos`:throw Error(`Global dictation hotkey release watching is not supported.`)",
       "Linux release watcher platform branch",
     );
     patched = replaceUnique(
@@ -119,35 +126,25 @@ function applyLinuxGlobalDictationMainProcessPatch(source) {
       "Linux global dictation paste branch",
     );
 
+    const registrationCallbacks = (gesture) =>
+      `(?:onRegistrationChanged:\\(\\)=>this\\.publishShortcutRecovery\\(\\),)?` +
+      `onPressed:\\(\\)=>\\{(?:this\\.setupWindowFocused\\|\\|\\()?this\\.ensureHotkeyReleaseWatchers\\(\\),this\\.shortcutGestures\\.press\\(\`${gesture}\`,[\\s\\S]{0,220}?\\)\\)?\\},` +
+      `onReleased:\\(\\)=>(?:this\\.shortcutGestures\\.release\\(\`${gesture}\`\\)|\\{this\\.setupWindowFocused\\|\\|this\\.shortcutGestures\\.release\\(\`${gesture}\`\\)\\}),` +
+      `onCancelled:\\(\\)=>(?:this\\.shortcutGestures\\.cancelPress\\(\`${gesture}\`\\)|\\{this\\.setupWindowFocused\\|\\|this\\.shortcutGestures\\.cancelPress\\(\`${gesture}\`\\)\\})`;
     const holdRegistration = new RegExp(
-      `${registerFunctionPattern}\\(e,\\{(onPressed:\\(\\)=>\\{this\\.ensureHotkeyReleaseWatchers\\(\\),this\\.shortcutGestures\\.press\\(\`primary\`,[\\s\\S]{0,220}?\\)\\},` +
-        `onReleased:\\(\\)=>this\\.shortcutGestures\\.release\\(\`primary\`\\),` +
-        `onCancelled:\\(\\)=>this\\.shortcutGestures\\.cancelPress\\(\`primary\`\\))\\},` +
-        `\\{ownership:(${IDENT})(,bareModifierTrigger:\`cancellablePress\`)\\}\\)`,
-      "u",
-    );
-    patched = replaceUnique(
-      patched,
-      holdRegistration,
+      `${registerFunctionPattern}\\(e,\\{(${registrationCallbacks("primary")})\\},` +
+        `\\{ownership:(${IDENT})(,bareModifierTrigger:\`cancellablePress\`)\\}\\)`, "u");
+    patched = replaceUnique(patched, holdRegistration,
       (_original, callbacks, ownershipVar, extraOptions) =>
         `${registerFunction}(e,{linuxCommandId:"globalDictationHold",${callbacks},onUnavailable:n=>{this.handleLinuxHotkeyUnavailable(\`hold\`,n)}},{ownership:${ownershipVar}${extraOptions}})`,
-      "hold hotkey registration",
-    );
-
+      "hold hotkey registration");
     const toggleRegistration = new RegExp(
-      registerFunctionPattern +
-        `\\(e,\\{(onPressed:\\(\\)=>\\{this\\.ensureHotkeyReleaseWatchers\\(\\),this\\.shortcutGestures\\.press\\(\`single-tap\`,[\\s\\S]{0,220}?\\)\\},` +
-        `onReleased:\\(\\)=>this\\.shortcutGestures\\.release\\(\`single-tap\`\\),` +
-        `onCancelled:\\(\\)=>this\\.shortcutGestures\\.cancelPress\\(\`single-tap\`\\))\\},` +
-        `\\{bareModifierTrigger:\`cancellablePress\`,ownership:(${IDENT})\\}\\)`,
-      "u",
-    );
-    patched = replaceUnique(
-      patched,
-      toggleRegistration,
-      (_original, callbacks, ownershipVar) => registerFunction + `(e,{linuxCommandId:"globalDictationSingleTap",${callbacks},onUnavailable:n=>{this.handleLinuxHotkeyUnavailable(\`toggle\`,n)}},{bareModifierTrigger:\`cancellablePress\`,ownership:${ownershipVar}})`,
-      "toggle hotkey registration",
-    );
+      `${registerFunctionPattern}\\(e,\\{(${registrationCallbacks("single-tap")})\\},` +
+        `\\{bareModifierTrigger:\`cancellablePress\`,ownership:(${IDENT})\\}\\)`, "u");
+    patched = replaceUnique(patched, toggleRegistration,
+      (_original, callbacks, ownershipVar) =>
+        `${registerFunction}(e,{linuxCommandId:"globalDictationSingleTap",${callbacks},onUnavailable:n=>{this.handleLinuxHotkeyUnavailable(\`toggle\`,n)}},{bareModifierTrigger:\`cancellablePress\`,ownership:${ownershipVar}})`,
+      "toggle hotkey registration");
 
     patched = replaceUnique(
       patched,
@@ -155,7 +152,9 @@ function applyLinuxGlobalDictationMainProcessPatch(source) {
       "handleLinuxHotkeyUnavailable(e,t){console.warn(`[linux-global-dictation] ${e} hotkey backend became unavailable`,t);if(e===`hold`)this.unregisterHotkey();else this.unregisterToggleHotkey()}unregisterHotkey(){",
       "hotkey failure cleanup method",
     );
-    return installPortalBackend(patched);
+    const withPortal = installPortalBackend(patched);
+    return notificationPrefix == null ? withPortal :
+      replaceUnique(withPortal, new RegExp(escapeRegexLiteral(legacyPrefix), "u"), notificationPrefix, "restore shortcut registration notification");
   } catch (error) {
     warn(error instanceof Error ? error.message : String(error));
     return source;

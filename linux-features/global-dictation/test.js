@@ -244,13 +244,17 @@ test("X11 hold watcher exposes a disposable and releases once", async () => {
 
   const completed = context.pA("Ctrl+Space", () => releases++);
   assert.equal(typeof completed.dispose, "function");
+  assert.equal(completed.isActive, true);
   firstChild.emit("exit", 0);
   firstChild.emit("error", new Error("late error"));
   await new Promise(setImmediate);
   assert.equal(releases, 1);
+  assert.equal(completed.isActive, false);
 
   const cancelled = context.pA("Ctrl+Space", () => releases++);
+  assert.equal(cancelled.isActive, true);
   cancelled.dispose();
+  assert.equal(cancelled.isActive, false);
   secondChild.emit("exit", 0);
   await new Promise(setImmediate);
   assert.equal(secondChild.killed, true);
@@ -546,4 +550,38 @@ test("stage hook requires a release artifact and never invokes Cargo", () => {
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+
+function currentDictationFixture() {
+  const current = require("./upstream-26.1021.22027.fixture.json");
+  const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
+  let source = mainBundleFixture();
+  for (const [needle, replacement] of [["function pA(e,t)", current.releaseWatcher], ["function eA(e,t,n)", current.registration], ["registerHotkeyOrThrow(e,t)", current.hold], ["registerToggleHotkeyOrThrow(e,t)", current.toggle]]) {
+    const start = source.indexOf(needle);
+    const end = findMatchingBrace(source, source.indexOf("{", start)) + 1;
+    source = source.slice(0, start) + replacement.replace(/\b(?:MN|EN|SN|TN|kN|c|O)\b/g, name => ({MN:"pA",EN:"eA",SN:"managerEntries",TN:"suspendDepth",kN:"activateHotkey",c:"currentOnPressed",O:"c"})[name]) + source.slice(end);
+  }
+  return source;
+}
+
+test("26.1021 dictation preserves registration recovery and setup focus guards", () => {
+  const source = currentDictationFixture();
+  const patched = applyLinuxGlobalDictationMainProcessPatch(source);
+  assert.notEqual(patched, source);
+  assert.doesNotThrow(() => new vm.Script(patched));
+  assert.equal(applyLinuxGlobalDictationMainProcessPatch(patched), patched);
+  assert.match(patched, /onRegistrationChanged:t\.onRegistrationChanged/);
+  assert.equal(patched.split("onRegistrationChanged:()=>this.publishShortcutRecovery()").length - 1, 2);
+  assert.match(patched, /this\.setupWindowFocused\|\|this\.shortcutGestures\.cancelPress/);
+});
+
+
+test("26.1021 Linux release watcher keeps the upstream unsupported platform branch", () => {
+  const patched = applyLinuxGlobalDictationMainProcessPatch(currentDictationFixture());
+  const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
+  const start = patched.indexOf("function pA(e,t)");
+  const watcher = patched.slice(start, findMatchingBrace(patched, patched.indexOf("{", start)) + 1);
+  const context = { process: { platform: "win32" }, codexLinuxGlobalDictationReleaseWatcher() { assert.fail("Linux watcher must not run"); } };
+  assert.throws(() => vm.runInNewContext(watcher + ";pA('Ctrl+Space',()=>{})", context), /Global dictation hotkey release watching is not supported/);
 });

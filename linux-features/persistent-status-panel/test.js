@@ -183,3 +183,9 @@ test("target bundle without status marker is unchanged and warns", () => {
     "WARN: Could not find Codex status panel bundle marker - skipping persistent status panel patch",
   ]);
 });
+
+test("26.1021 status descriptor follows lifted state into composer-content", () => {
+  assert.equal(descriptors[0].pattern.test("composer-content-current.js"), true);
+  const source = liftedStatusStateComposerSource.replaceAll("yt", "ar").replaceAll("bt", "or").replaceAll("R3", "TK");
+  assert.notEqual(applyPersistentStatusPanelPatch(source), source);
+});

@@ -30,7 +30,7 @@ test("linux-performance-workarounds remains an opt-in performance feature", () =
       ["markdown-animation", "webview-asset"],
     ],
   );
-  assert.equal(descriptors[2].pattern.test("app-primary-a0bff570446b.js"), false);
+  assert.equal(descriptors[2].pattern.test("app-primary-a0bff570446b.js"), true);
   assert.equal(descriptors[2].pattern.test("app-initial-cccb87527a41.js"), true);
   assert.equal(descriptors[3].pattern.test("thread-app-shell-chrome-1cbe88398368.js"), true);
   assert.equal(descriptors[4].pattern.test("app-primary-a0bff570446b.css"), true);
@@ -82,4 +82,9 @@ test("current adaptive-streaming rules are preserved between the patched fade ru
   assert.notEqual(patched, source);
   assert.match(patched, /_AdaptiveStreaming_qhsrt_2 ._FadeIn_qhsrt_2/u);
   assert.equal(applyLinuxMarkdownAnimationPerformancePatch(patched), patched);
+});
+
+test("26.1021 sidebar descriptor follows the rendering owner in app-primary", () => {
+  const descriptor = descriptors.find((entry) => entry.id === "sidebar-scroll");
+  assert.equal(descriptor.pattern.test("app-primary-current.js"), true);
 });

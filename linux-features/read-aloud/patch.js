@@ -1,5 +1,9 @@
 "use strict";
 
+const { registerRequestHandlers, hasRegisteredRequestHandlers } = require("../../scripts/patches/lib/request-handlers.js");
+
+const { registerFeaturePreferences } = require("../../scripts/patches/lib/feature-preferences.js");
+
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -77,15 +81,15 @@ function warn(message, patchName) {
 }
 
 function applyMainBundlePatch(source) {
-  if (source.includes(`"${HANDLER_NAME}":async`)) {
-    return source;
-  }
-
   const childProcessVar = "require(`node:child_process`)";
   const fsVar = "require(`node:fs`)";
   const pathVar = "require(`node:path`)";
   const osVar = "require(`node:os`)";
-  const electronVar = requireName(source, "electron");
+  // Ignore our function-local fallback require when rediscovering the upstream binding.
+  const priorHelperMarker = "function codexLinuxReadAloudHandle(e={}){";
+  const priorHelperStart = source.indexOf(priorHelperMarker);
+  const priorHelperEnd = priorHelperStart < 0 ? -1 : findMatchingBrace(source, priorHelperStart + priorHelperMarker.length - 1);
+  const electronVar = requireName(source.slice(priorHelperEnd + 1), "electron");
 
   const helper = [
     `function codexLinuxReadAloudCleanText(e){return typeof e!==\`string\`?\`\`:e.replace(/\\r\\n/g,\`\\n\`).replace(new RegExp(\`\\\`\\\`\\\`[\\\\s\\\\S]*?\\\`\\\`\\\`\`,\`gu\`),\` code block. \`).replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/gu,\`$1\`).replace(/[*_#>~]/gu,\`\`).replace(/\\n{3,}/gu,\`\\n\\n\`).trim().slice(0,8e3)}`,
@@ -134,21 +138,26 @@ function applyMainBundlePatch(source) {
     `function codexLinuxReadAloudHandle(e={}){return e.action===\`config\`?codexLinuxReadAloudConfig():e.action===\`setup\`?codexLinuxReadAloudSetup(e):e.action===\`stop\`?codexLinuxReadAloudStop():e.action===\`speak\`&&e.source===\`button\`?codexLinuxReadAloudSpeak(e.text,{requireEnabled:!1}):codexLinuxReadAloudReport({spoken:!1,reason:\`not-explicit\`})}`,
   ].join("");
 
-  const handler = `"${HANDLER_NAME}":async(e)=>codexLinuxReadAloudHandle(e),`;
-  const needle = `"native-desktop-apps":`;
-  const handlerIndex = source.indexOf(needle);
-  if (handlerIndex === -1) {
-    warn("Could not find native-desktop-apps handler", "read aloud main-bundle patch");
+  const handler = `"${HANDLER_NAME}":async(e)=>codexLinuxReadAloudHandle(e)`;
+  if (source.includes(`"${HANDLER_NAME}":`) || source.includes("function codexLinuxReadAloudHandle(")) {
+    if (source.split(helper).length !== 2 || !hasRegisteredRequestHandlers(source, handler)) {
+      warn("Found incomplete Read Aloud main bridge patch", "read aloud main-bundle patch");
+      return source;
+    }
+    return registerFeaturePreferences(source, [SETTINGS_KEY, KOKORO_SPEED_KEY]);
+  }
+  let withHandler;
+  try { withHandler = registerRequestHandlers(source, handler); } catch (error) {
+    warn(error.message, "read aloud main-bundle patch");
     return source;
   }
-
-  const withHandler = source.slice(0, handlerIndex) + handler + source.slice(handlerIndex);
   const helperInsertAt = withHandler.startsWith(`"use strict";`)
     ? `"use strict";`.length
     : withHandler.startsWith(`'use strict';`)
       ? `'use strict';`.length
       : 0;
-  return withHandler.slice(0, helperInsertAt) + helper + withHandler.slice(helperInsertAt);
+  return registerFeaturePreferences(withHandler.slice(0, helperInsertAt) + helper + withHandler.slice(helperInsertAt),
+    [SETTINGS_KEY, KOKORO_SPEED_KEY]);
 }
 
 function readAloudRuntimeSource() {

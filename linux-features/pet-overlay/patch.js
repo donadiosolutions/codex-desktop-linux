@@ -6,7 +6,7 @@ const AVATAR_SELECTION_REFRESH_MARKER = "codexPetOverlayRefreshAvatarWindows";
 const WAYLAND_WINDOW = "process.platform===`linux`&&require(`electron`).app.commandLine.getSwitchValue(`ozone-platform`)===`wayland`";
 const NATIVE_DRAW_CONSTRAINT = `constrainNativeDrawWindowToDisplay:process.platform===\`win32\`||${WAYLAND_WINDOW}&&!this.codexPetOverlayIsNativeKWin()`;
 const KWIN_COORDINATE_CONSUMERS = [
-  "updateCssPetControlsProximityTracking", "sendCursorPointToAvatarOverlay",
+  "sendCursorPointToAvatarOverlay",
   "sendComputerUseCursorLocationToRenderer", "isOverlayWindowPointerDragActive",
   "publishRemoteHostedPIPContentHost", "snapQuickChatToPosition",
 ];
@@ -843,7 +843,14 @@ function patchKWinGeometry(source) {
 }
 
 function patchKWinCoordinateConsumers(source) {
+  const tracker = findAvatarOverlayMethod(source, /(?<![\w$.])updateCssPetControlsProximityTracking\([^{}]*\)\{/);
+  if (!tracker || !tracker.text.includes("this.stopPetControlsProximity??=") ||
+      !tracker.text.includes("this.updatePetPointerProximity()")) return source;
   let patched = source;
+  if (!tracker.text.includes("this.codexPetOverlayKWinProximity()")) {
+    const gate = "if(this.codexPetOverlayIsNativeKWin()&&this.codexPetOverlayKWinProximity()){this.stopPetControlsProximity?.();this.stopPetControlsProximity=null;return;}";
+    patched = replaceMethodText(source, tracker, tracker.match[0] + gate + tracker.text.slice(tracker.match[0].length));
+  }
   for (const name of KWIN_COORDINATE_CONSUMERS) {
     const method = findAvatarOverlayMethod(patched, new RegExp(`(?<![\\w$.])${name}\\([^{}]*\\)\\{`));
     if (method?.text.includes("this.codexPetOverlayKWinGeometry(")) continue;
@@ -851,9 +858,6 @@ function patchKWinCoordinateConsumers(source) {
     if (reads?.length !== 1) return source;
     const [read] = reads;
     let text = method.text.replace(read[0], `(this.codexPetOverlayKWinGeometry(${read[1]})??${read[0]})`);
-    if (name === "updateCssPetControlsProximityTracking") {
-      text = method.match[0] + "if(this.codexPetOverlayIsNativeKWin()&&this.codexPetOverlayKWinProximity()){if(this.petControlsProximityTimer!=null){clearInterval(this.petControlsProximityTimer);this.petControlsProximityTimer=null}return;}" + text.slice(method.match[0].length);
-    }
     if (name === "isOverlayWindowPointerDragActive") {
       text = method.match[0] + "if(this.codexPetOverlayIsNativeKWin()&&this.codexPetOverlayKWinDragCurrent(this.codexPetOverlayKWinDragState))return!0;" +
         text.slice(method.match[0].length);
@@ -1154,6 +1158,7 @@ function hasCompletePetOverlayPatch(source, settings, avatarSelectionRefreshExpe
     findAvatarOverlayMethod(source, /(?<![\w$.])sendLayoutToRenderer\([^{}]*\)\{/)?.text.includes("codexPetOverlayNativeDrag:"),
     ...["setPointerRegions", "sendLayoutToRenderer"].map(name => findAvatarOverlayMethod(source,
       new RegExp(`(?<![\\w$.])${name}\\([^{}]*\\)\\{`))?.text.includes("this.codexPetOverlayKWinProximity()")),
+    findAvatarOverlayMethod(source, /(?<![\w$.])updateCssPetControlsProximityTracking\([^{}]*\)\{/)?.text.includes("this.codexPetOverlayKWinProximity()"),
     ...KWIN_COORDINATE_CONSUMERS.map(name => findAvatarOverlayMethod(source,
       new RegExp(`(?<![\\w$.])${name}\\([^{}]*\\)\\{`))?.text.includes("this.codexPetOverlayKWinGeometry(")),
     source.includes("codexPetOverlaySettings(){"),

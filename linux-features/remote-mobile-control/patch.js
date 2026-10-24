@@ -2,13 +2,14 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
 
 const DEVICE_KEY_CLIENT_MARKER = "codexLinuxRemoteControlDeviceKeyClient";
 const DEVICE_KEY_IDENT = "[A-Za-z_$][\\w$]*";
 
 function deviceKeyRequirePattern(flags = "u") {
   return new RegExp(
-    `(?:var|let|const)\\s+(?<requireVar>${DEVICE_KEY_IDENT})=\\(0,${DEVICE_KEY_IDENT}\\.createRequire\\)` +
+    `(?:(?:var|let|const)\\s+|,)(?<requireVar>${DEVICE_KEY_IDENT})=\\(0,${DEVICE_KEY_IDENT}\\.createRequire\\)` +
       `\\(__filename\\),(?<nativeVar>${DEVICE_KEY_IDENT})=\`remote-control-device-key\\.node\``,
     flags,
   );
@@ -194,6 +195,10 @@ function deviceKeyPatchState(source) {
     return { kind: "mixed" };
   }
 
+  if (requireMatch[0].startsWith(",") &&
+      source.split(`function ${providerMatch.groups.serializePayload}(`).length !== 2) {
+    return { kind: "partial" };
+  }
   const providerClass = providerMatch.groups.providerClass;
   const currentConstructionPattern = new RegExp(
     `this\\.remoteControlDeviceKeyClient=new ${providerClass}\\((?<args>[\\s\\S]{1,300}?)\\),this\\.executionHostRegistry`,
@@ -212,7 +217,8 @@ function deviceKeyPatchState(source) {
       providerSourceCount === 0 && !source.includes(DEVICE_KEY_CLIENT_MARKER)) {
     return {
       kind: "current",
-      insertionNeedle: requireMatch[0],
+      insertionNeedle: requireMatch[0].startsWith(",")
+        ? `function ${providerMatch.groups.serializePayload}(` : requireMatch[0],
       providerClass,
       construction: currentConstructions[0],
       providerSource,
@@ -422,7 +428,7 @@ function applyLinuxRemoteControlClientRevokeSetupResetPatch(source) {
     const ownerPrefix = source.slice(ownerFunctionStart, currentRevokeMatch.index);
     const localClientIdMatch = ownerPrefix.match(
       /\[([A-Za-z_$][\w$]*)\]=[A-Za-z_$][\w$]*\(`local_remote_control_client_id`\)/u,
-    );
+    ) ?? ownerPrefix.match(/localRemoteControlClientId:([A-Za-z_$][\w$]*),waiting:/u);
     if (localClientIdMatch == null) {
       console.warn("WARN: Could not find local remote-control client id - skipping setup reset patch");
       return source;
@@ -892,7 +898,42 @@ function applyLinuxRemoteControlStatusWaitPatch(source) {
   );
 }
 
+const currentBridgePattern =
+  /function ([A-Za-z_$][\w$]*)\(\)\{let ([A-Za-z_$][\w$]*)=\(0,([A-Za-z_$][\w$]*)\.c\)\(10\),\{checkGate:([A-Za-z_$][\w$]*),isLoading:([A-Za-z_$][\w$]*)\}=([A-Za-z_$][\w$]*)\(\),([A-Za-z_$][\w$]*);\2\[0\]===\4\?\7=\2\[1\]:\(\7=\4\(([A-Za-z_$][\w$]*)\),\2\[0\]=\4,\2\[1\]=\7\);let ([A-Za-z_$][\w$]*)=\7,([A-Za-z_$][\w$]*);\2\[2\]!==\4\|\|\2\[3\]!==\9\?\(\10=\4\(`1042620455`\)\|\|\9,\2\[2\]=\4,\2\[3\]=\9,\2\[4\]=\10\):\10=\2\[4\];let ([A-Za-z_$][\w$]*)=\10,([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*);return /u;
+
+function applyTypedRemoteControlEnablementBridgePatch(source) {
+  if (source.includes(REMOTE_CONTROL_ENABLEMENT_BRIDGE_MARKER) &&
+      source.includes(REMOTE_CONTROL_SELF_AUTO_CONNECT_MARKER)) return source;
+  const marker = source.indexOf("[remote-connections/gate-bridge]");
+  const start = source.lastIndexOf("function ", marker);
+  const end = start < 0 ? -1 : findMatchingBrace(source, source.indexOf("{", start)) + 1;
+  if (marker < 0 || marker !== source.lastIndexOf("[remote-connections/gate-bridge]") ||
+      start < 0 || end <= start || end - start > 4500) {
+    console.warn("WARN: Current typed remote-control enablement bridge owner drifted");
+    return source;
+  }
+  let region = source.slice(start, end);
+  const gate = region.match(currentBridgePattern);
+  const call = region.match(/let ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\.remoteConnections;([A-Za-z_$][\w$]*)\|\|\1==null\|\|\1\.setRemoteControlEnabled\(\{enabled:([A-Za-z_$][\w$]*),oneToOnePairingInAppEnabled:([A-Za-z_$][\w$]*)\}\)\.catch\(([A-Za-z_$][\w$]*)=>\{([A-Za-z_$][\w$]*)\.warning\(`\[remote-connections\/gate-bridge\] sync_failed`,\{safe:\{remoteControlConnectionsEnabled:\4\},sensitive:\{error:\6\}\}\)\}\)/u);
+  if (gate == null || call == null || call[4] !== gate[11] ||
+      call[3] !== gate[5] || call[5] !== gate[9]) {
+    console.warn("WARN: Current typed remote-control enablement bridge drifted");
+    return source;
+  }
+  const service = call[1];
+  const enabled = call[4];
+  region = region.replace(`let ${enabled}=${gate[10]},`,
+    `let ${enabled}=${gate[10]}||/*${REMOTE_CONTROL_ENABLEMENT_BRIDGE_MARKER}*/typeof navigator!=\`undefined\`&&navigator.userAgent.includes(\`Linux\`),`);
+  const method = `${service}.setRemoteControlEnabled({enabled:${enabled},oneToOnePairingInAppEnabled:${call[5]}})`;
+  const autoConnect = `.then(async result=>{if(!${enabled}||typeof navigator===\`undefined\`||!navigator.userAgent.includes(\`Linux\`))return;let resolveSnapshot,snapshotReady=new Promise(resolve=>{resolveSnapshot=resolve}),subscription=await ${service}.catalog.subscribe(snapshot=>{resolveSnapshot(snapshot)});try{let snapshot=await snapshotReady,installationId=snapshot.localRemoteControlInstallationId,connections=result?.remoteControlConnections??snapshot.remoteControl??[];if(installationId==null)return;await Promise.all(connections.filter(connection=>typeof connection.hostId===\`string\`&&connection.hostId.startsWith(\`remote-control:\`)&&connection.installationId===installationId).map(connection=>${service}.setAutoConnect({hostId:connection.hostId,autoConnect:!0})))}finally{subscription[Symbol.dispose]()}}/*${REMOTE_CONTROL_SELF_AUTO_CONNECT_MARKER}*/)`;
+  region = region.replace(method, method + autoConnect);
+  return source.slice(0, start) + region + source.slice(end);
+}
+
 function applyLinuxRemoteControlEnablementBridgePatch(source) {
+  if (source.includes(".setRemoteControlEnabled(")) {
+    return applyTypedRemoteControlEnablementBridgePatch(source);
+  }
   let patched = source;
 
   patched = applyLinuxRemoteControlEnableForHostParamsPatch(patched);
@@ -920,8 +961,6 @@ function applyLinuxRemoteControlEnablementBridgePatch(source) {
   let region = patched.slice(regionStart, regionEnd);
 
   if (!patched.includes(REMOTE_CONTROL_ENABLEMENT_BRIDGE_MARKER)) {
-    const currentBridgePattern =
-      /function ([A-Za-z_$][\w$]*)\(\)\{let ([A-Za-z_$][\w$]*)=\(0,([A-Za-z_$][\w$]*)\.c\)\(10\),\{checkGate:([A-Za-z_$][\w$]*),isLoading:([A-Za-z_$][\w$]*)\}=([A-Za-z_$][\w$]*)\(\),([A-Za-z_$][\w$]*);\2\[0\]===\4\?\7=\2\[1\]:\(\7=\4\(([A-Za-z_$][\w$]*)\),\2\[0\]=\4,\2\[1\]=\7\);let ([A-Za-z_$][\w$]*)=\7,([A-Za-z_$][\w$]*);\2\[2\]!==\4\|\|\2\[3\]!==\9\?\(\10=\4\(`1042620455`\)\|\|\9,\2\[2\]=\4,\2\[3\]=\9,\2\[4\]=\10\):\10=\2\[4\];let ([A-Za-z_$][\w$]*)=\10,([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*);return /u;
     let patchedRegion = region.replace(
       currentBridgePattern,
       (needle, _functionName, _cacheVar, _compilerVar, _checkGateVar, _isLoadingVar, _gateHookVar, _primaryGateValueVar, _primaryGateIdVar, _primaryGateVar, gateValueVar, enabledVar) =>
@@ -1375,7 +1414,9 @@ module.exports = [
   {
     id: "linux-remote-control-enablement-bridge",
     phase: "webview-asset",
-    pattern: REMOTE_CONTROL_APP_INITIAL_ASSET_PATTERN,
+    pattern: /^app-(?:initial|runtime)-[^.]+\.js$/u,
+    assetMatch: source => source.includes("[remote-connections/gate-bridge]"),
+    missingWarning: "WARN: Could not find current remote-control enablement bridge anchors - skipping Linux remote-control bridge patch",
     order: 20_156,
     ciPolicy: "optional",
     missingDescription: "app main bundle",

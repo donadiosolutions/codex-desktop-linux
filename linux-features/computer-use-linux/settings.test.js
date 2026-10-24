@@ -2,6 +2,15 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const vm = require("node:vm");
+test('signed 26.1021.22027 Plugins filter is discovered in its reorganized asset', () => {
+  const descriptor = require('./patch.js').find(d => d.id === 'native-settings-visibility');
+  const source = require('./fixtures/upstream-26.1021.22027.json').visibility;
+  assert.equal(descriptor.pattern.test('app-primary-f72ae5046334.js'), true);
+  assert.equal(descriptor.assetMatch(source), true);
+  const patched = descriptor.apply(source);
+  assert.doesNotThrow(() => new vm.Script(patched));
+  assert.equal(descriptor.apply(patched), patched);
+});
 const {
   applyNativeSettingsAvailabilityPatch: availability,
   applyNativeSettingsVisibilityPatch: visibility,

@@ -58,6 +58,7 @@ function captureWarnings(callback) {
 function currentAvatarOverlayBundleFixture() {
   return [
     "let a=require(`electron`),f=require(`node:child_process`),hm=50;function sl(){return!1}function cl(){return!0}function ll(e){return e.getBounds?.()??e.getContentBounds?.()??null}function Cp(e){return e.workArea??e.bounds}function Dm(e,t){return{x:Number(e?.x??0)+Number(t?.x??0),y:Number(e?.y??0)+Number(t?.y??0)}}function sp(){return{shouldDock:!0}}function Vp(e){return e}var D=a,u={v:`avatar-overlay-position`},Fe={default:(e,t)=>JSON.stringify(e)===JSON.stringify(t)},jle=200;function yu(){return null}function Pp(e){return{x:e.x+e.width/2,y:e.y+e.height/2}}function Np(e){return JSON.stringify(e)}function Kp(){return`top-end`}function Gp(e){return e}function Wp(e){return e.workArea??e.bounds}function nm(e,t){return{x:Math.max(t.x,Math.min(t.x+t.width,e.x)),y:Math.max(t.y,Math.min(t.y+t.height,e.y))}}var tle=Dm,Sp=sp;function Op(id){return a.screen.getAllDisplays().find(display=>display.id===id)}",
+    "function afe(e,t,n,r){let i=e==null?null:sfe(e,t,n);if(i!=null)return i;let a=setInterval(n,r);return a.unref(),()=>clearInterval(a)}function ofe(e,t,n,r,i){if(e==null||e.isDestroyed()||t==null)return!1;let a=e.getContentBounds(),o=D.screen.getCursorScreenPoint(),s=i?r.proximityExitDistance:r.proximityEnterDistance;return[t,...n].some(e=>{let t=Math.max(a.x+e.left-o.x,0,o.x-a.x-e.left-e.width),n=Math.max(a.y+e.top-o.y,0,o.y-a.y-e.top-e.height);return t**2+n**2<=s**2})}function sfe(){return null}var pfe=32;",
     "var settingsHandlers={\"set-setting\":async({key:e,value:t})=>(await this.setSettingValue(e,t),{success:!0})};",
     "var rV=`/avatar-overlay`,zB={width:356,height:320},oV={width:112,height:121},k2={width:0,height:0},O2={width:276,height:131};",
     "var h2=class{constructor(e,t,n,r){this.cursorSource=e;this.pointerAnchorX=t;this.pointerAnchorY=n;this.displayBounds=r;this.hasMovementIntent=!1;this.hasMoved=!1}getCursorPointForSource({native:e,renderer:t}){return this.cursorSource===`native`?e:t}recordMove(e){this.hasMovementIntent=!0,this.hasMoved=!0,this.displayBounds=e}recordMovementIntent(){this.hasMovementIntent=!0}shouldSuppressRendererThrow(){return!1}};",
@@ -1493,7 +1494,11 @@ for (const origin of [{ x: -400, y: -200 }, { x: 400, y: 200 }])
     const localCursor = (x, y) => { cursor = { x: origin.x + x, y: origin.y + y }; };
     let proximityRequests = 0;
     controller.codexPetOverlayKWinProximity = () => { proximityRequests += 1; return true; };
+    let stopped = 0;
+    controller.stopPetControlsProximity = () => { stopped += 1; };
     controller.updateCssPetControlsProximityTracking();
+    assert.equal(stopped, 1, "native proximity cancels the upstream stop callback");
+    assert.equal(controller.stopPetControlsProximity, null);
     assert.equal(proximityRequests, 1);
     assert.equal(tick, undefined, "native hover must not poll Electron's global pointer");
     controller.codexPetOverlayKWinDragGeneration = 1;
@@ -3593,4 +3598,11 @@ test("KWin drag falls back without repeatedly probing missing qdbus commands", (
   assert.equal(controller.codexPetOverlayKWinDragState, null);
   controller.codexPetOverlayBeginKWinDrag(window);
   assert.equal(calls, 2);
+});
+
+test("native proximity patch fails closed when the current stop callback contract drifts", () => {
+  const source = currentAvatarOverlayBundleFixture().replace("this.stopPetControlsProximity??=", "this.changedProximityTracker??=");
+  const {result,warnings} = captureWarnings(() => applyPetOverlayPatch(source));
+  assert.equal(result,source);
+  assert.ok(warnings.some(message=>message.includes("incomplete")));
 });

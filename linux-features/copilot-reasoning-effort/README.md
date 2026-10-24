@@ -3,8 +3,8 @@
 This optional Linux feature patches Codex webview bundles so Copilot-auth
 sessions can persist and select reasoning effort defaults for new chats.
 
-By default, upstream Copilot-auth paths only read and write
-`copilot-default-model`, hardcode the loaded reasoning effort to `medium`, and
+By default, upstream Copilot-auth paths save the model through the Copilot
+preferences service, hardcode the loaded reasoning effort to `medium`, and
 collapse Copilot model reasoning effort choices to one `medium` entry. This
 feature keeps those changes local and opt-in instead of shipping them as a core
 Linux compatibility patch.
@@ -25,11 +25,13 @@ feature to the generated app.
 
 ## What It Patches
 
-- The official Linux `app-initial-*.js` bundle reads and writes
-  `copilot-default-reasoning-effort` next to `copilot-default-model` and keeps
-  the model's full `supportedReasoningEfforts` list for Copilot auth.
-- The same semantic owner keeps the reasoning effort controls and `/reasoning`
-  command enabled when the normal model and effort prerequisites are present.
+- The official Linux `app-initial-*.js` bundle preserves the native Copilot
+  model preferences service, retains the existing
+  `copilot-default-reasoning-effort` global-state preference through an
+  allowlisted bridge, and keeps the model's full `supportedReasoningEfforts` list.
+- Separate semantic owners in `app-primary-*.js` and `composer-content-*.js`
+  keep the reasoning effort controls and `/reasoning` command enabled when
+  the normal model and effort prerequisites are present.
 
 ## Validation
 

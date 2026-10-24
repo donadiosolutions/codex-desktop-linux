@@ -44,7 +44,7 @@ function retiredChronicleMainFixture() {
     "var appOptions={getSkysightRecorderController:()=>Cr().skysight?xe:null,artifactSessionHostLifecycle:null};",
     "var connection={enableSkysightChronicle:()=>xe.enable(),resumeChronicleSidecar:()=>xe.resume()};",
     "var Host=class{constructor(){this.options=appOptions;let i=connection;this.services={chronicle:process.platform===`darwin`&&this.options.getSkysightRecorderController!=null?new $O(i,this.options.getSkysightRecorderController,()=>Cr().skysight,()=>globalThis.applications,e=>globalThis.resolvedApplications,{list:()=>globalThis.history,listSuggestions:()=>globalThis.historySuggestions,listSummaryIntervals:e=>[e]}):void 0}}};var host=new Host;",
-    "var bridge={\"get-global-state\":async({key:e})=>null};",
+    "var FetchHandler=class{handlers={\"set-remote-wsl-connections-enabled\":async({enabled:e,origin:t})=>({remoteWslConnections:[]})};handleVSCodeRequest(e,t,n,r,i){let a=t,o=this.handlers[a];if(typeof o!==`function`)throw Error(`${t} not implemented`);return o({...n,origin:e,signal:i})}};var bridge=new FetchHandler().handlers;",
   ].join("");
 }
 
@@ -60,7 +60,7 @@ function currentChronicleMainFixture() {
     "var appOptions={getSkysightRecorderController:()=>Cr().skysight?xe:null,artifactSessionHostLifecycle:null};",
     "var connection={enableSkysightChronicle:()=>xe.enable(),resumeChronicle:()=>xe.resume()};",
     "var Host=class{constructor(){this.options=appOptions;let i=connection;this.services={chronicle:process.platform===`darwin`&&this.options.getSkysightRecorderController!=null?new $O(i,this.options.getSkysightRecorderController,()=>Cr().skysight,()=>globalThis.applications,e=>globalThis.resolvedApplications,{list:()=>globalThis.history,listSuggestions:()=>globalThis.historySuggestions,listSummaryIntervals:e=>[e]}):void 0}}};var host=new Host;",
-    "var bridge={\"get-global-state\":async({key:e})=>null};",
+    "var FetchHandler=class{handlers={\"set-remote-wsl-connections-enabled\":async({enabled:e,origin:t})=>({remoteWslConnections:[]})};handleVSCodeRequest(e,t,n,r,i){let a=t,o=this.handlers[a];if(typeof o!==`function`)throw Error(`${t} not implemented`);return o({...n,origin:e,signal:i})}};var bridge=new FetchHandler().handlers;",
   ].join("");
 }
 

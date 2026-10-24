@@ -435,14 +435,19 @@ function syntheticCurrentAppMainEnablementBridgeBundle() {
 }
 
 function withTempFeatureRoot(enabled, fn) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-remote-mobile-feature-test-"));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-remote-mobile-feature-test-"));
+  const root = path.join(tempDir, "linux-features");
+  fs.mkdirSync(root);
+  const sharedLib = path.join(tempDir, "scripts", "patches", "lib");
+  fs.mkdirSync(sharedLib, { recursive: true });
+  fs.copyFileSync(path.join(REPO_ROOT, "scripts/patches/lib/minified-js.js"), path.join(sharedLib, "minified-js.js"));
   try {
     fs.writeFileSync(path.join(root, "features.example.json"), JSON.stringify({ enabled: [] }, null, 2));
     fs.writeFileSync(path.join(root, "features.json"), JSON.stringify({ enabled }, null, 2));
     fs.cpSync(__dirname, path.join(root, "remote-mobile-control"), { recursive: true });
     return fn(root);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
@@ -3775,4 +3780,73 @@ test("remote mobile control feature participates in ASAR patching and reports", 
       }
     });
   });
+});
+
+
+test("26.1021 chained device-key declaration patches without breaking its statement", () => {
+  const source = require("./upstream-26.1021.22027.fixture.json").deviceKey;
+  const patched = applyLinuxRemoteControlDeviceKeyPatch(source);
+  assert.notEqual(patched, source);
+  assert.doesNotThrow(() => new vm.Script(patched));
+  assert.equal(applyLinuxRemoteControlDeviceKeyPatch(patched), patched);
+});
+
+test("26.1021 setup reset resolves the typed local client identity", () => {
+  const source = "var Ve={CODEX_MOBILE_SETUP_COMPLETED:0};function key(){return Ve.CODEX_MOBILE_SETUP_COMPLETED}function other(){U(r,W.keepRemoteControlAwakeWhilePluggedIn,e)};var toast=`remote-control-client-revoke-success`;" + require("./upstream-26.1021.22027.fixture.json").settings;
+  const patched = applyLinuxRemoteControlClientRevokeSetupResetPatch(source);
+  assert.notEqual(patched, source);
+  assert.doesNotThrow(() => new vm.Script(patched));
+  assert.match(patched, /codexLinuxRemoteControlResetMobileSetupAfterRevoke\(t,e,i,Ve,U,p\)/);
+  assert.equal(applyLinuxRemoteControlClientRevokeSetupResetPatch(patched), patched);
+});
+
+test("26.1021 enablement bridge targets the typed runtime service", async () => {
+  const source = require("./upstream-26.1021.22027.fixture.json").bridge;
+  const patched = applyLinuxRemoteControlEnablementBridgePatch(source);
+  assert.notEqual(patched, source);
+  assert.doesNotThrow(() => new vm.Script(patched));
+  assert.equal(applyLinuxRemoteControlEnablementBridgePatch(patched), patched);
+  const descriptor = remoteMobilePatchDescriptors.find(entry => entry.id === "linux-remote-control-enablement-bridge");
+  assert.equal(descriptor.pattern.test("app-runtime-362e81df85b0.js"), true);
+  const calls = [];
+  const service = {
+    setRemoteControlEnabled: async params => { calls.push(["enable", params]); return {remoteControlConnections: [{hostId:"remote-control:self", installationId:"self"}, {hostId:"remote-control:other", installationId:"other"}]}; },
+    catalog: {subscribe: async callback => {callback({localRemoteControlInstallationId:"self"}); return {[Symbol.dispose]() {calls.push(["disposed"]);}};}},
+    setAutoConnect: async params => {calls.push(["auto", params]);},
+  };
+  vm.runInNewContext(patched + ";DU();", {Symbol, B:{remoteConnections:service}, OU:{c:()=>[]}, Ho:()=>({checkGate:()=>false,isLoading:false}), jc:"primary", navigator:{userAgent:"Linux"}, D:{warning:()=>assert.fail("unexpected bridge failure")}, kU:{useEffect:callback=>callback()}});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls[0][0], "enable");
+  assert.equal(calls[0][1].enabled, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.filter(c=>c[0]==="auto"))), [["auto", {hostId:"remote-control:self", autoConnect:true}]]);
+  assert.equal(calls.filter(c=>c[0]==="disposed").length, 1);
+});
+
+test("26.1021 typed bridge respects loading, missing services, non-Linux gates, and unknown identity", async () => {
+  const source = require("./upstream-26.1021.22027.fixture.json").bridge;
+  const patched = applyLinuxRemoteControlEnablementBridgePatch(source);
+  for (const [linux, loading, available, identity, expectedCalls] of [
+    [true, true, true, "self", 0], [true, false, false, "self", 0],
+    [false, false, true, "self", 1], [true, false, true, null, 1],
+  ]) {
+    const calls = [];
+    let disposed = 0;
+    const service = {
+      setRemoteControlEnabled: async params => { calls.push(params); return { remoteControlConnections: [{ hostId: "remote-control:self", installationId: "self" }] }; },
+      catalog: { subscribe: async callback => { callback({ localRemoteControlInstallationId: identity }); return { [Symbol.dispose]() { disposed += 1; } }; } },
+      setAutoConnect: () => assert.fail("must not auto-connect"),
+    };
+    vm.runInNewContext(patched + ";DU();", { Symbol, B: { remoteConnections: available ? service : null }, OU: { c: () => [] }, Ho: () => ({ checkGate: () => false, isLoading: loading }), jc: "primary", navigator: { userAgent: linux ? "Linux" : "Mac" }, D: { warning: () => assert.fail("unexpected bridge failure") }, kU: { useEffect: callback => callback() } });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls.length, expectedCalls);
+    if (!linux && calls.length) assert.equal(calls[0].enabled, false);
+    assert.equal(disposed, linux && !loading && available ? 1 : 0);
+  }
+});
+
+test("26.1021 typed bridge rejects duplicate owners and drifted loading guards", () => {
+  const source = require("./upstream-26.1021.22027.fixture.json").bridge;
+  for (const drifted of [source + source, source.replace("n||e==null||", "e==null||"), source.replace("oneToOnePairingInAppEnabled:i", "oneToOnePairingInAppEnabled:o")]) {
+    assert.equal(captureWarns(() => applyLinuxRemoteControlEnablementBridgePatch(drifted)).value, drifted);
+  }
 });

@@ -1,5 +1,7 @@
 "use strict";
 
+const { findRequestHandlerMap, registerRequestHandlers, hasRegisteredRequestHandlers } = require("../../scripts/patches/lib/request-handlers.js");
+
 const CHRONICLE_MODULE_EXPRESSIONS = Object.freeze({
   childProcessVar: 'require("node:child_process")',
   fsVar: 'require("node:fs")',
@@ -183,14 +185,13 @@ function chronicleControllerContract(source) {
   };
   const helper = recordReplayRuntimeHelperSource(CHRONICLE_MODULE_EXPRESSIONS);
   const bridge = chronicleSkysightBridgeSource();
-  const bridgeInsertion = `${bridge},"get-global-state":async({key:`;
-  const handlerCount = countOccurrences(source, `"get-global-state":async({key:`);
+  try { findRequestHandlerMap(source); } catch { return "drifted"; }
   const currentCoherent = coherentContract(current);
   const patchedCoherent = coherentContract(patched);
   const helperCount = countOccurrences(source, helper);
   const helperMarkerCount = countOccurrences(source, "function codexLinuxChronicleRequest(");
   const bridgeCount = countOccurrences(source, bridge);
-  const bridgeInsertionCount = countOccurrences(source, bridgeInsertion);
+  const bridgeRegistered = hasRegisteredRequestHandlers(source, bridge);
 
   if (
     currentCoherent
@@ -201,8 +202,7 @@ function chronicleControllerContract(source) {
     && helperCount === 0
     && helperMarkerCount === 0
     && bridgeCount === 0
-    && bridgeInsertionCount === 0
-    && handlerCount === 1
+    && !bridgeRegistered
   ) return "current";
   if (
     patchedCoherent
@@ -213,8 +213,7 @@ function chronicleControllerContract(source) {
     && helperCount === 1
     && helperMarkerCount === 1
     && bridgeCount === 1
-    && bridgeInsertionCount === 1
-    && handlerCount === 1
+    && bridgeRegistered
   ) return "patched";
   return "drifted";
 }
@@ -228,7 +227,6 @@ function applyChronicleSkysightMainBridgePatch(currentSource) {
     return currentSource;
   }
 
-  const handlerNeedle = `"get-global-state":async({key:`;
   const helper = recordReplayRuntimeHelperSource(CHRONICLE_MODULE_EXPRESSIONS);
   const bridge = chronicleSkysightBridgeSource();
   const init = chronicleControllerInitMatches(currentSource, false)[0];
@@ -240,8 +238,11 @@ function applyChronicleSkysightMainBridgePatch(currentSource) {
   let patched = currentSource
     .replace(init[0], initReplacement)
     .replace(archiveDependency[0], archiveDependencyReplacement)
-    .replace(getter[0], getterReplacement)
-    .replace(handlerNeedle, `${bridge},${handlerNeedle}`);
+    .replace(getter[0], getterReplacement);
+  try { patched = registerRequestHandlers(patched, bridge); } catch (error) {
+    warn(error.message, patchName);
+    return currentSource;
+  }
   patched = `${helper}\n${patched}`;
   if (chronicleControllerContract(patched) !== "patched") {
     warn("Chronicle controller contract changed while patching", patchName);

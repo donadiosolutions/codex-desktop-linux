@@ -1,5 +1,6 @@
 "use strict";
 
+const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
 const { readSocketPath } = require("./socket-path.js");
 
 const IDENT = "[A-Za-z_$][\\w$]*";
@@ -18,7 +19,7 @@ function findTransportSymbols(source) {
 
   const sshClassSource = source.slice(classMatch.index, selectionLogIndex);
   const webSocketMatch = sshClassSource.match(
-    new RegExp(`new (${IDENT})\\.(${IDENT})\\((${IDENT}),\\{perMessageDeflate:!1,createConnection:`),
+    new RegExp(`new (${IDENT})\\.(${IDENT})\\((${IDENT}),\\{perMessageDeflate:!1,(?:headers:${IDENT},)?createConnection:`),
   );
   if (webSocketMatch == null) return null;
   const [, namespace, webSocketClass, webSocketUrl] = webSocketMatch;
@@ -27,7 +28,17 @@ function findTransportSymbols(source) {
       `let ${IDENT}=new ${namespace}\\.(${IDENT})\\((${IDENT}),[^;]{0,120}\\);return ${namespace}\\.(${IDENT})\\(\\2,\\{onPongTimeout:`,
     ),
   );
-  if (lifecycleMatch == null) return null;
+  if (lifecycleMatch == null) {
+    // Current upstream negotiates framing and compression before constructing its adapter.
+    const current = sshClassSource.match(new RegExp(
+      `(${IDENT})=${namespace}\\.(${IDENT})\\(\\),${IDENT}=new ${namespace}\\.${webSocketClass}\\(${webSocketUrl},\\{perMessageDeflate:!1,headers:\\1,createConnection:` +
+      `[\\s\\S]{0,500}?let (${IDENT})=(${IDENT});${IDENT}\\.once\\(\`upgrade\`,${IDENT}=>\\{let (${IDENT})=Number\\(${IDENT}\\.headers\\[(${IDENT})\\]\\);Number\\.isSafeInteger\\(\\5\\)&&\\5>0&&\\(\\3=\\5\\)\\}\\);` +
+      `let (${IDENT})=new ${namespace}\\.(${IDENT})\\((${IDENT}),\\1!=null\\);[\\s\\S]{0,400}?let (${IDENT})=new ${namespace}\\.(${IDENT})\\(\\9,void 0,\\3,\\7\\);` +
+      `[\\s\\S]{0,1000}?${namespace}\\.(${IDENT})\\(\\9,\\{onPongTimeout:\\(\\)=>\\{\\10\\.terminationReason=\`pong_timeout\`,\\9\\.terminate\\(\\)\\}\\}\\)`,
+    ));
+    if (current == null) return null;
+    return {namespace, webSocketClass, webSocketUrl, headersFunction:current[2], defaultFrameLimit:current[4], frameHeader:current[6], messagesClass:current[8], adapterClass:current[11], keepAlive:current[12]};
+  }
 
   return {
     namespace,
@@ -39,6 +50,14 @@ function findTransportSymbols(source) {
 }
 
 function sharedTransportClassSource(symbols) {
+  const framingSetup = symbols.messagesClass == null ? "" :
+    `let codexLinuxHeaders=${symbols.namespace}.${symbols.headersFunction}(),codexLinuxFrameLimit=${symbols.defaultFrameLimit};`;
+  const headersOption = symbols.messagesClass == null ? "" : "headers:codexLinuxHeaders,";
+  const messagesSetup = symbols.messagesClass == null ? "" :
+    `t.once(\`upgrade\`,e=>{let t=Number(e.headers[${symbols.frameHeader}]);Number.isSafeInteger(t)&&t>0&&(codexLinuxFrameLimit=t)});let codexLinuxMessages=new ${symbols.namespace}.${symbols.messagesClass}(t,codexLinuxHeaders!=null);`;
+  const adapterReturn = symbols.messagesClass == null ?
+    `${symbols.namespace}.${symbols.keepAlive}(t,{onPongTimeout:()=>t.terminate()});return new ${symbols.namespace}.${symbols.adapterClass}(t)` :
+    `let codexLinuxAdapter=new ${symbols.namespace}.${symbols.adapterClass}(t,void 0,codexLinuxFrameLimit,codexLinuxMessages);${symbols.namespace}.${symbols.keepAlive}(t,{onPongTimeout:()=>{codexLinuxAdapter.terminationReason=\`pong_timeout\`;t.terminate()}});return codexLinuxAdapter`;
   return (
     "class CodexLinuxSharedAppServerSocketTransport{" +
     "kind=`websocket`;proxyStreams=new Set;authority=null;authorityError=null;authorityReady=null;lockIdentity=null;ownerStartTime=null;socketIdentity=null;adoptedAuthority=!1;disposed=!1;" +
@@ -62,7 +81,7 @@ function sharedTransportClassSource(symbols) {
     "async ensureAuthority(){if(this.disposed)throw Error(`shared app-server socket transport is disposed`);if(this.authorityReady)return this.authorityReady;let e=(async()=>{if(this.authority&&this.authority.exitCode==null&&this.authority.signalCode==null){if(this.authorityError)throw this.authorityError;return}if(this.adoptedAuthority=!1,await this.adoptCanonicalAuthority())return;process.env.CODEX_LINUX_ADOPT_CANONICAL_APP_SERVER===`1`&&this.usePrivateFallback();return this.startAuthority()})();this.authorityReady=e;try{return await e}finally{this.authorityReady===e&&(this.authorityReady=null)}}" +
     "async startAuthority(){let e=process.env.CODEX_CLI_PATH;if(!e)throw Error(`shared app-server socket requires CODEX_CLI_PATH`);this.authorityError=null;let t=await this.getConfigOverrides();if(this.disposed)throw Error(`shared app-server socket transport was disposed during startup`);if(!Array.isArray(t)||t.some(e=>typeof e!==`string`))throw Error(`shared app-server socket received invalid config overrides`);await this.acquireOwnership();if(this.disposed){this.releaseOwnedPaths(!0);throw Error(`shared app-server socket transport was disposed during startup`)}let r;try{r=require(`node:child_process`).spawn(e,[...t.flatMap(e=>[`-c`,e]),...this.authorityArgs()],{env:process.env,stdio:`ignore`}),this.authority=r}catch(e){this.releaseOwnedPaths();throw e}try{this.recordAuthorityIdentity(r),await new Promise((e,t)=>{let i=!1,a,o=()=>{clearTimeout(a),clearTimeout(u),r.off(`error`,s),r.off(`exit`,l),r.off(`close`,l)},c=(n,u)=>{if(i)return;i=!0,o(),n?t(n):e(u)},s=e=>{this.authorityError=e,c(e)},l=()=>c(Error(`shared app-server authority exited before socket creation`)),h=()=>{if(i)return;try{let s=this.readSocketPath(),e=s.identity;if(s.target){this.socketIdentity={dev:e.dev,ino:e.ino};return c(null)}}catch(e){if(e?.code!==`ENOENT`)return c(e)}a=setTimeout(h,100),a.unref?.()},u=setTimeout(()=>c(Error(`shared app-server socket creation timed out`)),1e4);r.once(`error`,s),r.once(`exit`,l),r.once(`close`,l),h(),u.unref?.()}),this.publishAttachedCliRecord(r,e),r.on(`error`,e=>{this.authorityError=e;for(let t of this.proxyStreams)t.destroy(e)}),r.once(`exit`,()=>{this.authority===r&&(this.authority=null,this.releaseOwnedPaths(!0))})}catch(e){this.authority=null;(await this.stopAuthority(r))&&this.releaseOwnedPaths();throw e}}" +
     "createProxyStream(){let c=process.env.CODEX_CLI_PATH;if(!c)throw Error(`shared app-server socket requires CODEX_CLI_PATH`);let e=require(`node:child_process`).spawn(c,[`app-server`,`proxy`,`--sock`,this.socketPath],{env:process.env,stdio:[`pipe`,`pipe`,`pipe`]}),t=e.stdin,n=e.stdout,r=e.stderr;if(t==null||n==null||r==null)throw e.kill(),Error(`shared app-server proxy stdio was unavailable`);let i=``;r.on(`data`,e=>{i=`${i}${e.toString(`utf8`)}`.slice(-4000)});let a=new(require(`node:stream`).Duplex)({read(){n.resume()},write(e,n,r){t.write(e,n,r)},final(e){t.end(),e()},destroy(t,n){e.kill(),n(t)}});Object.assign(a,{setKeepAlive:()=>a,setNoDelay:()=>a,setTimeout:()=>a});let o=e=>a.destroy(e);t.on(`error`,o),n.on(`data`,e=>{a.push(e)||n.pause()}),n.on(`end`,()=>a.push(null)),e.on(`error`,o),e.on(`close`,(e,n)=>{t.removeListener(`error`,o),e===0?a.push(null):a.destroy(Error(`shared app-server proxy exited (${e??n??`unknown`}): ${i.trim()}`))}),this.proxyStreams.add(a),a.once(`close`,()=>this.proxyStreams.delete(a));return a}" +
-    `async connect(){await this.ensureAuthority();let e={current:null},t=new ${symbols.namespace}.${symbols.webSocketClass}(${symbols.webSocketUrl},{perMessageDeflate:!1,createConnection:()=>(e.current=this.createProxyStream(),e.current)});t.once(\`close\`,()=>e.current?.destroy());try{await new Promise((n,r)=>{let i=setTimeout(()=>o(Error(\`shared app-server websocket open timed out\`)),3e4);i.unref();let a=()=>{clearTimeout(i),t.off(\`error\`,o),t.off(\`close\`,s)},o=e=>{a(),r(e)},s=()=>o(Error(\`shared app-server websocket closed before opening\`));t.once(\`open\`,()=>{a(),n()}),t.once(\`error\`,o),t.once(\`close\`,s)})}catch(n){e.current?.destroy(),t.terminate(),await new Promise(e=>setTimeout(e,0));throw n}${symbols.namespace}.${symbols.keepAlive}(t,{onPongTimeout:()=>t.terminate()});return new ${symbols.namespace}.${symbols.adapterClass}(t)}}`
+    `async connect(){await this.ensureAuthority();${framingSetup}let e={current:null},t=new ${symbols.namespace}.${symbols.webSocketClass}(${symbols.webSocketUrl},{perMessageDeflate:!1,${headersOption}createConnection:()=>(e.current=this.createProxyStream(),e.current)});${messagesSetup}t.once(\`close\`,()=>e.current?.destroy());try{await new Promise((n,r)=>{let i=setTimeout(()=>o(Error(\`shared app-server websocket open timed out\`)),3e4);i.unref();let a=()=>{clearTimeout(i),t.off(\`error\`,o),t.off(\`close\`,s)},o=e=>{a(),r(e)},s=()=>o(Error(\`shared app-server websocket closed before opening\`));t.once(\`open\`,()=>{a(),n()}),t.once(\`error\`,o),t.once(\`close\`,s)})}catch(n){e.current?.destroy(),t.terminate(),await new Promise(e=>setTimeout(e,0));throw n}${adapterReturn}}}`
   );
 }
 
@@ -81,8 +100,8 @@ function applySharedAppServerSocketPatch(source) {
 
   const selectionLogIndex = source.indexOf("selected app-server transport");
   const factoryStart = source.lastIndexOf("function ", selectionLogIndex);
-  const factoryEnd = source.indexOf("function ", selectionLogIndex + 1);
-  if (selectionLogIndex < 0 || factoryStart < 0 || factoryEnd < 0) {
+  const factoryEnd = findMatchingBrace(source, source.indexOf("{", factoryStart)) + 1;
+  if (selectionLogIndex < 0 || factoryStart < 0 || factoryEnd <= factoryStart) {
     console.warn("WARN: Could not find local transport factory for shared app-server socket patch");
     return source;
   }

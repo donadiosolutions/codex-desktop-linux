@@ -46,7 +46,7 @@ function retiredChronicleControllerFixture() {
     "N&&(xe=new Hse({request:Ce.requestComputerUseWorker,reconcileComputerHistoryPluginInstallation:e=>{Xe.reconcileComputerHistoryPluginInstallation(e)},archiveLegacyChronicleSkill:async()=>{await archive({codexHome:V.codexHome,reason:`skysight_gate_enabled`})&&U.broadcastQueryCacheInvalidation([`skills`])}}));",
     "var appOptions={getSkysightRecorderController:()=>Cr().skysight?xe:null,artifactSessionHostLifecycle:null};",
     "var Host=class{constructor(){this.options=appOptions;let i={};this.services={chronicle:process.platform===`darwin`&&this.options.getSkysightRecorderController!=null?new $O(i,this.options.getSkysightRecorderController,()=>Cr().skysight,()=>[],()=>[],{}):void 0}}};",
-    'var bridge={"get-global-state":async({key:e})=>null};',
+    "var FetchHandler=class{handlers={\"set-remote-wsl-connections-enabled\":async({enabled:e,origin:t})=>({remoteWslConnections:[]})};handleVSCodeRequest(e,t,n,r,i){let a=t,o=this.handlers[a];if(typeof o!==`function`)throw Error(`${t} not implemented`);return o({...n,origin:e,signal:i})}};var bridge=new FetchHandler().handlers;",
   ].join("");
 }
 
@@ -59,7 +59,7 @@ function currentChronicleControllerFixture() {
     "N&&(xe=new Hse({request:Ce.requestComputerUseWorker,reconcileComputerHistoryPluginInstallation:e=>{Xe.reconcileComputerHistoryPluginInstallation(e)},archiveLegacyChronicleSkill:async()=>{await archive({codexHome:V.codexHome,reason:`skysight_gate_enabled`})&&U.broadcastQueryCacheInvalidation([`skills`])}}));",
     "var appOptions={getSkysightRecorderController:()=>Cr().skysight?xe:null,artifactSessionHostLifecycle:null};",
     "var Host=class{constructor(){this.options=appOptions;let i={};this.services={chronicle:process.platform===`darwin`&&this.options.getSkysightRecorderController!=null?new $O(i,this.options.getSkysightRecorderController,()=>Cr().skysight,()=>[],()=>[],{}):void 0}}};",
-    "var bridge={\"get-global-state\":async({key:e})=>null};",
+    "var FetchHandler=class{handlers={\"set-remote-wsl-connections-enabled\":async({enabled:e,origin:t})=>({remoteWslConnections:[]})};handleVSCodeRequest(e,t,n,r,i){let a=t,o=this.handlers[a];if(typeof o!==`function`)throw Error(`${t} not implemented`);return o({...n,origin:e,signal:i})}};var bridge=new FetchHandler().handlers;",
   ].join("");
 }
 
@@ -299,12 +299,12 @@ test("record-and-replay rejects incomplete current bridge variants byte-identica
       '"linux-record-replay-status-missing":async',
     ),
     "misplaced bridge payload": `${patched.replace(
-      `${bridgePayload},"get-global-state":async`,
-      '"get-global-state":async',
+      `${bridgePayload},`,
+      '',
     )}var misplaced={${bridgePayload}};`,
     "duplicate bridge payload": patched.replace(
-      `${bridgePayload},"get-global-state":async`,
-      `${bridgePayload},${bridgePayload},"get-global-state":async`,
+      `${bridgePayload},`,
+      `${bridgePayload},${bridgePayload},`,
     ),
     "helper-only partial": `${helperPayload}\n${chroniclePatched}`,
     "duplicate helper payload": `${helperPayload}\n${patched}`,

@@ -3872,3 +3872,61 @@ test("stock Codex authority starts through the injected transport and supports v
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+
+test("26.1021 SSH transport uses the current WebSocket message adapter", () => {
+  const fixture = require("./upstream-26.1021.22027.fixture.json");
+  const source = fixture.transport + fixture.factory + "function afterFactory(){}";
+  const patched = applySharedAppServerSocketPatch(source);
+  assert.notEqual(patched, source);
+  assert.doesNotThrow(() => new vm.Script(patched));
+  assert.equal(applySharedAppServerSocketPatch(patched), patched);
+  assert.match(patched, /new l\.M/);
+  assert.match(patched, /new l\.k/);
+  assert.match(patched, /secretAuthStorageConfigOverrides/);
+});
+
+test("26.1021 shared socket negotiates compression and the frame limit before adapting messages", async () => {
+  const { findTransportSymbols } = require("./patch.js");
+  const fixture = require("./upstream-26.1021.22027.fixture.json");
+  const symbols = findTransportSymbols(fixture.transport + fixture.factory);
+  let websocket, messages, timeout;
+  class WebSocket extends EventEmitter {
+    constructor(url, options) {
+      super();
+      websocket = this;
+      assert.equal(url, "ws://test");
+      assert.equal(options.headers["x-compression"], "zstd");
+      queueMicrotask(() => { this.emit("upgrade", { headers: { "x-limit": "4096" } }); this.emit("open"); });
+    }
+    terminate() { this.terminated = true; }
+  }
+  class Messages {
+    constructor(socket, offered) {
+      assert.equal(socket, websocket);
+      assert.equal(offered, true);
+      messages = this;
+      socket.once("upgrade", () => { this.upgraded = true; });
+    }
+  }
+  class Adapter {
+    constructor(socket, principal, limit, messageStream) {
+      assert.equal(socket, websocket);
+      assert.equal(principal, undefined);
+      assert.equal(limit, 4096);
+      assert.equal(messageStream, messages);
+      assert.equal(messageStream.upgraded, true);
+    }
+  }
+  const context = { process: { env: {} }, setTimeout, clearTimeout,
+    l: { j: () => ({ "x-compression": "zstd" }), M: WebSocket, A: Messages, k: Adapter, O: (_socket, options) => { timeout = options.onPongTimeout; } },
+    ygt: "ws://test", bgt: 1024, xgt: "x-limit" };
+  vm.runInNewContext(sharedTransportClassSource(symbols) + ";globalThis.Transport=CodexLinuxSharedAppServerSocketTransport", context);
+  const transport = new context.Transport("/test/socket", async () => []);
+  transport.ensureAuthority = async () => {};
+  const adapter = await transport.connect();
+  assert.ok(adapter instanceof Adapter);
+  timeout();
+  assert.equal(adapter.terminationReason, "pong_timeout");
+  assert.equal(websocket.terminated, true);
+});

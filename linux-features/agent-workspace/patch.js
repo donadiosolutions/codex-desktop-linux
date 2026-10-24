@@ -1,7 +1,11 @@
 "use strict";
 
+const { registerRequestHandlers } = require("../../scripts/patches/lib/request-handlers.js");
+const { registerFeaturePreferences } = require("../../scripts/patches/lib/feature-preferences.js");
+
 const fs = require("node:fs");
 const path = require("node:path");
+const { findExportedAlias, findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
 const {
   findCodexRequestWebviewAsset,
 } = require("../../scripts/patches/lib/assets.js");
@@ -98,88 +102,15 @@ function agentWorkspaceActionBridgeSource(args) {
   return fullSource.slice(index);
 }
 
-function ensureAgentWorkspaceBridgeEntry(currentSource, entrySource) {
-  const match = entrySource.match(/^"([^"]+)":/);
-  if (!match) {
-    return currentSource;
-  }
-  const marker = `"${match[1]}":async`;
-  if (currentSource.includes(marker)) {
-    return currentSource;
-  }
-  return currentSource.replace(`"linux-agent-workspace":async`, `${entrySource},"linux-agent-workspace":async`);
-}
-
-function replaceAgentWorkspaceActionBridge(currentSource, actionBridgeSource) {
-  const marker = `"linux-agent-workspace":async`;
-  const start = currentSource.indexOf(marker);
-  if (start === -1) {
-    return currentSource;
-  }
-
-  const getGlobalStateIndex = currentSource.indexOf(`,"get-global-state":async`, start);
-  if (getGlobalStateIndex !== -1) {
-    return `${currentSource.slice(0, start)}${actionBridgeSource}${currentSource.slice(getGlobalStateIndex)}`;
-  }
-
-  const arrowBodyIndex = currentSource.indexOf("=>{", start);
-  if (arrowBodyIndex === -1) {
-    return currentSource;
-  }
-  const bodyStart = arrowBodyIndex + 2;
-  let depth = 0;
-  let quote = null;
-  let escaped = false;
-  for (let index = bodyStart; index < currentSource.length; index += 1) {
-    const char = currentSource[index];
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-      } else if (char === "\\") {
-        escaped = true;
-      } else if (char === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (char === "'" || char === '"' || char === "`") {
-      quote = char;
-      continue;
-    }
-    if (char === "{") {
-      depth += 1;
-    } else if (char === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        return `${currentSource.slice(0, start)}${actionBridgeSource}${currentSource.slice(index + 1)}`;
-      }
-    }
-  }
-  return currentSource;
-}
-
 function applyAgentWorkspaceMainBridgePatch(currentSource) {
-  const patchName = "agent workspace main bridge patch";
-  if (currentSource.includes('"linux-agent-workspace":async')) {
-    const args = NODE_MODULE_EXPRESSIONS;
-    let patchedSource = currentSource;
-    patchedSource = ensureAgentWorkspaceBridgeEntry(patchedSource, agentWorkspaceAppPickerBridgeSource(args));
-    patchedSource = ensureAgentWorkspaceBridgeEntry(patchedSource, agentWorkspaceMountPickerBridgeSource());
-    patchedSource = ensureAgentWorkspaceBridgeEntry(patchedSource, agentWorkspaceBrowserDataPickerBridgeSource());
-    patchedSource = ensureAgentWorkspaceBridgeEntry(patchedSource, agentWorkspaceBrowserDataCopyBridgeSource(args));
-    return replaceAgentWorkspaceActionBridge(patchedSource, agentWorkspaceActionBridgeSource(args));
-  }
-
-  const handlerNeedle = `"get-global-state":async({key:`;
-  if (!currentSource.includes(handlerNeedle)) {
-    warn("Could not find global-state handler insertion point", patchName);
+  try {
+    const registered = registerRequestHandlers(currentSource,
+      agentWorkspaceBridgeWithWorkspaceStartSource(NODE_MODULE_EXPRESSIONS));
+    return registerFeaturePreferences(registered, [SETTINGS_COMMAND_KEY, SETTINGS_PERMISSIONS_KEY]);
+  } catch (error) {
+    warn(error.message, "agent workspace main bridge patch");
     return currentSource;
   }
-
-  return currentSource.replace(
-    handlerNeedle,
-    `${agentWorkspaceBridgeWithWorkspaceStartSource(NODE_MODULE_EXPRESSIONS)},${handlerNeedle}`,
-  );
 }
 
 function buildAgentWorkspaceSettingsSource({
@@ -188,10 +119,15 @@ function buildAgentWorkspaceSettingsSource({
   codexRequestAsset,
   codexRequestExportName = "n",
   vscodeApiAsset,
+  requestService,
 }) {
   const requestAsset = codexRequestAsset ?? vscodeApiAsset;
   return `import{${reactExportName} as __reactFactory}from"./${reactAsset}";
-import{${codexRequestExportName} as __post}from"./${requestAsset}";
+${requestService
+    ? `import{${requestService.classExport} as __requestService,${requestService.initExport} as __initRequestService}from"./${requestService.assetName}";
+__initRequestService();
+async function __post(method,{params}={}){return(await __requestService.getInstance().post(\`vscode://codex/\`+method,JSON.stringify(params),{"Content-Type":"application/json"})).body}`
+    : `import{${codexRequestExportName} as __post}from"./${requestAsset}";`}
 
 var React=__reactFactory();
 var h=React.createElement;
@@ -1855,14 +1791,34 @@ function inferRuntimeDependenciesFromSettingsAssets(assetsDir) {
     .sort();
   const matches = [];
   for (const candidate of candidates) {
-    const dependencies = inferRuntimeDependenciesFromSettingsSource(
-      fs.readFileSync(path.join(assetsDir, candidate), "utf8"),
-    );
+    const source = fs.readFileSync(path.join(assetsDir, candidate), "utf8");
+    if (!isAgentWorkspaceSettingsNavigationBundleSource(source)) continue;
+    const dependencies = inferRuntimeDependenciesFromSettingsSource(source);
     if (dependencies != null) {
       matches.push(dependencies);
     }
   }
   return matches.length === 1 ? matches[0] : null;
+}
+
+function findWorkspaceRequestService(assetsDir) {
+  const matches = [];
+  for (const assetName of fs.readdirSync(assetsDir).filter((name) => /^app-initial-[^.]+\.js$/.test(name))) {
+    const source = fs.readFileSync(path.join(assetsDir, assetName), "utf8");
+    for (const match of source.matchAll(/([A-Za-z_$][\w$]*)=class [A-Za-z_$][\w$]*\{/g)) {
+      const open = match.index + match[0].length - 1;
+      const close = findMatchingBrace(source, open);
+      const body = source.slice(open, close + 1);
+      if (!body.includes("web-fetch.pending-request") || !body.includes("vscode://codex/") ||
+          !body.includes("static getInstance()") || !body.includes("async post(")) continue;
+      const init = [...source.slice(0, match.index).matchAll(/function ([A-Za-z_$][\w$]*)\(\)\{return\(/g)].at(-1)?.[1];
+      const classExport = findExportedAlias(source, match[1]);
+      const initExport = init == null ? null : findExportedAlias(source, init);
+      if (classExport && initExport) matches.push({assetName, classExport, initExport});
+    }
+  }
+  if (matches.length !== 1) throw new Error("could not uniquely resolve current workspace request service");
+  return matches[0];
 }
 
 function resolveAgentWorkspaceSettingsAsset(extractedDir) {
@@ -1876,23 +1832,26 @@ function resolveAgentWorkspaceSettingsAsset(extractedDir) {
     throw new Error("could not resolve current settings runtime dependencies");
   }
   const { reactAsset, reactExportName } = runtimeDependencies;
-  const codexRequestAsset = findCodexRequestWebviewAsset(assetsDir);
+  let codexRequestAsset, requestService;
+  try { codexRequestAsset = findCodexRequestWebviewAsset(assetsDir); }
+  catch { requestService = findWorkspaceRequestService(assetsDir); }
 
   return {
     filePath: path.join(assetsDir, SETTINGS_ASSET),
     source: buildAgentWorkspaceSettingsSource({
       reactAsset,
       reactExportName,
-      codexRequestAsset: codexRequestAsset.assetName,
-      codexRequestExportName: codexRequestAsset.exportName,
+      codexRequestAsset: codexRequestAsset?.assetName,
+      codexRequestExportName: codexRequestAsset?.exportName,
+      requestService,
     }),
   };
 }
 
 function isAgentWorkspaceSettingsSharedMetadataBundleSource(currentSource) {
   return (
-    currentSource.includes('"local-environments":{id:`settings.nav.local-environments`') &&
-    currentSource.includes("settings.section.worktrees")
+    currentSource.includes('"local-environments":{id:`settings.nav.local-environments`') ||
+    currentSource.includes("settings.section.local-environments")
   );
 }
 
@@ -2001,7 +1960,7 @@ function applyAgentWorkspaceSettingsCatalogPatch(currentSource) {
 
 function applyAgentWorkspaceSettingsSharedPatch(currentSource) {
   let patchedSource = currentSource;
-  if (!patchedSource.includes(`settings.nav.${SETTINGS_SLUG}`)) {
+  if (patchedSource.includes("settings.nav.local-environments") && !patchedSource.includes(`settings.nav.${SETTINGS_SLUG}`)) {
     const navNeedle =
       '"local-environments":{id:`settings.nav.local-environments`,defaultMessage:`Environments`,description:`Title for environments settings section`},';
     if (!patchedSource.includes(navNeedle)) {
@@ -2013,7 +1972,7 @@ function applyAgentWorkspaceSettingsSharedPatch(currentSource) {
     );
   }
 
-  if (!patchedSource.includes(`settings.section.${SETTINGS_SLUG}`)) {
+  if (patchedSource.includes("settings.section.local-environments") && !patchedSource.includes(`settings.section.${SETTINGS_SLUG}`)) {
     const sectionNeedle = "case`worktrees`:{";
     if (!patchedSource.includes(sectionNeedle)) {
       throw new Error("could not add agent workspace section title");
@@ -2130,12 +2089,14 @@ function collectAgentWorkspaceRouteAndNavigationPatches(extractedDir) {
   const candidates = fs
     .readdirSync(assetsDir)
     .filter((name) =>
-      /^app-initial-[^.]+\.js$/.test(name) ||
+      /^app-(?:initial|primary)-[^.]+\.js$/.test(name) ||
+      /^settings-(?:nav-title-message|shared|lazy-routes)-[^.]+\.js$/.test(name) ||
       /^settings-page-[^.]+\.js$/.test(name) ||
       /^use-visible-settings-sections-[^.]+\.js$/.test(name)
     )
     .sort();
   let metadataMatched = false;
+  let titleMatched = false;
   let routeMatched = false;
   let navigationMatched = false;
   let visibilityMatched = false;
@@ -2147,7 +2108,8 @@ function collectAgentWorkspaceRouteAndNavigationPatches(extractedDir) {
     const currentSource = fs.readFileSync(filePath, "utf8");
     let patchedSource = currentSource;
     if (isAgentWorkspaceSettingsSharedMetadataBundleSource(currentSource)) {
-      metadataMatched = true;
+      metadataMatched ||= currentSource.includes("settings.nav.local-environments");
+      titleMatched ||= currentSource.includes("settings.section.local-environments");
       patchedSource = applyAgentWorkspaceSettingsSharedPatch(patchedSource);
     }
     if (isAgentWorkspaceSettingsRouteBundleSource(currentSource)) {
@@ -2171,7 +2133,7 @@ function collectAgentWorkspaceRouteAndNavigationPatches(extractedDir) {
     }
   }
 
-  if (!metadataMatched) {
+  if (!metadataMatched || !titleMatched) {
     throw new Error("could not find webview settings metadata bundle");
   }
   if (!routeMatched) {

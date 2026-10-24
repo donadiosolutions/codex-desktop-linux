@@ -1,5 +1,7 @@
 "use strict";
 
+const { registerRequestHandlers, hasRegisteredRequestHandlers } = require("../../scripts/patches/lib/request-handlers.js");
+
 const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
 
 const RECORD_REPLAY_PLUGIN_NAME = "record-and-replay";
@@ -170,10 +172,9 @@ function recordReplayHelperSource({ fsVar, pathVar }) {
 function hasCompleteRecordReplayMainBridgePatch(source) {
   const helperPayload = recordReplayHelperSource(RECORD_REPLAY_MODULE_EXPRESSIONS);
   const bridgePayload = recordReplayBridgeSource(RECORD_REPLAY_MODULE_EXPRESSIONS);
-  const bridgeInsertion = `${bridgePayload},"get-global-state":async({key:`;
   return countOccurrences(source, helperPayload) === 1
     && countOccurrences(source, bridgePayload) === 1
-    && countOccurrences(source, bridgeInsertion) === 1;
+    && hasRegisteredRequestHandlers(source, bridgePayload);
 }
 
 function hasAnyRecordReplayMainBridgeArtifact(source) {
@@ -194,18 +195,13 @@ function applyRecordReplayMainBridgePatch(currentSource) {
     return currentSource;
   }
 
-  let patchedSource = currentSource;
-  const handlerNeedle = `"get-global-state":async({key:`;
-  if (!currentSource.includes(handlerNeedle)) {
-    warn("Could not find global-state bridge insertion point", patchName);
+  try {
+    const patched = registerRequestHandlers(currentSource, recordReplayBridgeSource(RECORD_REPLAY_MODULE_EXPRESSIONS));
+    return `${recordReplayHelperSource(RECORD_REPLAY_MODULE_EXPRESSIONS)}\n${patched}`;
+  } catch (error) {
+    warn(error.message, patchName);
     return currentSource;
   }
-
-  patchedSource = `${recordReplayHelperSource(RECORD_REPLAY_MODULE_EXPRESSIONS)}\n${patchedSource.replace(
-    handlerNeedle,
-    `${recordReplayBridgeSource(RECORD_REPLAY_MODULE_EXPRESSIONS)},${handlerNeedle}`,
-  )}`;
-  return patchedSource;
 }
 
 function recordReplayHudRuntimeSource() {

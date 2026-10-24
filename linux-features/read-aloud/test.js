@@ -30,6 +30,10 @@ const {
 const { createPatchReport } = require("../../scripts/lib/patch-report.js");
 const { requireName } = require("../../scripts/patches/lib/minified-js.js");
 
+function currentFetchHandlerFixture() {
+  return "var FetchHandler=class{handlers={\"set-remote-wsl-connections-enabled\":async({enabled:e,origin:t})=>({remoteWslConnections:[]})};handleVSCodeRequest(e,t,n,r,i){let a=t,o=this.handlers[a];if(typeof o!==`function`)throw Error(`${t} not implemented`);return o({...n,origin:e,signal:i})}};var h=new FetchHandler();";
+}
+
 function twice(fn, source) {
   const patched = fn(source);
   assert.equal(fn(patched), patched);
@@ -111,7 +115,7 @@ function createDeferredSettingsWrites({ writeKey, enabled = false, speed = 1.05 
 test("language routing uses dominant letters and preserves explicit overrides", () => {
   const source = [
     "let e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);",
-    'var h={handlers:{"set-vs-context":async()=>{},"native-desktop-apps":async()=>({apps:[]})}};',
+    currentFetchHandlerFixture(),
   ].join("");
   const patched = twice(applyMainBundlePatch, source);
   const env = {};
@@ -153,7 +157,7 @@ test("language routing uses dominant letters and preserves explicit overrides", 
 test("main bundle patch adds a Linux read aloud handler", () => {
   const source = [
     "let e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);",
-    "var h={handlers:{\"set-vs-context\":async()=>{},\"native-desktop-apps\":async()=>({apps:[]})}};",
+    currentFetchHandlerFixture(),
   ].join("");
   const patched = twice(applyMainBundlePatch, source);
   assert.match(patched, /"linux-read-aloud":async/);
@@ -197,7 +201,7 @@ test("main handler does not capture a function-local child-process alias from an
   const source = [
     'function injectedFeature(){let __codexChild=require(`node:child_process`);return __codexChild}',
     'let e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);',
-    'var h={handlers:{"set-vs-context":async()=>{},"native-desktop-apps":async()=>({apps:[]})}};',
+    currentFetchHandlerFixture(),
   ].join("");
   const patched = applyMainBundlePatch(source);
 
@@ -216,7 +220,7 @@ for (const [label, prefix] of [
   test(`main helper resolves builtins independently of ${label}`, () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-read-aloud-alias-"));
     try {
-      const source = prefix + 'var h={handlers:{"set-vs-context":async()=>{},"native-desktop-apps":async()=>({apps:[]})}};';
+      const source = prefix + currentFetchHandlerFixture();
       const patched = twice(applyMainBundlePatch, source);
       const runtime = new Function("require", "process", `${patched};return {
         home:codexLinuxReadAloudHome,
@@ -244,7 +248,7 @@ test("main bundle helper preserves the official Electron binding across patch re
   const source = [
     '"use strict";',
     'let c=require("electron"),e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);',
-    'var h={handlers:{"set-vs-context":async()=>{},"native-desktop-apps":async()=>({apps:[]})}};',
+    currentFetchHandlerFixture(),
   ].join("");
   const patched = applyMainBundlePatch(source);
 
@@ -468,7 +472,7 @@ test("main handler stores a chosen Kokoro model folder", async () => {
 
     const source = [
       "let e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);",
-      "var h={handlers:{\"set-vs-context\":async()=>{},\"native-desktop-apps\":async()=>({apps:[]})}};",
+      currentFetchHandlerFixture(),
     ].join("");
     const patched = twice(applyMainBundlePatch, source);
     assert.doesNotMatch(patched, /\bo=o\.createWriteStream\b/);
@@ -527,7 +531,7 @@ test("main handler reports when a chosen Kokoro model folder is not speakable ye
 
     const source = [
       "let e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);",
-      "var h={handlers:{\"set-vs-context\":async()=>{},\"native-desktop-apps\":async()=>({apps:[]})}};",
+      currentFetchHandlerFixture(),
     ].join("");
     const patched = twice(applyMainBundlePatch, source);
     const requireStub = (name) => {
@@ -590,7 +594,7 @@ test("main handler honors Linux app-specific settings paths", async () => {
 
     const source = [
       "let e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);",
-      "var h={handlers:{\"set-vs-context\":async()=>{},\"native-desktop-apps\":async()=>({apps:[]})}};",
+      currentFetchHandlerFixture(),
     ].join("");
     const patched = twice(applyMainBundlePatch, source);
     const requireStub = (name) => {
@@ -640,7 +644,7 @@ test("main handler reports missing Python during download setup", async () => {
   try {
     const source = [
       "let e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);",
-      "var h={handlers:{\"set-vs-context\":async()=>{},\"native-desktop-apps\":async()=>({apps:[]})}};",
+      currentFetchHandlerFixture(),
     ].join("");
     const patched = twice(applyMainBundlePatch, source);
     const requireStub = (name) => {
@@ -684,7 +688,7 @@ test("main handler reads and clamps stored Kokoro pace", async () => {
 
     const source = [
       "let e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);",
-      "var h={handlers:{\"set-vs-context\":async()=>{},\"native-desktop-apps\":async()=>({apps:[]})}};",
+      currentFetchHandlerFixture(),
     ].join("");
     const patched = twice(applyMainBundlePatch, source);
     const requireStub = (name) => {
@@ -718,7 +722,7 @@ test("main handler enables native fallback by default but allows explicit disabl
   try {
     const source = [
       "let e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);",
-      "var h={handlers:{\"set-vs-context\":async()=>{},\"native-desktop-apps\":async()=>({apps:[]})}};",
+      currentFetchHandlerFixture(),
     ].join("");
     const patched = twice(applyMainBundlePatch, source);
     const requireStub = (name) => {
@@ -762,7 +766,7 @@ test("main handler treats the message button as an explicit speech request", asy
   try {
     const source = [
       "let e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);",
-      "var h={handlers:{\"set-vs-context\":async()=>{},\"native-desktop-apps\":async()=>({apps:[]})}};",
+      currentFetchHandlerFixture(),
     ].join("");
     const patched = twice(applyMainBundlePatch, source);
     const spawned = [];
@@ -833,7 +837,7 @@ test("main handler passes the configured Kokoro Python to the runner", async () 
 
     const source = [
       "let e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);",
-      "var h={handlers:{\"set-vs-context\":async()=>{},\"native-desktop-apps\":async()=>({apps:[]})}};",
+      currentFetchHandlerFixture(),
     ].join("");
     const patched = twice(applyMainBundlePatch, source);
     const spawned = [];
@@ -972,7 +976,7 @@ test("main handler falls back to native speech without forcing spd-say voice typ
   try {
     const source = [
       "let e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);",
-      "var h={handlers:{\"set-vs-context\":async()=>{},\"native-desktop-apps\":async()=>({apps:[]})}};",
+      currentFetchHandlerFixture(),
     ].join("");
     const patched = twice(applyMainBundlePatch, source);
     const spawned = [];
@@ -1045,7 +1049,7 @@ test("main handler falls back to native speech without forcing spd-say voice typ
 test("native espeak fallback preserves English defaults and configured voices", () => {
   const source = [
     "let e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);",
-    'var h={handlers:{"set-vs-context":async()=>{},"native-desktop-apps":async()=>({apps:[]})}};',
+    currentFetchHandlerFixture(),
   ].join("");
   const patched = twice(applyMainBundlePatch, source);
   for (const [text, overrides, expectedVoice] of [
@@ -1077,7 +1081,7 @@ test("main handler exposes Hugging Face Kokoro download defaults", async () => {
   try {
     const source = [
       "let e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);",
-      "var h={handlers:{\"set-vs-context\":async()=>{},\"native-desktop-apps\":async()=>({apps:[]})}};",
+      currentFetchHandlerFixture(),
     ].join("");
     const patched = twice(applyMainBundlePatch, source);
     const requireStub = (name) => {
@@ -1118,7 +1122,7 @@ test("main handler downloads setup files atomically", async () => {
   try {
     const source = [
       "let e=require(`node:child_process`),f=require(`node:fs`),p=require(`node:path`),o=require(`node:os`);",
-      "var h={handlers:{\"set-vs-context\":async()=>{},\"native-desktop-apps\":async()=>({apps:[]})}};",
+      currentFetchHandlerFixture(),
     ].join("");
     const patched = twice(applyMainBundlePatch, source);
     const target = path.join(root, "kokoro", "sample.bin");
@@ -2139,5 +2143,19 @@ test("settings asset patch creates a first-class read aloud settings section", (
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test("main handler rejects misplaced and incomplete read aloud registration", () => {
+  const source = currentFetchHandlerFixture();
+  const patched = applyMainBundlePatch(source);
+  for (const drifted of [source.replace("handleVSCodeRequest", "deadRequest"),
+    'var dead={"linux-read-aloud":async(e)=>codexLinuxReadAloudHandle(e)};' + source,
+    patched.replace("handlers={", "handlers={\"linux-read-aloud\":async()=>null,"),
+    patched.replace("function codexLinuxReadAloudHandle(","function removedReadAloudHandle(")]) {
+    const {result,warnings} = captureWarnings(() => applyMainBundlePatch(drifted));
+    assert.equal(result,drifted);
+    assert.equal(warnings.length,1);
   }
 });

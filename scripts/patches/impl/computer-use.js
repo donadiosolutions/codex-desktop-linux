@@ -5,8 +5,9 @@ const path = require("node:path");
 
 const {
   findMatchingBrace,
-  requireName,
 } = require("../lib/minified-js.js");
+
+const { findRequestHandlerMap, registerRequestHandlers, hasRegisteredRequestHandlers } = require("../lib/request-handlers.js");
 
 const COMPUTER_USE_UI_ENV_VAR = "CODEX_LINUX_ENABLE_COMPUTER_USE_UI";
 const COMPUTER_USE_UI_SETTINGS_KEY = "codex-linux-computer-use-ui-enabled";
@@ -292,71 +293,6 @@ function applyLinuxComputerUseHostPlatformPatch(currentSource) {
   return currentSource;
 }
 
-function findHandlerValue(source, methodName) {
-  const key = `${JSON.stringify(methodName)}:`;
-  const keyIndex = source.indexOf(key);
-  if (keyIndex === -1) {
-    return null;
-  }
-  const valueStart = keyIndex + key.length;
-  const valueEnd = findExpressionEnd(source, valueStart);
-  if (valueEnd == null || valueEnd <= valueStart) {
-    return null;
-  }
-  return {
-    key,
-    keyIndex,
-    value: source.slice(valueStart, valueEnd),
-    valueEnd,
-    valueStart,
-  };
-}
-
-function findExpressionEnd(source, start) {
-  let depth = 0;
-  let quote = null;
-  for (let index = start; index < source.length; index += 1) {
-    const char = source[index];
-    if (quote != null) {
-      if (char === "\\") {
-        index += 1;
-      } else if (char === quote) {
-        quote = null;
-      }
-      continue;
-    }
-
-    if (char === "'" || char === "\"" || char === "`") {
-      quote = char;
-    } else if (char === "(" || char === "{" || char === "[") {
-      depth += 1;
-    } else if (char === ")" || char === "}" || char === "]") {
-      if (depth > 0) {
-        depth -= 1;
-      } else {
-        return index;
-      }
-    } else if (char === "," && depth === 0) {
-      return index;
-    }
-  }
-  return source.length;
-}
-
-function replaceHandlerValue(source, methodName, replacement) {
-  const handler = findHandlerValue(source, methodName);
-  if (handler == null) {
-    return { changed: false, source };
-  }
-  const nextValue = typeof replacement === "function"
-    ? replacement(handler.value)
-    : replacement;
-  return {
-    changed: nextValue !== handler.value,
-    source: source.slice(0, handler.valueStart) + nextValue + source.slice(handler.valueEnd),
-  };
-}
-
 function insertAfterUseStrict(source, insertion) {
   const doubleStrict = "\"use strict\";";
   const singleStrict = "'use strict';";
@@ -395,75 +331,42 @@ function linuxNativeDesktopAppsHelper({ childProcessVar, fsVar, osVar, pathVar }
 }
 
 function applyLinuxNativeDesktopAppsHandlerPatch(currentSource) {
-  if (currentSource.includes("codexLinuxNativeDesktopApps(")) {
-    return currentSource;
-  }
-
-  if (findHandlerValue(currentSource, "native-desktop-apps") == null) {
-    if (currentSource.includes("native-desktop-apps") || currentSource.includes("handleVSCodeRequest")) {
-      console.warn(
-        "WARN: Could not find native-desktop-apps handler — skipping Linux native desktop apps patch",
-      );
+  const handlers = '"native-desktop-apps":async()=>({apps:await this.nativeApplications.list()}),"computer-use-native-desktop-app-icon":async(e)=>this.nativeApplications.getIcon(e)';
+  const helper = linuxNativeDesktopAppsHelper({
+    childProcessVar: "require(`node:child_process`)",
+    fsVar: "require(`node:fs`)",
+    osVar: "require(`node:os`)",
+    pathVar: "require(`node:path`)",
+  });
+  const linuxService = 'if(process.platform===`linux`)return{list:async()=>(await codexLinuxNativeDesktopApps()).apps,getByBundleId:async e=>(await codexLinuxNativeDesktopApps()).apps.find(t=>t.bundleId===e)??null,getIcon:async e=>{let t=await codexLinuxNativeDesktopAppIcon(e);return e.size===`medium`?{iconSmall:null,iconMedium:t.iconSmall}:t}};';
+  try {
+    const map = findRequestHandlerMap(currentSource);
+    const owner = currentSource.slice(map.ownerStart, map.ownerEnd + 1);
+    const fields = [...owner.matchAll(/nativeApplications=([A-Za-z_$][\w$]*)\(\);/g)];
+    if (fields.length !== 1) throw Error("Expected one native applications service on FetchHandler");
+    const name = fields[0][1].replace(/[$]/g, "\\$");
+    const factories = [...currentSource.matchAll(new RegExp(`function ${name}\\(\\)\\{`, "g"))];
+    if (factories.length !== 1) throw Error("Expected one native applications service factory");
+    const factory = factories[0], open = factory.index + factory[0].length - 1;
+    const close = findMatchingBrace(currentSource, open);
+    const body = currentSource.slice(open + 1, close);
+    const upstream = 'if(process.platform===`darwin`||process.platform===`win32`)return{getByBundleId:';
+    if (!body.includes(upstream) || !body.includes(",list:") || !body.includes(",getIcon:")) {
+      throw Error("Native applications factory contract drifted");
     }
+    if (currentSource.includes("function codexLinuxNativeDesktopApps(")) {
+      if (currentSource.split(helper).length !== 2 || !body.startsWith(linuxService + upstream) ||
+          !hasRegisteredRequestHandlers(currentSource, handlers)) throw Error("Incomplete Linux native applications patch");
+      return currentSource;
+    }
+    if (!body.startsWith(upstream)) throw Error("Unexpected native applications platform gate");
+    let patched = currentSource.slice(0, open + 1) + linuxService + currentSource.slice(open + 1);
+    patched = registerRequestHandlers(patched, handlers);
+    return insertAfterUseStrict(patched, helper);
+  } catch (error) {
+    console.warn(`WARN: ${error.message} - skipping Linux native desktop apps patch`);
     return currentSource;
   }
-
-  const childProcessVar =
-    requireName(currentSource, "node:child_process") ?? requireName(currentSource, "child_process");
-  const fsVar = requireName(currentSource, "node:fs");
-  const osVar = requireName(currentSource, "node:os") ?? requireName(currentSource, "os");
-  const pathVar = requireName(currentSource, "node:path");
-  if (childProcessVar == null || fsVar == null || osVar == null || pathVar == null) {
-    console.warn(
-      "WARN: Could not find node:child_process/node:fs/node:os/node:path dependencies — skipping Linux native desktop apps patch",
-    );
-    return currentSource;
-  }
-
-  let patchedSource = insertAfterUseStrict(
-    currentSource,
-    linuxNativeDesktopAppsHelper({ childProcessVar, fsVar, osVar, pathVar }),
-  );
-
-  const nativeHandler = findHandlerValue(patchedSource, "native-desktop-apps");
-  if (nativeHandler == null) {
-    console.warn(
-      "WARN: Could not find native-desktop-apps handler after helper insertion — skipping Linux native desktop apps patch",
-    );
-    return currentSource;
-  }
-  const nativeHandlerKeyIndex = nativeHandler.keyIndex;
-
-  const nativeAppsReplacement = replaceHandlerValue(
-    patchedSource,
-    "native-desktop-apps",
-    (handler) => `async(...e)=>process.platform===\`linux\`?codexLinuxNativeDesktopApps(e[0]):await(${handler})(...e)`,
-  );
-  if (!nativeAppsReplacement.changed) {
-    console.warn(
-      "WARN: Could not wrap native-desktop-apps handler — skipping Linux native desktop apps patch",
-    );
-    return currentSource;
-  }
-  patchedSource = nativeAppsReplacement.source;
-
-  if (findHandlerValue(patchedSource, "computer-use-native-desktop-app-icon") == null) {
-    const iconHandler =
-      `"computer-use-native-desktop-app-icon":async(e)=>process.platform===\`linux\`?codexLinuxNativeDesktopAppIcon(e):{iconSmall:\`\`},`;
-    patchedSource =
-      patchedSource.slice(0, nativeHandlerKeyIndex) +
-      iconHandler +
-      patchedSource.slice(nativeHandlerKeyIndex);
-  } else {
-    const iconReplacement = replaceHandlerValue(
-      patchedSource,
-      "computer-use-native-desktop-app-icon",
-      (handler) => `async(...e)=>process.platform===\`linux\`?codexLinuxNativeDesktopAppIcon(e[0]):await(${handler})(...e)`,
-    );
-    patchedSource = iconReplacement.source;
-  }
-
-  return patchedSource;
 }
 
 module.exports = {
