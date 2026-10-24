@@ -3784,7 +3784,7 @@ test("remote mobile control feature participates in ASAR patching and reports", 
 
 
 test("26.1021 chained device-key declaration patches without breaking its statement", () => {
-  const source = require("./upstream-26.1021.22027.fixture.json").deviceKey;
+  const source = require("./fixtures/upstream-26.1021.22027.json").deviceKey;
   const patched = applyLinuxRemoteControlDeviceKeyPatch(source);
   assert.notEqual(patched, source);
   assert.doesNotThrow(() => new vm.Script(patched));
@@ -3792,7 +3792,7 @@ test("26.1021 chained device-key declaration patches without breaking its statem
 });
 
 test("26.1021 setup reset resolves the typed local client identity", () => {
-  const source = "var Ve={CODEX_MOBILE_SETUP_COMPLETED:0};function key(){return Ve.CODEX_MOBILE_SETUP_COMPLETED}function other(){U(r,W.keepRemoteControlAwakeWhilePluggedIn,e)};var toast=`remote-control-client-revoke-success`;" + require("./upstream-26.1021.22027.fixture.json").settings;
+  const source = "var Ve={CODEX_MOBILE_SETUP_COMPLETED:0};function key(){return Ve.CODEX_MOBILE_SETUP_COMPLETED}function other(){U(r,W.keepRemoteControlAwakeWhilePluggedIn,e)};var toast=`remote-control-client-revoke-success`;" + require("./fixtures/upstream-26.1021.22027.json").settings;
   const patched = applyLinuxRemoteControlClientRevokeSetupResetPatch(source);
   assert.notEqual(patched, source);
   assert.doesNotThrow(() => new vm.Script(patched));
@@ -3801,7 +3801,7 @@ test("26.1021 setup reset resolves the typed local client identity", () => {
 });
 
 test("26.1021 enablement bridge targets the typed runtime service", async () => {
-  const source = require("./upstream-26.1021.22027.fixture.json").bridge;
+  const source = require("./fixtures/upstream-26.1021.22027.json").bridge;
   const patched = applyLinuxRemoteControlEnablementBridgePatch(source);
   assert.notEqual(patched, source);
   assert.doesNotThrow(() => new vm.Script(patched));
@@ -3823,7 +3823,7 @@ test("26.1021 enablement bridge targets the typed runtime service", async () => 
 });
 
 test("26.1021 typed bridge respects loading, missing services, non-Linux gates, and unknown identity", async () => {
-  const source = require("./upstream-26.1021.22027.fixture.json").bridge;
+  const source = require("./fixtures/upstream-26.1021.22027.json").bridge;
   const patched = applyLinuxRemoteControlEnablementBridgePatch(source);
   for (const [linux, loading, available, identity, expectedCalls] of [
     [true, true, true, "self", 0], [true, false, false, "self", 0],
@@ -3845,7 +3845,7 @@ test("26.1021 typed bridge respects loading, missing services, non-Linux gates, 
 });
 
 test("26.1021 typed bridge rejects duplicate owners and drifted loading guards", () => {
-  const source = require("./upstream-26.1021.22027.fixture.json").bridge;
+  const source = require("./fixtures/upstream-26.1021.22027.json").bridge;
   for (const drifted of [source + source, source.replace("n||e==null||", "e==null||"), source.replace("oneToOnePairingInAppEnabled:i", "oneToOnePairingInAppEnabled:o")]) {
     assert.equal(captureWarns(() => applyLinuxRemoteControlEnablementBridgePatch(drifted)).value, drifted);
   }

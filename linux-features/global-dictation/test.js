@@ -554,7 +554,7 @@ test("stage hook requires a release artifact and never invokes Cargo", () => {
 
 
 function currentDictationFixture() {
-  const current = require("./upstream-26.1021.22027.fixture.json");
+  const current = require("./fixtures/upstream-26.1021.22027.json");
   const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
   let source = mainBundleFixture();
   for (const [needle, replacement] of [["function pA(e,t)", current.releaseWatcher], ["function eA(e,t,n)", current.registration], ["registerHotkeyOrThrow(e,t)", current.hold], ["registerToggleHotkeyOrThrow(e,t)", current.toggle]]) {

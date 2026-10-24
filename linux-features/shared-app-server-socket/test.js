@@ -3875,7 +3875,7 @@ test("stock Codex authority starts through the injected transport and supports v
 
 
 test("26.1021 SSH transport uses the current WebSocket message adapter", () => {
-  const fixture = require("./upstream-26.1021.22027.fixture.json");
+  const fixture = require("./fixtures/upstream-26.1021.22027.json");
   const source = fixture.transport + fixture.factory + "function afterFactory(){}";
   const patched = applySharedAppServerSocketPatch(source);
   assert.notEqual(patched, source);
@@ -3888,7 +3888,7 @@ test("26.1021 SSH transport uses the current WebSocket message adapter", () => {
 
 test("26.1021 shared socket negotiates compression and the frame limit before adapting messages", async () => {
   const { findTransportSymbols } = require("./patch.js");
-  const fixture = require("./upstream-26.1021.22027.fixture.json");
+  const fixture = require("./fixtures/upstream-26.1021.22027.json");
   const symbols = findTransportSymbols(fixture.transport + fixture.factory);
   let websocket, messages, timeout;
   class WebSocket extends EventEmitter {
