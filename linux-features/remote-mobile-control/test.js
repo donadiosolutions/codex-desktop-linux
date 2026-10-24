@@ -351,6 +351,10 @@ function syntheticLegacyWslAppServerLaunchBundle() {
 function syntheticCurrentLocalAppServerLaunchBundle() {
   return [
     "var Fz=`Codex Desktop`,Iz=[`-c`,`features.code_mode_host=true`],Lz=[{configKey:`chatgpt_base_url`,envVar:`CODEX_APP_SERVER_CHATGPT_BASE_URL`},{configKey:`openai_base_url`,envVar:`CODEX_APP_SERVER_OPENAI_BASE_URL`}];",
+    "function launch(e){let t=e.hostConfig.codex_cli_command;let n=override();if(n!=null)return{executablePath:n,args:uB()};let r=resolve(e.repoRoot,{includeRuntime:e.startupCommand==null});return r?{executablePath:r.executablePath,args:uB(),binDirectory:r.binDirectory}:null}",
+    "function native(e){let t=e.hostConfig.codex_cli_command;let n=override();if(n!=null)return{executablePath:n,args:uB()};let r=resolve(e.repoRoot,{resourcesPath:e.resourcesPath});return r?{executablePath:r.executablePath,args:uB(),binDirectory:r.binDirectory}:null}",
+    "function wslTransport(e){let r=launch(e);return{args:[...r.args,...e.startupCommand?.args??[]]}}",
+    "function transport(e){let r=native({hostConfig:e.hostConfig,repoRoot:e.repoRoot,resourcesPath:e.resourcesPath});return{args:[...r.args,...e.startupCommand?.args??[]]}}",
     "function uB(){let e=Lz.flatMap(({configKey:e,envVar:t})=>{let n=process.env[t]?.trim();return n==null||n===``?[]:[`-c`,`${e}=${JSON.stringify(n)}`]});return e.length===0?[...Iz,`app-server`,`--analytics-default-enabled`]:[`app-server`,...Iz,...e,`--analytics-default-enabled`]}",
   ].join("");
 }
@@ -1644,6 +1648,50 @@ test("Linux remote mobile app-server launch preserves current configured-base ar
     "--remote-control",
     "--analytics-default-enabled",
   ]);
+});
+
+test("Linux remote mobile startup policy and sign-out preserve upstream arguments in every server mode", () => {
+  const source = syntheticCurrentLocalAppServerLaunchBundle();
+  const patched = applyLinuxRemoteMobileAppServerRemoteControlPatch(source);
+  assert.notEqual(patched, source);
+  for (const mode of [undefined, "proxy"]) {
+    for (const configuredBase of [undefined, "https://example.test"]) {
+      for (const useOverride of [false, true]) {
+        for (const signOut of [false, true]) {
+          const command = ["--print-startup-config", "--startup-client-info", '{"name":"codex_desktop"}', ...(signOut ? ["--startup-sign-out"] : [])];
+          const context = {
+            JSON,
+            process: { platform: "linux", env: { CODEX_REMOTE_CONTROL_APP_SERVER_MODE: mode, CODEX_APP_SERVER_CHATGPT_BASE_URL: configuredBase } },
+            override: () => useOverride ? "/cli-override" : null,
+            resolve: () => ({ executablePath: "/bundled-cli" }),
+          };
+          for (const transportName of ["transport", "wslTransport"]) {
+            const expression = `${transportName}({hostConfig:{},repoRoot:".",startupCommand:{args:${JSON.stringify(command)}}}).args`;
+            const upstream = vm.runInNewContext(`${source};${expression}`, context);
+            const actual = vm.runInNewContext(`${patched};${expression}`, context);
+            assert.deepEqual(Array.from(actual), Array.from(upstream));
+            assert.equal(actual.includes("--remote-control"), false);
+            assert.equal(actual.includes("proxy"), false);
+            const normal = vm.runInNewContext(`${patched};${transportName}({hostConfig:{},repoRoot:"."}).args`, context);
+            assert.equal(normal.includes("--remote-control"), mode !== "proxy");
+            assert.equal(normal.includes("proxy"), mode === "proxy");
+          }
+        }
+      }
+    }
+  }
+});
+
+test("Linux remote mobile app-server patch rejects drifted or ambiguous startup transport owners", () => {
+  const source = syntheticCurrentLocalAppServerLaunchBundle();
+  const owner = source.slice(source.indexOf("function launch("), source.indexOf("function native("));
+  for (const drifted of [
+    source.replace("includeRuntime:e.startupCommand==null", "includeRuntime:true"),
+    source.replace("args:uB()", "args:other()"),
+    source + owner.replace("function launch(", "function duplicate("),
+  ]) {
+    assert.equal(applyLinuxRemoteMobileAppServerRemoteControlPatch(drifted), drifted);
+  }
 });
 
 test("Linux remote mobile app-server launch rejects an incomplete local patch marker", () => {

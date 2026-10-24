@@ -323,16 +323,53 @@ function applyLinuxRemoteMobileAppServerRemoteControlPatch(source) {
     return source;
   }
 
+  // Startup-policy queries share this builder with the persistent server. Pass
+  // their context through both CLI resolution branches before choosing a mode.
+  const launchFunction = /^function ([A-Za-z_$][\w$]*)\(\)\{/u.exec(source.slice(functionIndex));
+  if (!launchFunction) return source;
+  const launchName = launchFunction[1];
+  const ownerPattern = /function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*)\)\{/gu;
+  const owners = [...source.matchAll(ownerPattern)].flatMap((match) => {
+    const open = match.index + match[0].length - 1;
+    const end = findMatchingBrace(source, open);
+    const body = source.slice(open, end + 1);
+    const calls = new RegExp(`args:${escapeRegExp(launchName)}\\(\\)`, "gu");
+    return body.includes(`${match[2]}.hostConfig.codex_cli_command`) &&
+      [...body.matchAll(calls)].length === 2
+      ? [{ name: match[1], body, argument: match[2], calls }]
+      : [];
+  });
+  if (owners.length !== 2) return source;
+  if (!owners.some(owner => owner.body.includes(`includeRuntime:${owner.argument}.startupCommand==null`))) return source;
+  const nativeOwners = owners.filter(owner => !owner.body.includes("includeRuntime:"));
+  if (nativeOwners.length !== 1) return source;
+  const nativeName = nativeOwners[0].name;
+  const nativeCallPattern = new RegExp(`${escapeRegExp(nativeName)}\\(\\{hostConfig:([A-Za-z_$][\\w$]*)\\.hostConfig,repoRoot:\\1\\.repoRoot,resourcesPath:\\1\\.resourcesPath\\}\\)`, "gu");
+  if ([...source.matchAll(nativeCallPattern)].length !== 1) return source;
+
   const overridesVariable = launchReturn.groups.overrides;
   const currentReturnExpression = launchReturn[0].slice("return ".length);
   const patchedReturn =
-    `return process.platform===\`linux\`?` +
+    `return process.platform===\`linux\`&&codexLinuxRemoteMobileStartupCommand==null?` +
     `${REMOTE_MOBILE_APP_SERVER_REMOTE_CONTROL_MARKER}(${baseArgsVariable},${overridesVariable}):` +
     currentReturnExpression;
-  const replaced =
+  let replaced =
     source.slice(0, launchReturn.index) +
     patchedReturn +
     source.slice(launchReturn.index + launchReturn[0].length);
+  replaced = replaced.replace(
+    `function ${launchName}(){`,
+    `function ${launchName}(codexLinuxRemoteMobileStartupCommand){`,
+  );
+  for (const owner of owners) {
+    replaced = replaced.replace(owner.body, owner.body.replace(
+      owner.calls,
+      `args:${launchName}(${owner.argument}.startupCommand)`,
+    ));
+  }
+  replaced = replaced.replace(nativeCallPattern, (call, argument) =>
+    call.replace("})", `,startupCommand:${argument}.startupCommand})`),
+  );
   // Insert after a leading "use strict" so prepending the helper does not
   // demote the directive to a plain expression and de-strict the bundle.
   const insertAt = replaced.startsWith('"use strict";')
@@ -347,7 +384,7 @@ function hasLinuxRemoteMobileLocalAppServerRemoteControlPatch(source) {
   return (
     source.includes(REMOTE_MOBILE_APP_SERVER_REMOTE_CONTROL_HELPER) &&
     new RegExp(
-      "return process\\.platform===`linux`\\?" +
+      "return process\\.platform===`linux`&&codexLinuxRemoteMobileStartupCommand==null\\?" +
         REMOTE_MOBILE_APP_SERVER_REMOTE_CONTROL_MARKER +
         "\\([A-Za-z_$][\\w$]*,[A-Za-z_$][\\w$]*\\):",
       "u",

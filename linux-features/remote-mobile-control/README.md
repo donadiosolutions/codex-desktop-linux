@@ -114,6 +114,8 @@ What it changes:
   startup.
 - Starts the native Desktop app-server with `--remote-control`, or starts
   `codex app-server proxy` when a declarative service owns the control socket.
+  Startup organization-policy queries and startup sign-out keep the upstream
+  arguments in both modes; they do not enable Remote Control or use the proxy.
   The proxy forwards the complete Desktop RPC stream instead of splitting
   enablement, pairing, status, and conversation RPCs between two processes.
 - Updates Remote settings and mobile setup copy so the experimental Linux flow
