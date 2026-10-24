@@ -262,7 +262,7 @@ test("webview runtime appends only once", () => {
   const patched = twice(applyIndexRuntimePatch, "console.log(`index`);");
   assert.match(patched, /codexLinuxReadAloudClick/);
   assert.match(patched, /vscode:\/\/codex\/"\+method/);
-  assert.match(patched, /codexLinuxReadAloudGetSetting=key=>hostPost\("get-global-state"/);
+  assert.match(patched, /codexLinuxReadAloudGetSetting=key=>hostPost\("linux-read-aloud"/);
   assert.match(patched, /codex-message-from-view/);
   assert.match(patched, /__codexForwardedViaBridge/);
   assert.match(patched, /Starting voice/);

@@ -36,16 +36,28 @@ test("Read Aloud and Agent Workspace preferences coexist in either feature order
   for (const order of [[readAloud, workspace], [workspace, readAloud], [readAloud], [workspace]]) {
     const input = 'let electron=require(`electron`);' + source;
     const patched = order.reduce((value, apply) => apply(value), input);
-    const context = { require: name => name === "electron" ? {} : require(name), process, console };
+    const files = new Map([["/feature-test/settings.json", JSON.stringify({"codex-linux-read-aloud-enabled":true,"codex-linux-read-aloud-kokoro-speed":1.2})]]);
+    const fs = {existsSync:path=>files.has(path),readFileSync:path=>files.get(path),mkdirSync(){},writeFileSync:(path,text)=>files.set(path,text)};
+    const context = { require: name => name === "electron" ? {} : name === "node:fs" ? fs : name === "node:child_process" ? {spawnSync:()=>({status:1})} : require(name), process:{platform:"linux",env:{CODEX_LINUX_SETTINGS_FILE:"/feature-test/settings.json"}}, console };
     vm.runInNewContext(patched, context);
     for (const key of order.includes(readAloud) ? ["codex-linux-read-aloud-enabled", "codex-linux-read-aloud-kokoro-speed"] : []) {
-      await context.host.handleVSCodeRequest("window", "set-global-state", { key, value: 1.05 });
-      assert.equal((await context.host.handleVSCodeRequest("window", "get-global-state", { key })).value, 1.05);
+      const expected = key.endsWith("enabled") ? true : 1.2;
+      assert.equal((await context.host.handleVSCodeRequest("window", "linux-read-aloud", {action:"get-preference",key})).value, expected);
+      const value = key.endsWith("enabled") ? false : 1.05;
+      await context.host.handleVSCodeRequest("window", "linux-read-aloud", { action:"set-preference", key, value });
+      assert.equal((await context.host.handleVSCodeRequest("window", "linux-read-aloud", {action:"get-preference",key})).value, value);
+      assert.equal(JSON.parse(files.get("/feature-test/settings.json"))[key],value);
     }
     for (const key of order.includes(workspace) ? ["codex-linux-agent-workspace-command", "codex-linux-agent-workspace-permissions"] : []) {
       await context.host.handleVSCodeRequest("window", "set-global-state", { key, value: "configured" });
       assert.equal((await context.host.handleVSCodeRequest("window", "get-global-state", { key })).value, "configured");
     }
-    await assert.rejects(context.host.handleVSCodeRequest("window", "set-global-state", { key: "unregistered", value: true }));
+    if (order.includes(workspace)) await assert.rejects(context.host.handleVSCodeRequest("window", "set-global-state", { key: "unregistered", value: true }));
+    if (order.includes(readAloud)) {
+      await assert.rejects(context.host.handleVSCodeRequest("window", "linux-read-aloud", {action:"set-preference",key:"unregistered",value:true}));
+      const config = await context.host.handleVSCodeRequest("window", "linux-read-aloud", {action:"config"});
+      assert.equal(config.enabled,false);
+      assert.equal(config.kokoro.speed,1.05);
+    }
   }
 });
