@@ -2,6 +2,8 @@
 
 const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
 
+const { applyAutomationPluginSyncPatch } = require("./plugin-sync.js");
+
 const IDENT = "[A-Za-z_$][\\w$]*";
 const MARKER = "codexLinuxForwardAutomationPipe";
 const PIPE_NAME = "CODEX_APP_TOOLS_PIPE_PATH";
@@ -69,7 +71,7 @@ function findPatchedPipeContracts(source) {
   return contracts;
 }
 
-function applyAutomationPluginPipePatch(source) {
+function applyAutomationPluginPipeForwardPatch(source) {
   if (source.includes(MARKER)) {
     const markerCount = source.split(MARKER).length - 1;
     if (markerCount === 1 && findPatchedPipeContracts(source).length === 1) return source;
@@ -87,6 +89,10 @@ function applyAutomationPluginPipePatch(source) {
     `...${server}.env,${PIPE_NAME}:process.env.${PIPE_NAME}/*${MARKER}*/`,
   );
   return source.slice(0, replaceStart) + replacement + source.slice(replaceEnd);
+}
+
+function applyAutomationPluginPipePatch(source) {
+  return applyAutomationPluginSyncPatch(applyAutomationPluginPipeForwardPatch(source));
 }
 
 module.exports = { applyAutomationPluginPipePatch };

@@ -245,6 +245,97 @@ test("automation pipe forwarding fails closed on drift and incomplete markers", 
   );
 });
 
+function desktopPluginSyncContext() {
+  const upstream = require("./fixtures/upstream-26.1021.22027.json");
+  const source = [
+    "const process={env:{CODEX_APP_TOOLS_PIPE_PATH:`/pipe/first`},resourcesPath:`/resources`,platform:`linux`};",
+    "const base={mcpServers:{codex_app:{command:`scripts/launch`,args:[`./server.mjs`],env:{BASE:`preserved`,CODEX_MCP_NODE_PATH:`/node`},default_tools_approval_mode:`approve`,tools:{automation_update:{approval_mode:`prompt`}}}}};",
+    "let version=`first`,installed=true,disk=`upstream manifest`,pending=null,reloads=0,fail=false;",
+    "const mo={marketplaceKinds:[`local`]},C={default:pathApi},l={zt:()=>false,At:x=>x},i={bi:version=>version,Zo:`bundled`,Ho:`app-tools`,qt:({localVersion})=>`/cache/app-tools/`+localVersion};",
+    "const A={default:{readFile:async()=>disk,writeFile:async(path,value)=>{pending=value},rename:async()=>{disk=pending}}},v={randomUUID:()=>`fixture`};",
+    "function _o(){return{marketplace:{name:`bundled`},plugin:{name:`app-tools`,installed,localVersion:version}}}function Wc(){return null}",
+    "async function Uc({useWsl:e,resourcesPath:t=process.resourcesPath}){if(!process.env.CODEX_APP_TOOLS_PIPE_PATH)return Wc(`missing-pipe`);let{mcpServers:{codex_app:a}}=base,s={...a.env},c=null;return{...a,command:C.default.join(`/bundle`,a.command),cwd:`/bundle`,enabled:!1,env:s}}",
+    upstream.sync,
+    upstream.prepare,
+    "const connection={hostConfig:{kind:`local`},listPlugins:async()=>({marketplaces:[]}),codexHome:async()=>`/home`,sendAppServerRequest:async()=>{if(fail)throw Error(`reload rejected`);reloads++}};",
+    "globalThis.prepare=async(local=true,modern=true)=>{let r={...connection,hostConfig:{kind:local?`local`:`ssh`},appServerVersion:modern};return await Hc({hostConfig:r.hostConfig,appServerVersion:r.appServerVersion})};",
+    "globalThis.prepareAutomation=async()=>{let a={...connection,appServerVersion:true},n=a.hostConfig;return await Hc({hostConfig:n,appServerVersion:a.appServerVersion})};",
+    "globalThis.snapshot=()=>({reloads,disk});globalThis.restart=()=>{version=`second`;process.env.CODEX_APP_TOOLS_PIPE_PATH=`/pipe/second`};",
+    "globalThis.reinstall=()=>{disk=`upstream manifest`};globalThis.removePipe=()=>delete process.env.CODEX_APP_TOOLS_PIPE_PATH;",
+    "globalThis.failReload=()=>{fail=true};globalThis.uninstall=()=>{installed=false};",
+  ].join("");
+  const descriptor = descriptors.find(({ id }) => id === "automation-plugin-pipe");
+  const patched = descriptor.apply(source);
+  const context = vm.createContext({ pathApi: require("node:path").posix });
+  vm.runInContext(patched, context);
+  return { context, source, patched, descriptor };
+}
+
+test("plugin-capable Desktop threads refresh the installed transport before resuming", async () => {
+  const { context, patched, descriptor } = desktopPluginSyncContext();
+  assert.deepEqual(Object.keys(await context.prepare()), []);
+  assert.equal(context.snapshot().reloads, 1);
+  const first = JSON.parse(context.snapshot().disk).mcpServers.codex_app;
+  assert.equal(first.env.CODEX_APP_TOOLS_PIPE_PATH, "/pipe/first");
+  assert.equal(first.env.BASE, "preserved");
+  assert.equal(first.command, "/cache/app-tools/first/scripts/launch");
+  assert.equal(first.default_tools_approval_mode, "approve");
+  assert.equal(first.tools.automation_update.approval_mode, "prompt");
+  await context.prepareAutomation();
+  assert.equal(context.snapshot().reloads, 1, "unchanged transport must not reload recursively");
+  context.restart();
+  await context.prepare();
+  const next = JSON.parse(context.snapshot().disk).mcpServers.codex_app;
+  assert.equal(context.snapshot().reloads, 2);
+  assert.equal(next.env.CODEX_APP_TOOLS_PIPE_PATH, "/pipe/second");
+  assert.equal(next.command, "/cache/app-tools/second/scripts/launch");
+  assert.equal(next.cwd, "/cache/app-tools/second");
+  context.reinstall();
+  await context.prepare();
+  assert.equal(context.snapshot().reloads, 3);
+  assert.equal(JSON.parse(context.snapshot().disk).mcpServers.codex_app.env.CODEX_APP_TOOLS_PIPE_PATH, "/pipe/second");
+  assert.equal(descriptor.apply(patched), patched);
+});
+
+test("transport refresh keeps remote, unavailable, legacy and failed-reload behavior", async () => {
+  const { context } = desktopPluginSyncContext();
+  assert.deepEqual(Object.keys(await context.prepare(false)), []);
+  assert.equal(context.snapshot().reloads, 0);
+  const legacy = await context.prepare(true, false);
+  assert.equal(legacy["mcp_servers.codex_app.env"].CODEX_APP_TOOLS_PIPE_PATH, "/pipe/first");
+  assert.equal(context.snapshot().reloads, 1);
+  context.reinstall();
+  context.failReload();
+  await assert.rejects(context.prepare(), /reload rejected/);
+  const missing = desktopPluginSyncContext().context;
+  missing.removePipe();
+  await missing.prepare();
+  assert.equal(missing.snapshot().reloads, 0);
+  const uninstalled = desktopPluginSyncContext().context;
+  uninstalled.uninstall();
+  await uninstalled.prepare();
+  assert.equal(uninstalled.snapshot().reloads, 0);
+});
+
+test("transport synchronization fails closed on ambiguous owners and damaged markers", () => {
+  const { descriptor, source, patched } = desktopPluginSyncContext();
+  const { sync } = require("./fixtures/upstream-26.1021.22027.json");
+  assert.throws(() => descriptor.apply(source + sync.replace("uoe(", "anotherSync(")), /synchronization patch did not match/);
+  assert.throws(() => descriptor.apply(source.replace("i.bi(e.appServerVersion,`pluginMcpConfigOverrides`)", "changed(e.appServerVersion,`pluginMcpConfigOverrides`)")), /synchronization patch did not match/);
+  assert.throws(() => descriptor.apply(patched.replace("await uoe(e);", "await wrongOwner(e);")), /synchronization patch did not match/);
+  assert.throws(() => descriptor.apply(patched + "/*codexLinuxSyncAutomationPluginBeforeResume*/"), /synchronization patch did not match/);
+});
+
+test("transport synchronization supports dollar-prefixed minified owners", () => {
+  const { descriptor, source } = desktopPluginSyncContext();
+  const renamed = source.replaceAll("Hc", "$prepare").replaceAll("uoe", "$sync").replaceAll("Uc", "$builder");
+  const patched = descriptor.apply(renamed);
+  assert.equal(descriptor.apply(patched), patched);
+  const context = vm.createContext({ pathApi: require("node:path").posix });
+  vm.runInContext(patched, context);
+  return context.prepare().then(() => assert.equal(context.snapshot().reloads, 1));
+});
+
 test("automation view returns machine-readable status and absence", async () => {
   const source = automationViewFixture();
 
