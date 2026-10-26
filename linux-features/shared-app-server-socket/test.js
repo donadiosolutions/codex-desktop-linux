@@ -3936,3 +3936,10 @@ test("26.1021 shared socket negotiates compression and the frame limit before ad
   assert.equal(adapter.terminationReason, "pong_timeout");
   assert.equal(websocket.terminated, true);
 });
+
+test("negotiated transport drift never falls back to the legacy adapter", () => {
+  const { findTransportSymbols } = require("./patch.js");
+  const fixture = require("./fixtures/upstream-26.1021.22027.json");
+  const source = (fixture.transport + fixture.factory).replace("Number.isSafeInteger", "Number.isFinite");
+  assert.equal(findTransportSymbols(source), null);
+});

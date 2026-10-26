@@ -28,7 +28,8 @@ function findTransportSymbols(source) {
       `let ${IDENT}=new ${namespace}\\.(${IDENT})\\((${IDENT}),[^;]{0,160}\\);[\\s\\S]{0,800}?${namespace}\\.(${IDENT})\\(\\2,\\{onPongTimeout:`,
     ),
   );
-  if (lifecycleMatch == null) {
+  {
+    // Prefer negotiated framing over the older, less-specific lifecycle match.
     // Current upstream negotiates framing and compression before constructing its adapter.
     const current = sshClassSource.match(new RegExp(
       `(${IDENT})=${namespace}\\.(${IDENT})\\(\\),${IDENT}=new ${namespace}\\.${webSocketClass}\\(${webSocketUrl},\\{perMessageDeflate:!1,headers:\\1,createConnection:` +
@@ -36,10 +37,10 @@ function findTransportSymbols(source) {
       `let (${IDENT})=new ${namespace}\\.(${IDENT})\\((${IDENT}),\\1!=null\\);[\\s\\S]{0,400}?let (${IDENT})=new ${namespace}\\.(${IDENT})\\(\\9,void 0,\\3,\\7\\);` +
       `[\\s\\S]{0,1000}?${namespace}\\.(${IDENT})\\(\\9,\\{onPongTimeout:\\(\\)=>\\{\\10\\.terminationReason=\`pong_timeout\`,\\9\\.terminate\\(\\)\\}\\}\\)`,
     ));
-    if (current == null) return null;
-    return {namespace, webSocketClass, webSocketUrl, headersFunction:current[2], defaultFrameLimit:current[4], frameHeader:current[6], messagesClass:current[8], adapterClass:current[11], keepAlive:current[12]};
+    if (current != null) return {namespace, webSocketClass, webSocketUrl, headersFunction:current[2], defaultFrameLimit:current[4], frameHeader:current[6], messagesClass:current[8], adapterClass:current[11], keepAlive:current[12]};
   }
 
+  if (lifecycleMatch == null || sshClassSource.includes(".once(`upgrade`,")) return null;
   return {
     namespace,
     webSocketClass,
