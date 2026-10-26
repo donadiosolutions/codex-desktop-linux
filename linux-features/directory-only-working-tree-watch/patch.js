@@ -126,6 +126,8 @@ const CURRENT_LOCAL_HOST_CLASS = new RegExp(
     "id=`local`;isLocal=!0;",
   "gu",
 );
+const PARCEL_WORKING_TREE_WATCH =
+  /startWorkingTreeWatch:\((?<remote>[A-Za-z_$][\w$]*),(?<options>[A-Za-z_$][\w$]*),(?<ignored>[A-Za-z_$][\w$]*)\)=>\{if\(!\k<remote>\.isLocal\)return \k<remote>\.startFileWatch\(\k<options>\);if\(process\.platform===`linux`\)return [A-Za-z_$][\w$]*\(\k<options>,\{ignoredPaths:\[[A-Za-z_$][\w$]*\.default\.join\(\k<options>\.path,`\.git`\),\.\.\.\k<ignored>\]\}\);if\(\k<ignored>\.length===0\)return (?<host>[A-Za-z_$][\w$]*)\.startFileWatch\(\k<options>\)/gu;
 const CURRENT_PARCEL_HELPER = new RegExp(
   "async function " +
     `(?<helperName>${IDENTIFIER_PATTERN})\\(` +
@@ -136,50 +138,59 @@ const CURRENT_PARCEL_HELPER = new RegExp(
     `\\),\\k<helperOptions>,\\k<helperSettings>\\)\\.start\\(\\)\\}`,
   "gu",
 );
-// The current worker shares its local host with a policy gate and keeps the
-// non-Linux ignored-directory filter in the callback after the Linux return.
 const CURRENT_GIT_ROUTE_PREFIX_PATTERN =
   "case`git`:\\{let " +
-  `(?<policy>${IDENTIFIER_PATTERN})=${IDENTIFIER_PATTERN}\\(\\),` +
-  `(?<localHost>${IDENTIFIER_PATTERN})=new (?<localHostClass>${IDENTIFIER_PATTERN})\\(\\k<policy>\\);` +
-  "return\\{git:\\{watchIgnoreSources:\\k<policy>\\?void 0:\\{" +
-  "getEnvironment:async\\(\\)=>\\{if\\(" +
-  `(?<mainConnection>${IDENTIFIER_PATTERN})==null\\)` +
-  "throw Error\\(`Git hosts require a main RPC connection`\\);return " +
-  "\\k<mainConnection>\\.getLocalGitIgnoreEnvironment\\(\\)\\}," +
-  `getWatchTargets:(?<getWatchTargets>${IDENTIFIER_PATTERN})\\},createExecutionHost:` +
-  `(?<executionOptions>${IDENTIFIER_PATTERN})=>\\{if\\(\\k<mainConnection>==null\\)` +
+  `(?<ignoreSource>${IDENTIFIER_PATTERN})=${IDENTIFIER_PATTERN}\\(\\),` +
+  `(?<localHost>${IDENTIFIER_PATTERN})=new ` +
+  `(?<localHostClass>${IDENTIFIER_PATTERN})\\(\\k<ignoreSource>\\);return\\{git:\\{` +
+  "(?=[\\s\\S]{0,900}?getEnvironment:async\\(\\)=>\\{if\\(" +
+  `(?<mainConnection>${IDENTIFIER_PATTERN})==null\\)throw Error\\(` +
+  "`Git hosts require a main RPC connection`" +
+  "\\);return \\k<mainConnection>\\.getLocalGitIgnoreEnvironment\\(\\)\\}," +
+  `getWatchTargets:${IDENTIFIER_PATTERN}\\},createExecutionHost:` +
+  `(?<executionConfig>${IDENTIFIER_PATTERN})=>\\{if\\(\\k<mainConnection>==null\\)` +
   "throw Error\\(`Git hosts require a main RPC connection`\\);return new " +
-  `(?<remoteHostClass>${IDENTIFIER_PATTERN})\\(\\k<mainConnection>,\\k<executionOptions>\\)\\},` +
+  `${IDENTIFIER_PATTERN}\\(\\k<mainConnection>,\\k<executionConfig>\\)\\},)` +
+  "[\\s\\S]{0,900}?" +
   "startMetadataWatch:\\(" +
   `(?<metadataHost>${IDENTIFIER_PATTERN}),(?<metadataOptions>${IDENTIFIER_PATTERN})\\)=>` +
-  "\\k<metadataHost>\\.isLocal\\?process\\.platform===`linux`&&\\k<metadataOptions>\\.recursive!==!1\\?" +
+  "\\k<metadataHost>\\.isLocal\\?process\\.platform===`linux`&&" +
+  "\\k<metadataOptions>\\.recursive!==!1\\?" +
   `(?<metadataHelper>${IDENTIFIER_PATTERN})\\(\\k<metadataOptions>,\\{ignoredPaths:\\[\\]\\}\\):` +
-  "\\k<localHost>\\.startFileWatch\\(\\k<metadataOptions>\\):\\k<metadataHost>\\.startFileWatch\\(\\k<metadataOptions>\\),";
-const CURRENT_ROUTE_HEAD_PATTERN =
-  "(?<blockRoute>startWorkingTreeWatch):\\(" +
-  `(?<routeHost>${IDENTIFIER_PATTERN}),(?<routeOptions>${IDENTIFIER_PATTERN}),(?<ignoredPaths>${IDENTIFIER_PATTERN})\\)=>\\{` +
+  "\\k<localHost>\\.startFileWatch\\(\\k<metadataOptions>\\):" +
+  "\\k<metadataHost>\\.startFileWatch\\(\\k<metadataOptions>\\),";
+const CURRENT_PARCEL_ROUTE_PATTERN =
+  "startWorkingTreeWatch:\\(" +
+  `(?<routeHost>${IDENTIFIER_PATTERN}),` +
+  `(?<routeOptions>${IDENTIFIER_PATTERN}),` +
+  `(?<ignoredPaths>${IDENTIFIER_PATTERN})\\)=>\\{` +
   "if\\(!\\k<routeHost>\\.isLocal\\)return \\k<routeHost>\\.startFileWatch\\(\\k<routeOptions>\\);" +
-  "if\\(process\\.platform===`linux`\\)return ";
-const CURRENT_PARCEL_CALL_PATTERN =
+  "if\\(process\\.platform===`linux`\\)return " +
   `(?<routeHelper>${IDENTIFIER_PATTERN})\\(\\k<routeOptions>,\\{ignoredPaths:\\[` +
-  `(?<pathApi>${IDENTIFIER_PATTERN})\\.default\\.join\\(\\k<routeOptions>\\.path,\`\\.git\`\\),\\.\\.\\.\\k<ignoredPaths>\\]\\}\\)`;
-const CURRENT_ROUTE_TAIL_PATTERN =
-  ";(?=if\\(\\k<ignoredPaths>\\.length===0\\)return \\k<localHost>\\.startFileWatch\\(\\k<routeOptions>\\);let )";
+  `(?<pathApi>${IDENTIFIER_PATTERN})\\.default\\.join\\(` +
+  "\\k<routeOptions>\\.path,`\\.git`\\),\\.\\.\\.\\k<ignoredPaths>\\]\\}\\);" +
+  "if\\(\\k<ignoredPaths>\\.length===0\\)return \\k<localHost>\\.startFileWatch\\(\\k<routeOptions>\\)";
+const CURRENT_WATCHBOUND_ROUTE_PATTERN =
+  "startWorkingTreeWatch:\\(" +
+  `(?<routeHost>${IDENTIFIER_PATTERN}),` +
+  `(?<routeOptions>${IDENTIFIER_PATTERN}),` +
+  `(?<ignoredPaths>${IDENTIFIER_PATTERN})\\)=>\\{` +
+  "if\\(!\\k<routeHost>\\.isLocal\\)return \\k<routeHost>\\.startFileWatch\\(\\k<routeOptions>\\);" +
+  "if\\(process\\.platform===`linux`\\)return " +
+  `/\\*${PARCEL_WATCH_MARKER}\\*/` +
+  "\\k<localHost>\\.startFileWatch\\(\\{\\.\\.\\.\\k<routeOptions>," +
+  "\\[Symbol\\.for\\(`codex-linux\\.directory-only-working-tree-watch\\.parcel-fallback`\\)\\]:" +
+  `\\(\\)=>(?<routeHelper>${IDENTIFIER_PATTERN})\\(\\k<routeOptions>,\\{ignoredPaths:\\[` +
+  `(?<pathApi>${IDENTIFIER_PATTERN})\\.default\\.join\\(` +
+  "\\k<routeOptions>\\.path,`\\.git`\\),\\.\\.\\.\\k<ignoredPaths>\\]\\}\\)\\}\\);" +
+  "if\\(\\k<ignoredPaths>\\.length===0\\)return \\k<localHost>\\.startFileWatch\\(\\k<routeOptions>\\)";
 const CURRENT_PARCEL_ROUTE_CONTRACT = new RegExp(
-  `(?<routePrefix>${CURRENT_GIT_ROUTE_PREFIX_PATTERN})${CURRENT_ROUTE_HEAD_PATTERN}` +
-  CURRENT_PARCEL_CALL_PATTERN + CURRENT_ROUTE_TAIL_PATTERN, "gu",
+  `(?<routePrefix>${CURRENT_GIT_ROUTE_PREFIX_PATTERN})${CURRENT_PARCEL_ROUTE_PATTERN}`,
+  "gu",
 );
 const CURRENT_WATCHBOUND_ROUTE_CONTRACT = new RegExp(
-  `(?<routePrefix>${CURRENT_GIT_ROUTE_PREFIX_PATTERN})${CURRENT_ROUTE_HEAD_PATTERN}` +
-  `/\\*${PARCEL_WATCH_MARKER}\\*/\\k<localHost>\\.startFileWatch\\(\\{\\.\\.\\.\\k<routeOptions>,` +
-  "\\[Symbol\\.for\\(`codex-linux\\.directory-only-working-tree-watch\\.parcel-fallback`\\)\\]:\\(\\)=>" +
-  CURRENT_PARCEL_CALL_PATTERN + "\\}\\)" + CURRENT_ROUTE_TAIL_PATTERN, "gu",
-);
-const PARCEL_WORKING_TREE_WATCH = new RegExp(
-  "if\\(process\\.platform===`linux`\\)return " +
-  `${IDENTIFIER_PATTERN}\\((?<options>${IDENTIFIER_PATTERN}),\\{ignoredPaths:\\[` +
-  `${IDENTIFIER_PATTERN}\\.default\\.join\\(\\k<options>\\.path,\`\\.git\`\\),\\.\\.\\.${IDENTIFIER_PATTERN}\\]\\}\\);`, "gu",
+  `(?<routePrefix>${CURRENT_GIT_ROUTE_PREFIX_PATTERN})${CURRENT_WATCHBOUND_ROUTE_PATTERN}`,
+  "gu",
 );
 
 function codexLinuxStartDirectoryOnlyWorkingTreeWatch(
@@ -1713,12 +1724,16 @@ function currentContractReason(records, bundleCount) {
 }
 
 function watchboundWorkingTreeRoute(groups) {
-  return `startWorkingTreeWatch:(${groups.routeHost},${groups.routeOptions},${groups.ignoredPaths})=>{` +
+  return (
+    `startWorkingTreeWatch:(${groups.routeHost},${groups.routeOptions},${groups.ignoredPaths})=>{` +
     `if(!${groups.routeHost}.isLocal)return ${groups.routeHost}.startFileWatch(${groups.routeOptions});` +
-    `if(process.platform===\`linux\`)return /*${PARCEL_WATCH_MARKER}*/${groups.localHost}.startFileWatch({` +
+    `if(process.platform===\`linux\`)return ` +
+    `/*${PARCEL_WATCH_MARKER}*/${groups.localHost}.startFileWatch({` +
     `...${groups.routeOptions},[Symbol.for(\`${PARCEL_FALLBACK_SYMBOL_KEY}\`)]:()=>` +
-    `${groups.routeHelper}(${groups.routeOptions},{ignoredPaths:[${groups.pathApi}.default.join(` +
-    `${groups.routeOptions}.path,\`.git\`),...${groups.ignoredPaths}]})});`;
+    `${groups.routeHelper}(${groups.routeOptions},{ignoredPaths:[` +
+    `${groups.pathApi}.default.join(${groups.routeOptions}.path,\`.git\`),...${groups.ignoredPaths}]})});` +
+    `if(${groups.ignoredPaths}.length===0)return ${groups.localHost}.startFileWatch(${groups.routeOptions})`
+  );
 }
 
 function replaceCurrentParcelRoute(source) {

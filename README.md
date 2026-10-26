@@ -271,11 +271,12 @@ requirements, known limitations, configuration, and tests.
 | `chatgpt-sidebar-separate-history` | Default the ChatGPT history filter to Chat and remember Chat / Work / All selections | [Docs](linux-features/chatgpt-sidebar-separate-history/README.md) |
 | `chronicle-skysight` | Opt-in Linux desktop activity memory and restricted Skysight MCP tools | [Docs](linux-features/chronicle-skysight/README.md) |
 | `codex-micro` | Work Louder Codex Micro hotplug and hidraw policy using upstream `node-hid` | [Docs](linux-features/codex-micro/README.md) |
-| `community-features-in-gui-settings` | Browse a read-only feature/subfeature tree in a separate section atop General settings, with individual counts and green installed statuses; English and Simplified Chinese UI | [Docs](linux-features/community-features-in-gui-settings/README.md) |
+| `community-features-in-gui-settings` | Browse the public feature catalog and enabled local features in a read-only tree atop General settings; individual counts, green installed statuses, English and Simplified Chinese UI | [Docs](linux-features/community-features-in-gui-settings/README.md) |
 | `community-profile-isolation` | Isolate Community Codex/Electron state and child CLI resolution from official ChatGPT | [Docs](linux-features/community-profile-isolation/README.md) |
 | `computer-use-linux` | Linux desktop-control UI and native MCP backend | [Docs](linux-features/computer-use-linux/README.md) |
 | `copilot-reasoning-effort` | Persistent reasoning-effort defaults for Copilot-auth sessions | [Docs](linux-features/copilot-reasoning-effort/README.md) |
 | `daybreak-model-visibility` | Show catalog-visible Daybreak Blue as a separate model while preserving access checks | [Docs](linux-features/daybreak-model-visibility/README.md) |
+| `desktop-identity` | Use the Community desktop entry for notification and child-process desktop identity | [Docs](linux-features/desktop-identity/README.md) |
 | `directory-only-working-tree-watch` | Bounded Watchbound working-tree watching | [Docs](linux-features/directory-only-working-tree-watch/README.md) |
 | `filesystem-root-follow-ups` | Allow follow-ups in existing local tasks rooted at `/` | [Docs](linux-features/filesystem-root-follow-ups/README.md) |
 | `flatpak-chrome-native-messaging` | Bridge the official Chrome extension into Flatpak Google Chrome | [Docs](linux-features/flatpak-chrome-native-messaging/README.md) |

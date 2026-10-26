@@ -246,11 +246,12 @@ Nix 用户应从 profile、Home Manager 配置或 NixOS module 中删除该包�
 | `chatgpt-sidebar-separate-history` | ChatGPT 历史记录默认仅显示聊天，并记住聊天 / Work / 全部筛选选项 | [文档](linux-features/chatgpt-sidebar-separate-history/README.md) |
 | `chronicle-skysight` | 可选的 Linux 桌面活动记忆与受限 Skysight MCP 工具 | [文档](linux-features/chronicle-skysight/README.md) |
 | `codex-micro` | 使用上游 `node-hid` 的 Codex Micro hotplug/hidraw policy | [文档](linux-features/codex-micro/README.md) |
-| `community-features-in-gui-settings` | 在常规设置页顶部的独立一节查看功能与子功能树，子功能分别计数，已安装状态标绿；支持英语和简体中文 | [文档](linux-features/community-features-in-gui-settings/README.md) |
+| `community-features-in-gui-settings` | 在常规设置页顶部查看公共功能目录及已启用的本地功能树；子功能分别计数，已安装状态标绿，支持英语和简体中文 | [文档](linux-features/community-features-in-gui-settings/README.md) |
 | `community-profile-isolation` | 将 Community 的 Codex/Electron 状态与子进程 CLI 解析和官方 ChatGPT 隔离 | [文档](linux-features/community-profile-isolation/README.md) |
 | `computer-use-linux` | Linux desktop-control UI 与原生 MCP backend | [文档](linux-features/computer-use-linux/README.md) |
 | `copilot-reasoning-effort` | Copilot auth 的 reasoning-effort 默认值 | [文档](linux-features/copilot-reasoning-effort/README.md) |
 | `daybreak-model-visibility` | 将目录中可见的 Daybreak Blue 显示为独立模型，保留访问权限检查 | [文档](linux-features/daybreak-model-visibility/README.md) |
+| `desktop-identity` | 通知与子进程使用 Community 桌面入口标识，以正确显示图标 | [文档](linux-features/desktop-identity/README.md) |
 | `directory-only-working-tree-watch` | 有界 Watchbound 工作树监听 | [文档](linux-features/directory-only-working-tree-watch/README.md) |
 | `filesystem-root-follow-ups` | 允许工作目录为 `/` 的现有本地任务继续发送消息 | [文档](linux-features/filesystem-root-follow-ups/README.md) |
 | `flatpak-chrome-native-messaging` | 将官方 Chrome 扩展连接到 Flatpak Google Chrome | [文档](linux-features/flatpak-chrome-native-messaging/README.md) |

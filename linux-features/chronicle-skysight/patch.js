@@ -8,7 +8,6 @@ const CHRONICLE_MODULE_EXPRESSIONS = Object.freeze({
   pathVar: 'require("node:path")',
 });
 const IDENTIFIER = "[A-Za-z_$][\\w$]*";
-
 function warn(message, patchName) {
   console.warn(`WARN: ${message} - skipping ${patchName}`);
 }

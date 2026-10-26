@@ -293,6 +293,7 @@ test("record-and-replay rejects incomplete current bridge variants byte-identica
   };
   const bridgePayload = recordReplayBridgeSource(moduleExpressions);
   const helperPayload = recordReplayHelperSource(moduleExpressions);
+  const bridgeAnchor = '"set-remote-wsl-connections-enabled":';
   const variants = {
     "missing current bridge handler": patched.replace(
       '"linux-record-replay-status":async',
@@ -316,6 +317,32 @@ test("record-and-replay rejects incomplete current bridge variants byte-identica
     assert.equal(value, drifted, name);
     assert.equal(warnings.length, 1, name);
     assert.match(warnings[0], /incomplete Record & Replay main bridge patch/, name);
+  }
+});
+
+test("record-and-replay rejects missing, duplicate, retired, and mixed insertion anchors byte-identically", () => {
+  const current = applyChronicleSkysightMainBridgePatch(currentChronicleControllerFixture());
+  const retired = current.replace(
+    '"set-remote-wsl-connections-enabled":',
+    '"get-global-state":async({key:',
+  );
+  const variants = {
+    missing: current.replace(
+      '"set-remote-wsl-connections-enabled":',
+      '"set-remote-wsl-connections-disabled":',
+    ),
+    "duplicate current": current.replace(
+      '"set-remote-wsl-connections-enabled":',
+      '"set-remote-wsl-connections-enabled":()=>null,"set-remote-wsl-connections-enabled":',
+    ),
+    "retired legacy owner": retired,
+  };
+
+  for (const [name, source] of Object.entries(variants)) {
+    const { value, warnings } = captureWarns(() => applyRecordReplayMainBridgePatch(source));
+    assert.equal(value, source, name);
+    assert.equal(warnings.length, 1, name);
+    assert.match(warnings[0], /Expected one live FetchHandler request map/, name);
   }
 });
 

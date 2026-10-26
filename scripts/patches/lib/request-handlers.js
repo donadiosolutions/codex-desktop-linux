@@ -20,7 +20,7 @@ function findRequestHandlerMap(source) {
     if (!router) continue;
     const routerStart = router.index + router[0].length - 1;
     const routerText = body.slice(routerStart, findMatchingBrace(body, routerStart) + 1);
-    if (!routerText.includes("this.handlers[") || !source.slice(start, end).includes('"set-remote-wsl-connections-enabled":')) continue;
+    if (!routerText.includes("this.handlers[") || source.slice(start, end).split('"set-remote-wsl-connections-enabled":').length !== 2) continue;
     candidates.push({ start, end, text: source.slice(start + 1, end), ownerStart: owner.index, ownerEnd });
   }
   if (candidates.length !== 1) throw Error("Expected one live FetchHandler request map");

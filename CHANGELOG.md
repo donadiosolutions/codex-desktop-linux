@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Synchronize the embedded Computer Use backend to standalone v0.7.24. Carry scoped semantic recovery, exact Unicode editable-text verification, Qt native actions, KWin fractional-scale and dialog targeting, and X11 dispatch monitoring. Preserve Codex identities, Chrome integration, avatar feedback and cancellation guards.
+
 - Synchronize the embedded Computer Use backend from v0.4.9 to standalone
   v0.7.6 as `0.7.6-linux-alpha1`. Carry the accessibility setup/guard, native
   AT-SPI actions, X11 geometry and screenshots, bounded KWin transactions,
@@ -68,6 +70,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The app no longer stops at launch with "Organization settings could not be
+  loaded" on upstream 26.1021+. The remote-mobile-control patch added
+  `--remote-control` (or the `proxy` subcommand) to every app-server launch,
+  including the one-shot `--print-startup-config` check, which app-server
+  0.164 rejects. Startup checks now run without those arguments; the
+  long-running Desktop app-server still owns Remote Control.
+- The updater no longer leaks a ~2 GB `workspaces/<version>` directory per
+  release under `~/.cache/codex-update-manager`. Cache cleanup only pruned
+  superseded upstream `.deb` files, so every rebuilt candidate's extracted app
+  and package stayed on disk indefinitely (one long-running install reached
+  34 workspaces / 59 GB). Cleanup now also removes workspaces that no persisted
+  path still references, keeping the active build, the rebuilt package, the
+  rollback package, and any in-flight install transaction, and it never follows
+  a symlinked workspace root.
 - The documented `UPSTREAM_DEB=/path/to/chatgpt_<version>_<arch>.deb make build-app`
   invocation (also `make rebuild`, `rebuild-install`, `inspect-upstream`, and
   `rebuild-next`) no longer fails with "Only one upstream .deb path may be

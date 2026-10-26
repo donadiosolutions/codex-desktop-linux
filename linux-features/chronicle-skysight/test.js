@@ -202,6 +202,18 @@ test("chronicle-skysight fails closed for missing duplicate ambiguous mixed and 
     .replace("var $O=class", "var $P=class");
   const variants = {
     retiredRelease: retiredChronicleMainFixture(),
+    retiredHandlerAnchor: current.replace(
+      '"set-remote-wsl-connections-enabled":',
+      '"get-global-state":async({key:',
+    ),
+    missingHandlerAnchor: current.replace(
+      '"set-remote-wsl-connections-enabled":',
+      '"set-remote-wsl-connections-disabled":',
+    ),
+    duplicateHandlerAnchor: current.replace(
+      '"set-remote-wsl-connections-enabled":',
+      '"set-remote-wsl-connections-enabled":()=>null,"set-remote-wsl-connections-enabled":',
+    ),
     missing: current.replace("this.request(`skysightStatus`)", "this.request(`statusChanged`)"),
     missingReconciliationDependency: current.replace(
       "reconcileComputerHistoryPluginInstallation:e=>",

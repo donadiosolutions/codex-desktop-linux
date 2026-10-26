@@ -37,6 +37,14 @@ test("linux-performance-workarounds remains an opt-in performance feature", () =
   assert.equal(descriptors[4].pattern.test("app-initial-cccb87527a41.css"), true);
 });
 
+test("sidebar workaround locates the current semantic container after asset moves", () => {
+  const source = "jsx(`div`,{...styles.sidebarScroll,className:cx(`vertical-scroll-fade-mask`,`[contain:layout_paint]`,styles.headerFadeMask),ref:node,onScroll:event=>{let{scrollTop:value}=event.currentTarget;return value}})";
+  assert.equal(descriptors[2].assetMatch(source), true);
+  const patched = descriptors[2].apply(source);
+  assert.match(patched, /style:\{animationName:`none`/u);
+  assert.equal(descriptors[2].assetMatch(patched), true);
+});
+
 test("current app-shell tab workaround disables tab layout animation", () => {
   const source = currentAppShellTabLayoutFixture();
   assert.equal(matchesLinuxAppShellTabLayoutPerformanceContract(source), true);

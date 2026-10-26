@@ -3,91 +3,20 @@ const assert = require("node:assert/strict");
 const vm = require("node:vm");
 const path = require("node:path");
 const test = require("node:test");
-const upstream = require("./fixtures/upstream-26.1021.22027.json");
-const { applyUnifiedComputerUsePatch } = require("./unified.js");
+const descriptors = require("./patch.js");
 
-test("signed 26.1021.22027 unified lifecycle emits valid, idempotent JavaScript", () => {
-  const patched = applyUnifiedComputerUsePatch(upstream.main);
-  assert.notEqual(patched, upstream.main);
-  assert.doesNotThrow(() => new vm.Script(patched));
-  assert.equal(applyUnifiedComputerUsePatch(patched), patched);
-});
-
-test("current upstream resume preserves verified roots through selection cloning and audio configuration", async () => {
-  const resolutions = [];
-  const metadata = { plugin: { installed: true, localVersion: "verified", name: "unified-computer-use" }, marketplace: { name: "openai-bundled" } };
-  const { xre, Ic } = vm.runInNewContext(`${applyUnifiedComputerUsePatch(upstream.main)};({xre,Ic})`, {
-    _o: () => metadata,
-    i: { Yo: "unified-computer-use", rs: "cua_repl", us: "services", as: "node", is: "modules", qt: input => {
-      resolutions.push(input);
-      return path.join(input.codexHome, input.localVersion, input.pluginName);
-    } },
-    C: { default: path },
-    A: { readFile: async () => '{"mcpServers":{"cua_repl":{}}}', writeFile: async () => {}, rename: async () => {} },
-    bre: { parse: value => value }, v: { randomUUID: () => "test" },
-    yi: "backends", Si: "tools", xi: "pipe", Ci: "identity",
-    I: { default: { env: {} } }, process: { env: { CODEX_LINUX_CUA_HOST_SOCKET: "/host.sock" } },
-    jc: async connection => connection.cached,
-    va: () => ({ browserUseTinysky: true }),
-    Ec: async e => ({ "mcp_servers.node_repl": e.nodeRepl }),
-    Pc: () => "/tools", Nc: "/fallback", Oo: () => {}, Do: {},
-  });
-  const connections = [];
-  for (const [home, surfaces] of [["/first", ["computer", "browser"]], ["/second", ["browser"]]]) {
-    const selection = { codexHome: home, browserBackends: ["chrome"], cuaReplSurfaces: surfaces, desktopFeatureAvailability: { deferCuaTools: true } };
-    const nodeRepl = { command: "/node", env_vars: ["KEEP"], env: { SKY_AUDIO_ATTACHMENTS: "1", node: "/node", modules: "/modules" } };
-    const enabled = await xre({ ...selection, surfaces, deferTools: true, nodeRepl, codexLinuxCuaContext: selection });
-    assert.equal(enabled, true);
-    connections.push({ hostConfig: { kind: "local" }, cached: { selection, cuaReplEnabled: enabled }, getAuthenticatedPrincipal: async () => null, nodeRepl });
-  }
-  for (const connection of connections.reverse()) {
-    const root = path.join(connection.cached.selection.codexHome, "verified/unified-computer-use");
-    assert.equal(connection.cached.selection.codexLinuxCuaPluginRoot, root);
-    const config = (await Ic({ appServerConnection: connection, nodeRepl: connection.nodeRepl }))["mcp_servers.cua_repl"];
-    const computer = connection.cached.selection.cuaReplSurfaces.includes("computer");
-    assert.equal(JSON.parse(config.env.services).sky, computer ? path.join(root, "scripts/native-service.mjs") : undefined);
-    assert.ok(config.env.NODE_REPL_JS_BANNER.includes(path.join(root, "scripts/native-client.mjs")));
-    assert.equal(config.env.CODEX_LINUX_CUA_HOST_SOCKET, "/host.sock");
-    assert.equal(config.env.SKY_ENABLE_AUDIO, computer ? "1" : "0");
-    assert.equal(config.env.SKY_AUDIO_ATTACHMENTS, computer ? "1" : "0");
-    assert.equal(config.env.NODE_REPL_ENABLE_AUDIO, "0");
-    assert.equal(config.env_vars[0], "KEEP");
-  }
-  assert.equal(resolutions.length, 2, "resume reuses verified metadata");
-  assert.equal(resolutions[0].localVersion, "verified");
-  delete connections[0].cached.selection.codexLinuxCuaPluginRoot;
-  await assert.rejects(Ic({ appServerConnection: connections[0], nodeRepl: connections[0].nodeRepl }), /trusted plugin root is unavailable/);
-});
-
-test("current upstream rejects partial, ambiguous, and altered lifecycle contracts", () => {
-  const patched = applyUnifiedComputerUsePatch(upstream.main);
-  for (const source of [
-    upstream.main + upstream.main,
-    upstream.main + patched,
-    patched.replace("||u.platform===`linux`", ""),
-    patched.replace("u.platform===`linux`?h:", ""),
-    patched.replace("codexLinuxCuaContext:_", "codexLinuxCuaContext:other"),
-    patched.replace("e.codexLinuxCuaContext.codexLinuxCuaPluginRoot=r;", ""),
-    patched.replace(",c.codexLinuxCuaPluginRoot)", ")"),
-    patched.replace("NODE_REPL_ENABLE_AUDIO:`0`", "NODE_REPL_ENABLE_AUDIO:`1`"),
-    upstream.main.replace("c=o?.selection", "c=other?.selection"),
-  ]) {
-    assert.notEqual(source, patched);
-    assert.throws(() => applyUnifiedComputerUsePatch(source), /unified.*contract/i);
-  }
-});
-
-// The current selector keeps shared prerequisites, Windows support, and the
-// macOS service-path gate, followed by independent browser selection.
+// The current selector boundary: unified prerequisites, platform, feature flag,
+// Windows/macOS service availability, followed by independent browser selection.
 const selector = [
   'function select(f,l,t,u){let p=f&&t.computerUse&&u.enabled&&(l.platform===`win32`||l.platform===`darwin`&&u.paths.serviceAppPath!=null),m=t.computerUse&&(!t.browserUseTinysky||l.platform!==`darwin`||u.enabled),h=[];return f&&t.browser&&h.push(`browser`),p&&h.push(`computer`),{computerUse:m,cuaReplSurfaces:h}}',
   'async function configure(e){let t=lookup(),i=constants.Kt({codexHome:e.codexHome,localVersion:t.plugin.localVersion,marketplaceName:t.marketplace.name,pluginName:t.plugin.name}),a=path.default.join(i,`.mcp.json`),c={};Object.assign(c,build(e));return e.nodeRepl!=null&&e.surfaces.length>0}',
   'function build({browserBackends:b,deferTools:d,surfaces:s,nodeRepl:n}){let l={};return s.includes(`browser`)&&(l.browser=`@oai/browser-desktop/service`),s.includes(`computer`)&&(l.sky=`@oai/sky/service`),{env:{...n?.env,CUA_REPL_ENABLED_SURFACES:s.join(`,`),...n?.env.SKY_AUDIO_ATTACHMENTS===`1`?{SKY_ENABLE_AUDIO:s.includes(`computer`)?`1`:`0`,SKY_AUDIO_ATTACHMENTS:s.includes(`computer`)?`1`:`0`,NODE_REPL_ENABLE_AUDIO:`0`}:{},[constants.Il]:JSON.stringify(l)}}}',
   'async function initialize(e){let selection=e.selection,features=selection.desktopFeatureAvailability,backends=selection.browserBackends,surfaces=selection.cuaReplSurfaces,home=selection.codexHome,marketplace=selection.marketplaceName,marketplaces=e.marketplaces,skip=false,node=selection.nodeRepl,enabled=false;enabled=await configure({browserBackends:backends,deferTools:features.deferCuaTools,surfaces:surfaces,codexHome:home,marketplaceName:marketplace,marketplaces:marketplaces,nodeRepl:skip?void 0:node});return {selection:selection,cuaReplEnabled:enabled}}',
-  'async function threadConfig(e){let cached=e.cached,features=e.features,posture=features.browserUseTinysky?cached:null,principal=false?await e.getAuthenticatedPrincipal().catch(()=>null):null,selection=posture?.selection??await selectForThread(e),node=e.nodeRepl??selection.nodeRepl;return !posture?.cuaReplEnabled?{enabled:false}:build({browserBackends:selection.browserBackends,deferTools:selection.desktopFeatureAvailability.deferCuaTools,surfaces:selection.cuaReplSurfaces,nodeRepl:node})}',
+  'async function threadConfig(e){let connection=e.connection,local=connection!=null,cached=e.cached,features=e.features,posture=features.browserUseTinysky?cached:null,principal=local?await connection.getAuthenticatedPrincipal().catch(()=>null):null,selection=posture?.selection??await selectForThread(e),node=e.nodeRepl??selection.nodeRepl;return !posture?.cuaReplEnabled?{enabled:false}:build({browserBackends:selection.browserBackends,deferTools:selection.desktopFeatureAvailability.deferCuaTools,surfaces:selection.cuaReplSurfaces,nodeRepl:node})}',
 ].join("");
 function patch(source) {
-  return applyUnifiedComputerUsePatch(source);
+  return descriptors.filter(d => ["ui-feature", "unified-runtime"].includes(d.id))
+    .reduce((s, d) => d.apply(s), source);
 }
 function surfaces(source, platform, { ready = true, enabled = true, legacy = false, nativeEnabled = true } = {}) {
   const select = vm.runInNewContext(`(${source.slice(0, source.indexOf("async function configure"))})`);
@@ -114,9 +43,6 @@ test("unified prerequisites, native feature flag, and other platforms retain the
   assert.equal(patch(result), result);
 });
 test("unified selector drift and ambiguous owners fail the build", () => {
-  assert.throws(() => patch(selector.replace(
-    "f&&t.computerUse&&u.enabled&&(l.platform===`win32`||l.platform===`darwin`&&u.paths.serviceAppPath!=null)",
-    "f&&l.platform===`darwin`&&t.computerUse&&u.enabled&&u.paths.serviceAppPath!=null")), /unified.*contract/i);
   assert.throws(() => patch(selector.replace("serviceAppPath!=null", "serviceAppPath")), /unified.*contract/i);
   assert.throws(() => patch(selector + selector), /unified.*contract/i);
   assert.throws(() => patch(selector.replace("@oai/sky/service", "@oai/sky/changed")), /unified.*contract/i);
@@ -163,7 +89,7 @@ test("unified banner patch edits only the validated service owner", () => {
 test("unified banner patch rejects duplicate banners inside the service owner", () => {
   const duplicate = selector.replace(
     "[constants.Il]:JSON.stringify(l)",
-    "CUA_REPL_ENABLED_SURFACES:s.join(`,`),...n?.env.SKY_AUDIO_ATTACHMENTS===`1`?{SKY_ENABLE_AUDIO:s.includes(`computer`)?`1`:`0`,SKY_AUDIO_ATTACHMENTS:s.includes(`computer`)?`1`:`0`,NODE_REPL_ENABLE_AUDIO:`0`}:{},[constants.Il]:JSON.stringify(l),duplicate:{CUA_REPL_ENABLED_SURFACES:s.join(`,`),...n?.env.SKY_AUDIO_ATTACHMENTS===`1`?{SKY_ENABLE_AUDIO:s.includes(`computer`)?`1`:`0`,SKY_AUDIO_ATTACHMENTS:s.includes(`computer`)?`1`:`0`,NODE_REPL_ENABLE_AUDIO:`0`}:{},[constants.Il]:JSON.stringify(l)}",
+    "CUA_REPL_ENABLED_SURFACES:s.join(`,`),[constants.Il]:JSON.stringify(l),duplicate:{CUA_REPL_ENABLED_SURFACES:s.join(`,`),[constants.Il]:JSON.stringify(l)}",
   );
 
   assert.throws(() => patch(duplicate), /unified.*contract/i);
@@ -285,6 +211,8 @@ test("unified propagation rejects missing, ambiguous, or changed builder consume
     selector + "configure(extra)",
     selector.replace("return {selection:selection", "return {selection:other"),
     selector.replace("selection=posture?.selection", "selection=other?.selection"),
+    // The retired pre-26.1021 thread configuration without the principal lookup.
+    selector.replace("principal=local?await connection.getAuthenticatedPrincipal().catch(()=>null):null,", ""),
   ]) {
     assert.throws(() => patch(changed), /unified.*contract/i);
   }

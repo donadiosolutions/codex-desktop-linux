@@ -81,15 +81,9 @@ function applyLinuxGlobalDictationMainProcessPatch(source) {
   }
 
   try {
-    // The shared portal engine still validates the pre-notification ownership shape.
-    // Normalize only that verified prefix while it runs, then restore the upstream callback.
-    const notificationPrefix = source.match(/let ([A-Za-z_$][\w$]*)=n\?\.ownership,([A-Za-z_$][\w$]*)=t\.onReleased,([A-Za-z_$][\w$]*)=t\.onCancelled,([A-Za-z_$][\w$]*)=\1==null\?t:\{onRegistrationChanged:t\.onRegistrationChanged,/u)?.[0];
-    const legacyPrefix = notificationPrefix?.replace("onRegistrationChanged:t.onRegistrationChanged,", "");
-    const contractSource = notificationPrefix == null ? source :
-      replaceUnique(source, new RegExp(escapeRegexLiteral(notificationPrefix), "u"), legacyPrefix, "shortcut registration notification");
-    const { name: registerFunction, bareModifier: bareModifierTestFunction } = registrationContract(contractSource);
+    const { name: registerFunction, bareModifier: bareModifierTestFunction } = registrationContract(source);
     const registerFunctionPattern = escapeRegexLiteral(registerFunction);
-    let patched = helperSource() + contractSource;
+    let patched = helperSource() + source;
     const currentValidation = new RegExp(
       `function (${IDENT})\\(e\\)\\{(?=if\\(process\\.platform===\`win32\`&&${IDENT}\\(e\\)\\)return[\\s\\S]{0,220}?;let ${IDENT}=${IDENT}\\(e,process\\.platform,\\{allowUnmodified:!0\\}\\))`,
       "u",
@@ -153,8 +147,7 @@ function applyLinuxGlobalDictationMainProcessPatch(source) {
       "hotkey failure cleanup method",
     );
     const withPortal = installPortalBackend(patched);
-    return notificationPrefix == null ? withPortal :
-      replaceUnique(withPortal, new RegExp(escapeRegexLiteral(legacyPrefix), "u"), notificationPrefix, "restore shortcut registration notification");
+    return withPortal;
   } catch (error) {
     warn(error instanceof Error ? error.message : String(error));
     return source;

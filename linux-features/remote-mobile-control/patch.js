@@ -42,7 +42,6 @@ const REMOTE_MOBILE_CONVERSATION_HYDRATION_MARKER =
 const REMOTE_CONTROL_ENABLEMENT_BRIDGE_MARKER = "codexLinuxRemoteControlEnablementBridge";
 const REMOTE_CONTROL_ENABLE_FOR_HOST_PARAMS_MARKER = "codexLinuxRemoteControlEnableForHostParams";
 const REMOTE_CONTROL_AUTO_CONNECT_CLEANUP_MARKER = "codexLinuxRemoteControlAutoConnectCleanup";
-const REMOTE_CONTROL_SELF_AUTO_CONNECT_MARKER = "codexLinuxRemoteControlSelfAutoConnect";
 const REMOTE_MOBILE_ACTIVE_STATUS_MARKER = "codexLinuxRemoteMobileActiveStatus";
 const REMOTE_CONTROL_STATUS_READ_GUARD_MARKER = "codexLinuxRemoteControlShouldReadStatus";
 const REMOTE_CONTROL_STATUS_WAIT_MARKER = "codexLinuxRemoteControlStatusWaitMs";
@@ -54,6 +53,13 @@ const REMOTE_MOBILE_APP_SERVER_REMOTE_CONTROL_MARKER = "codexLinuxRemoteMobileLo
 const REMOTE_MOBILE_APP_SERVER_BASE_ARGS_NEEDLE = "[`-c`,`features.code_mode_host=true`]";
 const REMOTE_MOBILE_APP_SERVER_REMOTE_CONTROL_HELPER =
   "function codexLinuxRemoteMobileLocalAppServerArgs(e,t){if(process.env.CODEX_REMOTE_CONTROL_APP_SERVER_MODE===`proxy`){let n=process.env.CODEX_REMOTE_CONTROL_APP_SERVER_PROXY_SOCKET;if(n?.startsWith(`%h/`)&&process.env.HOME)n=`${process.env.HOME}${n.slice(2)}`;return[...e,...t,`app-server`,`proxy`,...(n?[`--sock`,n]:[])]}return t.length===0?[...e,`app-server`,`--remote-control`,`--analytics-default-enabled`]:[`app-server`,...e,...t,`--remote-control`,`--analytics-default-enabled`]}";
+// Startup checks (`--print-startup-config`) are one-shot runs; app-server
+// rejects them together with `--remote-control` or the `proxy` subcommand.
+const REMOTE_MOBILE_APP_SERVER_STARTUP_GUARD_MARKER = "codexLinuxStartupCommandAppServerArgs";
+const REMOTE_MOBILE_APP_SERVER_STARTUP_GUARD_HELPER =
+  "function codexLinuxStartupCommandAppServerArgs(e,t){if(t==null||process.platform!==`linux`)return e;let n=e.indexOf(`app-server`);return n>=0&&e[n+1]===`proxy`?[...e.slice(0,n),`app-server`,`--analytics-default-enabled`]:e.filter(e=>e!==`--remote-control`)}";
+const REMOTE_MOBILE_APP_SERVER_STARTUP_ARGS_PATTERN =
+  /\.\.\.([A-Za-z_$][\w$]*)\.args,\.\.\.([A-Za-z_$][\w$]*)\.startupCommand\?\.args\?\?\[\]/gu;
 const REMOTE_CONTROL_APP_INITIAL_ASSET_PATTERN = /^app-initial-[^.]+\.js$/u;
 const REMOTE_CONTROL_APP_PRIMARY_ASSET_PATTERN = /^app-primary-[^.]+\.js$/u;
 const REMOTE_CONTROL_VISIBILITY_ASSET_PATTERN = /^[^.]+\.js$/u;
@@ -251,8 +257,11 @@ function applyLinuxRemoteControlDeviceKeyPatch(source) {
     return source;
   }
 
+  const providerInsertion = state.insertionNeedle.startsWith(",")
+    ? `;${state.providerSource};var ${state.insertionNeedle.slice(1)}`
+    : `${state.providerSource};${state.insertionNeedle}`;
   const patched = source
-    .replace(state.insertionNeedle, `${state.providerSource}${state.insertionNeedle}`)
+    .replace(state.insertionNeedle, providerInsertion)
     .replace(
       state.construction[0],
       `this.remoteControlDeviceKeyClient=process.platform===\`linux\`?codexLinuxRemoteControlDeviceKeyClient():new ${state.providerClass}(${state.construction.groups.args}),this.executionHostRegistry`,
@@ -285,6 +294,34 @@ function applyLinuxRemoteControlClientRevocationRecoveryPatch(source) {
 }
 
 function applyLinuxRemoteMobileAppServerRemoteControlPatch(source) {
+  return applyLinuxRemoteMobileStartupCommandArgsGuard(
+    applyLinuxRemoteMobileAppServerRemoteControlLaunchPatch(source),
+  );
+}
+
+function applyLinuxRemoteMobileStartupCommandArgsGuard(source) {
+  if (
+    source.includes(REMOTE_MOBILE_APP_SERVER_STARTUP_GUARD_MARKER) ||
+    !hasLinuxRemoteMobileLocalAppServerRemoteControlPatch(source)
+  ) {
+    return source;
+  }
+  const guarded = source.replace(
+    REMOTE_MOBILE_APP_SERVER_STARTUP_ARGS_PATTERN,
+    (_match, launch, options) =>
+      `...${REMOTE_MOBILE_APP_SERVER_STARTUP_GUARD_MARKER}(${launch}.args,${options}.startupCommand),` +
+      `...${options}.startupCommand?.args??[]`,
+  );
+  if (guarded === source) {
+    return source;
+  }
+  return guarded.replace(
+    REMOTE_MOBILE_APP_SERVER_REMOTE_CONTROL_HELPER,
+    `${REMOTE_MOBILE_APP_SERVER_REMOTE_CONTROL_HELPER}${REMOTE_MOBILE_APP_SERVER_STARTUP_GUARD_HELPER}`,
+  );
+}
+
+function applyLinuxRemoteMobileAppServerRemoteControlLaunchPatch(source) {
   if (source.includes(REMOTE_MOBILE_APP_SERVER_REMOTE_CONTROL_MARKER)) {
     if (!hasLinuxRemoteMobileLocalAppServerRemoteControlPatch(source)) {
       console.warn(
@@ -464,8 +501,8 @@ function applyLinuxRemoteControlClientRevokeSetupResetPatch(source) {
     }
     const ownerPrefix = source.slice(ownerFunctionStart, currentRevokeMatch.index);
     const localClientIdMatch = ownerPrefix.match(
-      /\[([A-Za-z_$][\w$]*)\]=[A-Za-z_$][\w$]*\(`local_remote_control_client_id`\)/u,
-    ) ?? ownerPrefix.match(/localRemoteControlClientId:([A-Za-z_$][\w$]*),waiting:/u);
+      /localRemoteControlClientId:([A-Za-z_$][\w$]*)/u,
+    );
     if (localClientIdMatch == null) {
       console.warn("WARN: Could not find local remote-control client id - skipping setup reset patch");
       return source;
@@ -498,6 +535,79 @@ function applyLinuxRemoteControlClientRevokeSetupResetPatch(source) {
   }
   console.warn("WARN: Could not find remote-control revoke success handler - skipping setup reset patch");
   return source;
+}
+
+function matchesLinuxRemoteControlClientRevokeSetupResetContract(source) {
+  return source.includes("remote-control-client-revoke-success") &&
+    source.includes("CODEX_MOBILE_SETUP_COMPLETED") &&
+    source.includes("localRemoteControlClientId:");
+}
+
+function linuxRemoteControlEnablementOwnerPattern(flags = "u") {
+  return new RegExp(
+    `function ([A-Za-z_$][\\w$]*)\\(\\)\\{let ([A-Za-z_$][\\w$]*)=\\(0,([A-Za-z_$][\\w$]*)\\.c\\)\\(10\\),` +
+      `\\{checkGate:([A-Za-z_$][\\w$]*),isLoading:([A-Za-z_$][\\w$]*)\\}=([A-Za-z_$][\\w$]*)\\(\\),` +
+      `([A-Za-z_$][\\w$]*);\\2\\[0\\]===\\4\\?\\7=\\2\\[1\\]:\\(\\7=\\4\\(([A-Za-z_$][\\w$]*)\\),` +
+      `\\2\\[0\\]=\\4,\\2\\[1\\]=\\7\\);let ([A-Za-z_$][\\w$]*)=\\7,([A-Za-z_$][\\w$]*);` +
+      `\\2\\[2\\]!==\\4\\|\\|\\2\\[3\\]!==\\9\\?\\(\\10=\\4\\(\`1042620455\`\\)\\|\\|\\9,` +
+      `\\2\\[2\\]=\\4,\\2\\[3\\]=\\9,\\2\\[4\\]=\\10\\):\\10=\\2\\[4\\];` +
+      `let ([A-Za-z_$][\\w$]*)=\\10(?:\\|\\|/\\*${REMOTE_CONTROL_ENABLEMENT_BRIDGE_MARKER}\\*/` +
+      `typeof navigator!=\`undefined\`&&navigator\\.userAgent\\.includes\\(\`Linux\`\\))?,` +
+      `([A-Za-z_$][\\w$]*),([A-Za-z_$][\\w$]*);return `,
+    flags,
+  );
+}
+
+function countText(source, needle) {
+  return source.split(needle).length - 1;
+}
+
+function findLinuxRemoteControlEnablementOwners(source) {
+  const matches = [...source.matchAll(linuxRemoteControlEnablementOwnerPattern("gu"))];
+  return matches.filter((match) => {
+    const followingFunction = source.slice(match.index + 1).search(/\}function [A-Za-z_$][\w$]*\(/u);
+    const structuralEnd = followingFunction < 0
+      ? source.length
+      : match.index + 1 + followingFunction + 1;
+    const owner = source.slice(match.index, Math.min(structuralEnd, match.index + 6_000));
+    return countText(owner, ".remoteConnections") === 1 &&
+      countText(owner, ".setRemoteControlEnabled(") === 1 &&
+      countText(owner, "[remote-connections/gate-bridge]") === 1;
+  });
+}
+
+function matchesLinuxRemoteControlEnablementBridgeContract(source) {
+  return findLinuxRemoteControlEnablementOwners(source).length === 1 &&
+    countText(source, ".setRemoteControlEnabled(") === 1 &&
+    countText(source, "[remote-connections/gate-bridge]") === 1;
+}
+
+function findSemanticMatches(dir, regex) {
+  if (!fs.existsSync(dir)) return [];
+  const matches = [];
+  for (const name of fs.readdirSync(dir).filter((candidate) => candidate.endsWith(".js")).sort()) {
+    const source = fs.readFileSync(path.join(dir, name), "utf8");
+    const pattern = new RegExp(regex.source, regex.flags.includes("g") ? regex.flags : `${regex.flags}g`);
+    for (const _match of source.matchAll(pattern)) matches.push(name);
+  }
+  return matches;
+}
+
+function validateLinuxRemoteControlAutoConnectContract(extractedDir) {
+  const serviceMatches = findSemanticMatches(
+    path.join(extractedDir, ".vite", "build"),
+    /setAutoConnect\((?<params>[A-Za-z_$][\w$]*)\)\{return this\.(?<service>[A-Za-z_$][\w$]*)\.setRemoteConnectionAutoConnect\(\k<params>\.hostId,\k<params>\.autoConnect\)\}/u,
+  );
+  const callerMatches = findSemanticMatches(
+    path.join(extractedDir, "webview", "assets"),
+    /async function [A-Za-z_$][\w$]*\((?<choice>[A-Za-z_$][\w$]*)\)\{let (?<service>[A-Za-z_$][\w$]*)=[A-Za-z_$][\w$]*\.remoteConnections;if\(\k<service>==null\)throw Error\(`Remote connections are unavailable`\);return \k<service>\.setAutoConnect\(\k<choice>\)\}/u,
+  );
+  if (serviceMatches.length !== 1 || callerMatches.length !== 1) {
+    const reason = `could not uniquely resolve upstream auto-connect service and caller (service=${serviceMatches.length}, caller=${callerMatches.length})`;
+    console.warn(`WARN: ${reason}`);
+    return { matched: false, changed: false, reason };
+  }
+  return { matched: true, changed: false };
 }
 
 function applyLinuxRemoteControlLoadGatePatch(source) {
@@ -935,53 +1045,31 @@ function applyLinuxRemoteControlStatusWaitPatch(source) {
   );
 }
 
-const currentBridgePattern =
-  /function ([A-Za-z_$][\w$]*)\(\)\{let ([A-Za-z_$][\w$]*)=\(0,([A-Za-z_$][\w$]*)\.c\)\(10\),\{checkGate:([A-Za-z_$][\w$]*),isLoading:([A-Za-z_$][\w$]*)\}=([A-Za-z_$][\w$]*)\(\),([A-Za-z_$][\w$]*);\2\[0\]===\4\?\7=\2\[1\]:\(\7=\4\(([A-Za-z_$][\w$]*)\),\2\[0\]=\4,\2\[1\]=\7\);let ([A-Za-z_$][\w$]*)=\7,([A-Za-z_$][\w$]*);\2\[2\]!==\4\|\|\2\[3\]!==\9\?\(\10=\4\(`1042620455`\)\|\|\9,\2\[2\]=\4,\2\[3\]=\9,\2\[4\]=\10\):\10=\2\[4\];let ([A-Za-z_$][\w$]*)=\10,([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*);return /u;
-
-function applyTypedRemoteControlEnablementBridgePatch(source) {
-  if (source.includes(REMOTE_CONTROL_ENABLEMENT_BRIDGE_MARKER) &&
-      source.includes(REMOTE_CONTROL_SELF_AUTO_CONNECT_MARKER)) return source;
-  const marker = source.indexOf("[remote-connections/gate-bridge]");
-  const start = source.lastIndexOf("function ", marker);
-  const end = start < 0 ? -1 : findMatchingBrace(source, source.indexOf("{", start)) + 1;
-  if (marker < 0 || marker !== source.lastIndexOf("[remote-connections/gate-bridge]") ||
-      start < 0 || end <= start || end - start > 4500) {
-    console.warn("WARN: Current typed remote-control enablement bridge owner drifted");
-    return source;
-  }
-  let region = source.slice(start, end);
-  const gate = region.match(currentBridgePattern);
-  const call = region.match(/let ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\.remoteConnections;([A-Za-z_$][\w$]*)\|\|\1==null\|\|\1\.setRemoteControlEnabled\(\{enabled:([A-Za-z_$][\w$]*),oneToOnePairingInAppEnabled:([A-Za-z_$][\w$]*)\}\)\.catch\(([A-Za-z_$][\w$]*)=>\{([A-Za-z_$][\w$]*)\.warning\(`\[remote-connections\/gate-bridge\] sync_failed`,\{safe:\{remoteControlConnectionsEnabled:\4\},sensitive:\{error:\6\}\}\)\}\)/u);
-  if (gate == null || call == null || call[4] !== gate[11] ||
-      call[3] !== gate[5] || call[5] !== gate[9]) {
-    console.warn("WARN: Current typed remote-control enablement bridge drifted");
-    return source;
-  }
-  const service = call[1];
-  const enabled = call[4];
-  region = region.replace(`let ${enabled}=${gate[10]},`,
-    `let ${enabled}=${gate[10]}||/*${REMOTE_CONTROL_ENABLEMENT_BRIDGE_MARKER}*/typeof navigator!=\`undefined\`&&navigator.userAgent.includes(\`Linux\`),`);
-  const method = `${service}.setRemoteControlEnabled({enabled:${enabled},oneToOnePairingInAppEnabled:${call[5]}})`;
-  const autoConnect = `.then(async result=>{if(!${enabled}||typeof navigator===\`undefined\`||!navigator.userAgent.includes(\`Linux\`))return;let resolveSnapshot,snapshotReady=new Promise(resolve=>{resolveSnapshot=resolve}),subscription=await ${service}.catalog.subscribe(snapshot=>{resolveSnapshot(snapshot)});try{let snapshot=await snapshotReady,installationId=snapshot.localRemoteControlInstallationId,connections=result?.remoteControlConnections??snapshot.remoteControl??[];if(installationId==null)return;await Promise.all(connections.filter(connection=>typeof connection.hostId===\`string\`&&connection.hostId.startsWith(\`remote-control:\`)&&connection.installationId===installationId).map(connection=>${service}.setAutoConnect({hostId:connection.hostId,autoConnect:!0})))}finally{subscription[Symbol.dispose]()}}/*${REMOTE_CONTROL_SELF_AUTO_CONNECT_MARKER}*/)`;
-  region = region.replace(method, method + autoConnect);
-  return source.slice(0, start) + region + source.slice(end);
-}
-
 function applyLinuxRemoteControlEnablementBridgePatch(source) {
-  if (source.includes(".setRemoteControlEnabled(")) {
-    return applyTypedRemoteControlEnablementBridgePatch(source);
+  const owners = findLinuxRemoteControlEnablementOwners(source);
+  const ownerCount = Math.max(
+    owners.length,
+    countText(source, ".setRemoteControlEnabled("),
+    countText(source, "[remote-connections/gate-bridge]"),
+  );
+  if (!matchesLinuxRemoteControlEnablementBridgeContract(source)) {
+    applyLinuxRemoteControlEnableForHostParamsPatch(source);
+    const markerIndex = source.indexOf("[remote-connections/gate-bridge]");
+    const enablementIndex = source.indexOf("setRemoteControlEnabled");
+    if (markerIndex >= 0 && enablementIndex >= 0 && Math.abs(markerIndex - enablementIndex) > 4_500) {
+      console.warn("WARN: Remote-control enablement bridge anchors are too far apart - skipping Linux remote-control bridge patch");
+    } else {
+      console.warn(`WARN: Could not uniquely resolve current remote-control enablement bridge owner (owners=${ownerCount}) - skipping Linux remote-control bridge patch`);
+    }
+    return source;
   }
-  let patched = source;
 
-  patched = applyLinuxRemoteControlEnableForHostParamsPatch(patched);
+  let patched = applyLinuxRemoteControlEnableForHostParamsPatch(source);
 
   const markerIndex = patched.indexOf("[remote-connections/gate-bridge]");
-  const enablementIndex = patched.indexOf("set-remote-control-connections-enabled");
+  const enablementIndex = patched.indexOf("setRemoteControlEnabled");
   if (markerIndex < 0 || enablementIndex < 0) {
-    if (
-      !patched.includes(REMOTE_CONTROL_ENABLEMENT_BRIDGE_MARKER) ||
-      !patched.includes(REMOTE_CONTROL_SELF_AUTO_CONNECT_MARKER)
-    ) {
+    if (!patched.includes(REMOTE_CONTROL_ENABLEMENT_BRIDGE_MARKER)) {
       console.warn("WARN: Could not find current remote-control enablement bridge anchors - skipping Linux remote-control bridge patch");
     }
     return patched;
@@ -997,47 +1085,22 @@ function applyLinuxRemoteControlEnablementBridgePatch(source) {
   const suffix = patched.slice(regionEnd);
   let region = patched.slice(regionStart, regionEnd);
 
-  if (!patched.includes(REMOTE_CONTROL_ENABLEMENT_BRIDGE_MARKER)) {
-    let patchedRegion = region.replace(
-      currentBridgePattern,
-      (needle, _functionName, _cacheVar, _compilerVar, _checkGateVar, _isLoadingVar, _gateHookVar, _primaryGateValueVar, _primaryGateIdVar, _primaryGateVar, gateValueVar, enabledVar) =>
-        needle.replace(
-          `let ${enabledVar}=${gateValueVar},`,
-          `let ${enabledVar}=${gateValueVar}||/*${REMOTE_CONTROL_ENABLEMENT_BRIDGE_MARKER}*/typeof navigator!=\`undefined\`&&navigator.userAgent.includes(\`Linux\`),`,
-        ),
-    );
-    if (patchedRegion === region) {
-      console.warn("WARN: Could not find remote-control enablement bridge needle - skipping Linux remote-control bridge patch");
-      return patched;
-    }
+  if (patched.includes(REMOTE_CONTROL_ENABLEMENT_BRIDGE_MARKER)) return patched;
 
-    region = patchedRegion;
-  }
-
-  if (region.includes(REMOTE_CONTROL_SELF_AUTO_CONNECT_MARKER)) {
-    return prefix + region + suffix;
-  }
-
-  const selfAutoConnectReplacement = (desktopHostRequestFn, enabledVar, extraParams, errorVar, loggerVar) => {
-    const logPrefix = "[remote-connections/gate-bridge]";
-    return `${desktopHostRequestFn}(\`set-remote-control-connections-enabled\`,{params:{enabled:${enabledVar}${extraParams}}}).then(async e=>{if(${enabledVar}&&typeof navigator!=\`undefined\`&&navigator.userAgent.includes(\`Linux\`)){let t=e?.remoteControlConnections??e?.sharedObjects?.remote_control_connections??e?.connections??[],n=e?.sharedObjects?.local_remote_control_installation_id??e?.local_remote_control_installation_id??e?.localRemoteControlInstallationId??e?.installationId??e?.installation_id??null;if(t.length===0)try{let e=await ${desktopHostRequestFn}(\`refresh-remote-control-connections\`,{params:{}});t=e?.remoteControlConnections??e?.sharedObjects?.remote_control_connections??e?.connections??[],n=n??e?.sharedObjects?.local_remote_control_installation_id??e?.local_remote_control_installation_id??e?.localRemoteControlInstallationId??e?.installationId??e?.installation_id??null}catch(e){${loggerVar}.warning(\`${logPrefix} self_auto_connect_refresh_failed\`,{safe:{},sensitive:{error:e}})}if(n==null)try{let e=await ${desktopHostRequestFn}(\`get-global-state\`,{params:{key:\`electron-local-remote-control-installation-id\`}});n=e?.value??e?.state?.value??e?.globalState?.[\`electron-local-remote-control-installation-id\`]??null}catch(e){${loggerVar}.warning(\`${logPrefix} self_auto_connect_identity_failed\`,{safe:{},sensitive:{error:e}})}let r=t.filter(e=>typeof e?.hostId==\`string\`&&e.hostId.startsWith(\`remote-control:\`)),i=new Set(r.filter(e=>n!=null&&(e.installationId??e.installation_id)===n).map(e=>e.hostId));await Promise.all(r.filter(e=>i.has(e.hostId)).map(e=>${desktopHostRequestFn}(\`set-remote-connection-auto-connect\`,{params:{hostId:e.hostId,autoConnect:!0}}).catch(t=>{${loggerVar}.warning(\`${logPrefix} self_auto_connect_failed\`,{safe:{autoConnect:!0},sensitive:{hostId:e.hostId,error:t}})})))}}/*${REMOTE_CONTROL_SELF_AUTO_CONNECT_MARKER}*/).catch(${errorVar}=>{${loggerVar}.warning(\`${logPrefix} sync_failed\`,{safe:{enabled:${enabledVar}},sensitive:{error:${errorVar}}})})`;
-  };
-
-  const literalPattern =
-    /([A-Za-z_$][\w$]*)\(`set-remote-control-connections-enabled`,\{params:\{enabled:([A-Za-z_$][\w$]*)(,oneToOnePairingInAppEnabled:[A-Za-z_$][\w$]*)\}\}\)\.catch\(([A-Za-z_$][\w$]*)=>\{([A-Za-z_$][\w$]*)\.warning\(`\[remote-connections\/gate-bridge\] sync_failed`,\{safe:\{remoteControlConnectionsEnabled:\2\},sensitive:\{error:\4\}\}\)\}\)/u;
-
-  let selfAutoConnectRegion = region.replace(
-    literalPattern,
-    (_needle, desktopHostRequestFn, enabledVar, extraParams, errorVar, loggerVar) =>
-      selfAutoConnectReplacement(desktopHostRequestFn, enabledVar, extraParams, errorVar, loggerVar),
+  const currentBridgePattern = linuxRemoteControlEnablementOwnerPattern();
+  const patchedRegion = region.replace(
+    currentBridgePattern,
+    (needle, _functionName, _cacheVar, _compilerVar, _checkGateVar, _isLoadingVar, _gateHookVar, _primaryGateValueVar, _primaryGateIdVar, _primaryGateVar, gateValueVar, enabledVar) =>
+      needle.replace(
+        `let ${enabledVar}=${gateValueVar},`,
+        `let ${enabledVar}=${gateValueVar}||/*${REMOTE_CONTROL_ENABLEMENT_BRIDGE_MARKER}*/typeof navigator!=\`undefined\`&&navigator.userAgent.includes(\`Linux\`),`,
+      ),
   );
-
-  if (selfAutoConnectRegion === region) {
-    console.warn("WARN: Could not find remote-control self auto-connect needle - skipping Linux remote-control auto-connect patch");
-    return prefix + region + suffix;
+  if (patchedRegion === region) {
+    console.warn("WARN: Could not find remote-control enablement bridge needle - skipping Linux remote-control bridge patch");
+    return patched;
   }
-
-  return prefix + selfAutoConnectRegion + suffix;
+  return prefix + patchedRegion + suffix;
 }
 
 function applyLinuxRemoteControlEnableForHostParamsPatch(source) {
@@ -1366,7 +1429,8 @@ module.exports = [
   {
     id: "linux-remote-control-client-revoke-setup-reset",
     phase: "webview-asset",
-    pattern: /^remote-connections-settings-.*\.js$/,
+    pattern: /^[A-Za-z0-9_-]+\.js$/,
+    assetMatch: matchesLinuxRemoteControlClientRevokeSetupResetContract,
     order: 20_138,
     ciPolicy: "optional",
     missingDescription: "remote connections settings bundle",
@@ -1451,14 +1515,20 @@ module.exports = [
   {
     id: "linux-remote-control-enablement-bridge",
     phase: "webview-asset",
-    pattern: /^app-(?:initial|runtime)-[^.]+\.js$/u,
-    assetMatch: source => source.includes("[remote-connections/gate-bridge]"),
-    missingWarning: "WARN: Could not find current remote-control enablement bridge anchors - skipping Linux remote-control bridge patch",
+    pattern: /^[A-Za-z0-9_-]+\.js$/,
+    assetMatch: matchesLinuxRemoteControlEnablementBridgeContract,
     order: 20_156,
     ciPolicy: "optional",
     missingDescription: "app main bundle",
     skipDescription: "Linux remote-control enablement bridge patch",
     apply: applyLinuxRemoteControlEnablementBridgePatch,
+  },
+  {
+    id: "linux-remote-control-auto-connect-contract",
+    phase: "extracted-app:post-webview",
+    order: 20_157,
+    ciPolicy: "optional",
+    apply: validateLinuxRemoteControlAutoConnectContract,
   },
   {
     id: "linux-remote-mobile-active-status",
@@ -1484,6 +1554,10 @@ module.exports.applyLinuxRemoteTerminalStatusRecoveryPatch = applyLinuxRemoteTer
 module.exports.applyLinuxRemoteControlStatusReadGuardPatch = applyLinuxRemoteControlStatusReadGuardPatch;
 module.exports.applyLinuxRemoteControlStatusWaitPatch = applyLinuxRemoteControlStatusWaitPatch;
 module.exports.applyLinuxRemoteControlEnablementBridgePatch = applyLinuxRemoteControlEnablementBridgePatch;
+module.exports.matchesLinuxRemoteControlEnablementBridgeContract =
+  matchesLinuxRemoteControlEnablementBridgeContract;
+module.exports.validateLinuxRemoteControlAutoConnectContract =
+  validateLinuxRemoteControlAutoConnectContract;
 module.exports.applyLinuxRemoteControlEnableForHostParamsPatch =
   applyLinuxRemoteControlEnableForHostParamsPatch;
 module.exports.applyLinuxRemoteMobileActiveStatusPatch = applyLinuxRemoteMobileActiveStatusPatch;
