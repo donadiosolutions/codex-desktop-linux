@@ -7,16 +7,17 @@ const ID = "[A-Za-z_$][\\w$]*";
 
 // Serialize writes per connection. A newer generation can retry a rejected
 // queued request, while a completed write remains reusable on that connection.
-async function codexLinuxSyncFeatureEnablement(connectionState, enablement, ready, send) {
+async function codexLinuxSyncFeatureEnablement(connectionState, enablement, ready, send, responseRequired = false) {
   const state = connectionState.codexLinuxFeatureEnablementSync ??=
-    { tail: Promise.resolve(), applied: null };
+    { tail: Promise.resolve(), applied: null, response: undefined };
   const key = JSON.stringify(Object.keys(enablement).sort().map(name => [name, enablement[name]]));
   const task = state.tail.then(async () => {
     ready();
-    if (state.applied === key) return;
+    if (state.applied === key) return state.response;
     let unchanged = false;
     try {
-      const response = await connectionState.connection.sendAppServerRequest(
+      if (!responseRequired) {
+        const response = await connectionState.connection.sendAppServerRequest(
         `experimentalFeature/list`, {}, ready,
       );
       if (Array.isArray(response?.data) && response.nextCursor == null) {
@@ -47,12 +48,14 @@ async function codexLinuxSyncFeatureEnablement(connectionState, enablement, read
           }
         }
       }
+      }
     } catch {
       // Older servers and failed discovery retain the original write path.
     }
     ready();
-    if (!unchanged) await send();
+    if (!unchanged) state.response = await send();
     state.applied = key;
+    return state.response;
   });
   state.tail = task.catch(() => {});
   return task;
@@ -69,18 +72,19 @@ function applyFeatureEnablementDedupPatch(source) {
     `await (${ID})\\.connection\\.sendAppServerRequest\\(\x60experimentalFeature/enablement/set\x60,\\{enablement:(${ID})\\},(${ID})\\)`, "gu",
   ))];
   const resets = [...owner.matchAll(new RegExp(
-    `if\\((${ID})\\.connection\\.getConnectionState\\(\\)!==\x60connected\x60\\)\\{\\1\\.rolloutCompressionRequested=!1;return\\}`, "gu",
+    `if\\((?:(${ID})\\.generation=${ID},)?(${ID})\\.connection\\.getConnectionState\\(\\)!==\x60connected\x60\\)\\{\\2\\.rolloutCompressionRequested=!1(?:,\\2\\.${ID}=(?:!1|null))*;return\\}`, "gu",
   ))];
   const helper = codexLinuxSyncFeatureEnablement.toString();
   if (source.includes(HELPER)) {
     if (source.includes(helper) && owner.includes(`await ${HELPER}(`) &&
         owner.includes(`.${STATE}=null,`) && calls.length === 0) return source;
   } else if (calls.length === 1 && resets.length === 1 &&
-             calls[0][1] === resets[0][1] &&
+             calls[0][1] === resets[0][2] &&
              owner.includes(`async sendEnablement(${calls[0][1]},`)) {
     const [, state, enablement, ready] = calls[0];
+    const responseRequired = owner.includes(".enablement.daybreak_program_propagation!=null");
     const patched = owner
-      .replace(calls[0][0], `await ${HELPER}(${state},${enablement},${ready},()=>${calls[0][0].slice(6)})`)
+      .replace(calls[0][0], `await ${HELPER}(${state},${enablement},${ready},()=>${calls[0][0].slice(6)}${responseRequired ? ",!0" : ""})`)
       .replace(resets[0][0], resets[0][0].replace(`${state}.rolloutCompressionRequested`, `${state}.${STATE}=null,${state}.rolloutCompressionRequested`));
     return source.slice(0, open) + patched + source.slice(end + 1) + "\n" + helper;
   }

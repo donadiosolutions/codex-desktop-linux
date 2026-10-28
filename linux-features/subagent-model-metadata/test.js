@@ -16,15 +16,19 @@ const ledger = { id: "ledger", model: "gpt-6-sol", reasoningEffort: "medium", cr
 function evaluate(source) {
   const context = {
     r: { os: (id) => id, ha: () => ({}) },
-    Dy: (thread) => thread,
-    Oy: (input) => input.threadRecencyAt ?? input.updatedAt,
-    Ey: (thread) => thread.name,
-    Ay: () => ({}), cf: () => false, Ef: () => true,
+    i: { ys: (id) => id },
+    Fy: (thread) => thread,
+    Iy: (input) => input.threadRecencyAt ?? input.updatedAt,
+    Zxe: (thread) => thread.name,
+    Ly: () => ({}), _y: () => false, Gv: () => true,
+    so: (thread) => thread.daybreakProgramPropagationEnrolled === true,
+    lo: (thread, fallback) => thread.inheritedDaybreakSelection ?? fallback,
+    uo: (selection) => ({ status: selection?.status ?? "unset" }),
+    $r: (conversation) => conversation.turns.at(-1),
     _t: { default: (items, predicate) => items.findLast(predicate) },
     wl: (conversation) => conversation.turns,
     ia: (conversation, predicate) => conversation.turns.findLast(predicate),
     ra: (conversation, predicate) => conversation.turns.find(predicate),
-    a: { o: (conversation) => conversation.turns.at(-1) },
     oa: (conversation, fn) => conversation.turns.forEach(fn),
     Cu: (conversation, turn) => { conversation.turns.push(turn); return turn; },
   };
@@ -50,7 +54,7 @@ function store(context, thread = ledger, conversation) {
     },
     upsertHydratedCollabReceiverConversation(value, atReadStart) {
       const current = this.conversations.get(value.id);
-      if (current) context.By(current, value, atReadStart);
+      if (current) context.Vy(current, value, atReadStart);
       else this.conversations.set(value.id, { id: value.id,
         latestModel: value.model ?? "", latestReasoningEffort: value.reasoningEffort ?? null });
     },
@@ -63,12 +67,12 @@ function store(context, thread = ledger, conversation) {
   return result;
 }
 
-test("summary activation retains the child model and effort", () => {
+test("current signed summary activation retains the child model and effort", () => {
   const original = evaluate(fixture);
-  assert.equal(original.tf(store(original).getThreadSummaryFromThread(ledger)).latestModel, "");
+  assert.equal(original.Lv(store(original).getThreadSummaryFromThread(ledger)).latestModel, "");
   const fixed = evaluate(applyPatch(fixture));
   for (const thread of [ledger, { ...ledger, model: "gpt-6.1-sol", reasoningEffort: "high" }]) {
-    const conversation = fixed.tf(store(fixed).getThreadSummaryFromThread(thread));
+    const conversation = fixed.Lv(store(fixed).getThreadSummaryFromThread(thread));
     assert.equal(conversation.latestModel, thread.model);
     assert.equal(conversation.latestReasoningEffort, thread.reasoningEffort);
   }
@@ -166,7 +170,10 @@ test("drift, ambiguous contracts, and partial patches leave the entire source un
   const originalWarn = console.warn;
   console.warn = () => {};
   try {
-    for (const source of [fixture + fixture, fixture.replace("e.latestModel=t.params.model??e.latestModel", "e.latestModel=t.params.model"),
+    for (const source of [fixture + fixture,
+      fixture.replace("getThreadSummaryFromThread(e,t=e)", "getThreadSummaryFromThread(e,t=n)"),
+      fixture.replace("getThreadSummaryFromThread(e,t=e)", "getThreadSummaryFromThread(e)"),
+      fixture.replace("e.latestModel=t.params.model??e.latestModel", "e.latestModel=t.params.model"),
       fixture.replace("latestReasoningEffort:null", "latestReasoningEffort:`medium`"),
       patched.replace("codexLinuxSubagentSummary", "removedMarker"), "const unrelated=true;"]) {
       assert.equal(applyPatch(source), source);

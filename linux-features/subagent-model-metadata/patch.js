@@ -21,7 +21,7 @@ function block(source, pattern) {
 }
 
 function prepare(source) {
-  const summary = block(source, `getThreadSummaryFromThread\\((${IDENT})\\)\\{`);
+  const summary = block(source, `getThreadSummaryFromThread\\((${IDENT}),${IDENT}=\\1\\)\\{`);
   const activation = block(source, `function ${IDENT}\\((${IDENT})\\)\\{(?=return\\{id:\\1\\.conversationId,)`);
   const hydration = block(source, `async hydrateCollabThreads\\((${IDENT})\\)\\{`);
   const turn = one(source,

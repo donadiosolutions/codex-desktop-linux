@@ -6,6 +6,9 @@ const { applyFeatureEnablementDedupPatch } = require("./feature-enablement.js");
 // Feature-sync owner from signed official Linux 26.1013.31256.
 const fixture = "var pue=r.O({features:r.O({local_thread_store_compression:r._().optional()}).nullish()}),mue=class{evaluations;onChanged;logger=p.i(`app-server-feature-enablement`);connections=new Map;stopWatchingPolicy;stopWatchingConnections;disposed=!1;constructor(e,t,n){this.evaluations=t,this.onChanged=n,this.stopWatchingPolicy=t.onDidChange(()=>{for(let e of this.connections.values())this.sync(e)}),this.stopWatchingConnections=e.subscribe(e=>{if(e.hostId===`durable`)return;if(e.type===`removed`){let t=this.connections.get(e.hostId);t!=null&&(t.generation++,t.stopWatching(),this.connections.delete(e.hostId));return}let t={connection:e.connection,generation:0,rolloutCompressionRequested:!1,stopWatching:e.connection.registerInternalConnectionStateHandler(()=>this.sync(t))};this.connections.set(e.hostId,t),this.sync(t)})}dispose(){this.disposed=!0,this.stopWatchingPolicy(),this.stopWatchingConnections();for(let e of this.connections.values())e.generation++,e.stopWatching();this.connections.clear()}sync(e){let t=++e.generation;if(e.connection.getConnectionState()!==`connected`){e.rolloutCompressionRequested=!1;return}this.sendEnablement(e,t).catch(n=>{this.disposed||e.generation!==t||n instanceof a.wr||this.logger.warning(`Failed to sync experimental feature enablement`,{safe:{},sensitive:{error:n}})})}async sendEnablement(e,t){let n=await this.evaluations.readExecutionAssignments();if(this.disposed||e.generation!==t||n?.defaultEnableFeatures==null)return;let r=n.values.experimentalFeatureGates,o=fue(n.defaultEnableFeatures,r.curatedRemoteMarketplace,r.mcp20260728,r.backgroundPaginatedRolloutMigration,r.apiKeyModelDiscovery,r.apiKeyDaybreak);o.codex_apps_mcp_2026_07_28=!0,o.windows_sandbox_service=!0;let s=()=>{if(this.disposed||e.generation!==t||!(0,Fe.default)(this.evaluations.readReadyExecutionAssignments(),n))throw new a.wr({status:`not-ready`,reason:`execution-config-loading`})};!e.rolloutCompressionRequested&&i.Ei(e.connection.appServerVersion,`rolloutCompression`)&&e.connection.sendAppServerRequest(`config/read`,{includeLayers:!1},s).then(({config:t})=>{if(pue.parse(t).features?.local_thread_store_compression??r.localThreadStoreCompression)return e.connection.sendAppServerRequest(`rollout/compress`,void 0,()=>{s(),e.rolloutCompressionRequested=!0})}).catch(n=>{!this.disposed&&e.generation===t&&!(n instanceof a.wr)&&this.logger.warning(`Failed to trigger rollout compression`,{safe:{},sensitive:{error:n}})}),await e.connection.sendAppServerRequest(`experimentalFeature/enablement/set`,{enablement:o},s),!this.disposed&&e.generation===t&&this.onChanged(e.connection.hostId)}};";
 
+// Reduced feature-sync owner from signed official Linux 26.1023.51421.
+const currentShapeFixture = "var mue=class{logger=p.i(`app-server-feature-enablement`);disposed=!1;nextGeneration=0;connections=new Map;sync(e){let t=++this.nextGeneration;if(e.generation=t,e.connection.getConnectionState()!==`connected`){e.rolloutCompressionRequested=!1,e.supportsPropagation=null,e.acknowledgedGeneration=null;return}this.sendEnablement(e,t)}async sendEnablement(e,t){let a={example:!0},o=()=>{};let c=!1;try{c=(await e.connection.sendAppServerRequest(`experimentalFeature/enablement/set`,{enablement:a},o)).enablement.daybreak_program_propagation!=null}catch(e){throw e}return c}};";
+
 function deferred() {
   let resolve, reject;
   const promise = new Promise((a, b) => { resolve = a; reject = b; });
@@ -175,6 +178,27 @@ test("patching is idempotent and fails closed for missing, duplicated, and parti
     ]) assert.equal(applyFeatureEnablementDedupPatch(source), source);
     assert.equal(warnings.length, 4);
   } finally { console.warn = warn; }
+});
+
+test("current upstream feature-sync shape remains patchable", () => {
+  const patched = applyFeatureEnablementDedupPatch(currentShapeFixture);
+  assert.notEqual(patched, currentShapeFixture);
+  assert.match(patched, /await codexLinuxSyncFeatureEnablement\(e,a,o,\(\)=>e\.connection\.sendAppServerRequest\(`experimentalFeature\/enablement\/set`,\{enablement:a\},o\),!0\)/);
+  assert.match(patched, /e\.codexLinuxFeatureEnablementSync=null,e\.rolloutCompressionRequested=!1/);
+  assert.equal(applyFeatureEnablementDedupPatch(patched), patched);
+  const Owner = new Function(`${patched};return mue;`)();
+  const owner = Object.create(Owner.prototype);
+  let sends = 0;
+  const state = { generation: 1, connection: { sendAppServerRequest() {
+    sends++;
+    return Promise.resolve({ enablement: { daybreak_program_propagation: true } });
+  } } };
+  return Promise.all([
+    owner.sendEnablement(state, 1), owner.sendEnablement(state, 1),
+  ]).then(results => {
+    assert.deepEqual(results, [true, true]);
+    assert.equal(sends, 1);
+  });
 });
 
 const matchingFeatures = () => ({ data: [
