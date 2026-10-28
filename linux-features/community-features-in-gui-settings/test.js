@@ -236,6 +236,83 @@ function uiTweaksFixture(t) {
   return f;
 }
 
+function bundledSubfeaturesFixture(t) {
+  const f = uiTweaksFixture(t), source = require("../automation-extensions/feature.json");
+  const dir = manifest(f.root, source.id, source);
+  fs.writeFileSync(path.join(dir, "patch.js"), 'throw Error("must not execute");');
+  return f;
+}
+
+test("bundled capabilities inherit the parent selection without inventing setting switches", (t) => {
+  const f = bundledSubfeaturesFixture(t);
+  const parent = (catalog) => catalog.features.find((feature) => feature.id === "automation-extensions");
+  const disabled = buildCatalog(f.context);
+  assert.equal(parent(disabled).subfeatures.length, 2);
+  assert.equal(parent(disabled).subfeatures.some((item) => item.enabled), false);
+  const context = { ...f.context, enabledFeatureIds: [...f.context.enabledFeatureIds, "automation-extensions"] };
+  const config = path.join(f.root, "features.json");
+  fs.writeFileSync(config, JSON.stringify({ enabled: context.enabledFeatureIds,
+    settings: { "automation-extensions": { enabled: false, catalogSubfeatures: [] } } }));
+  context.featurePatchOptions = { ...context.featurePatchOptions, featuresConfigPath: config };
+  const enabled = buildCatalog(context);
+  for (const item of parent(enabled).subfeatures) {
+    assert.equal(item.enabledWhen, "parent");
+    assert.equal(item.enabled, true);
+    assert.equal(Object.hasOwn(item, "settingPath"), false);
+    assert.equal(Object.hasOwn(item, "nullishFallback"), false);
+  }
+  assert.equal(buildFeatureTree(enabled).enabled, buildFeatureTree(disabled).enabled + 2);
+  assert.equal(buildFeatureTree(enabled).total, buildFeatureTree(disabled).total);
+  const render = uiHarness(enabled);
+  summaryRow(render()).props.control.props.onClick();
+  item(render(), "independent").children[0].props.onClick(clickEvent());
+  const row = item(render(), "independent/automation-extensions");
+  assert.equal(row.children[0].children.at(-1).children[0], "2/2 已安装");
+  row.children[0].children[0].props.onClick(clickEvent());
+  const child = item(render(), "independent/automation-extensions/automation-extensions/multi-time-schedules");
+  assert.equal(child.props["aria-label"], "多个执行时间，已安装");
+});
+
+test("parent-inherited and setting-controlled subfeatures survive minimal-builder snapshots together", (t) => {
+  const f = bundledSubfeaturesFixture(t);
+  const original = buildCatalog({ ...f.context,
+    enabledFeatureIds: [...f.context.enabledFeatureIds, "automation-extensions", "ui-tweaks"] });
+  builderSnapshot(f, original);
+  fs.rmSync(path.join(f.root, "automation-extensions"), { recursive: true });
+  fs.rmSync(path.join(f.root, "ui-tweaks"), { recursive: true });
+  const rebuilt = buildCatalog(f.context);
+  const bundled = rebuilt.features.find((feature) => feature.id === "automation-extensions").subfeatures;
+  assert.equal(bundled.length, 2);
+  assert.ok(bundled.every((item) => item.enabledWhen === "parent" && item.enabled === false));
+  assert.equal(rebuilt.features.find((feature) => feature.id === "ui-tweaks").subfeatures.length, 9);
+  assert.equal(buildFeatureTree(rebuilt).total, buildFeatureTree(original).total);
+  assert.equal(buildFeatureTree(rebuilt).enabled, buildFeatureTree(original).enabled - 4);
+  assert.deepEqual(validateCatalog(JSON.parse(JSON.stringify(rebuilt))), rebuilt);
+});
+
+test("parent-inherited subfeatures reject contradictory settings and snapshot statuses", (t) => {
+  const f = bundledSubfeaturesFixture(t);
+  const original = buildCatalog({ ...f.context,
+    enabledFeatureIds: [...f.context.enabledFeatureIds, "automation-extensions"] });
+  for (const mutate of [
+    (item) => { item.settingPath = "tweaks.optional.enabled"; },
+    (item) => { item.settingPath = null; },
+    (item) => { item.nullishFallback = false; },
+    (item) => { item.defaultEnabled = false; },
+    (item) => { item.enabled = false; },
+    (item) => { item.enabledWhen = "parnt"; },
+  ]) {
+    const invalid = structuredClone(original);
+    mutate(invalid.features.find((feature) => feature.id === "automation-extensions").subfeatures[0]);
+    assert.throws(() => validateCatalog(invalid), /subfeature/);
+  }
+  const warnings = [];
+  manifest(f.root, "ambiguous", { catalogSubfeatures: [{ id: "bundled", title: "Bundled", description: "",
+    enabledWhen: "parent", settingPath: "tweaks.optional.enabled" }] });
+  assert.equal(buildCatalog(f.context, (warning) => warnings.push(warning)).features.some((feature) => feature.id === "ambiguous"), false);
+  assert.match(warnings[0], /ambiguous.*subfeature/);
+});
+
 test("UI Tweaks exposes nine independently counted modules with parent-gated defaults and overrides", (t) => {
   const f = uiTweaksFixture(t);
   const parent = (catalog) => catalog.features.find((feature) => feature.id === "ui-tweaks");
@@ -274,6 +351,53 @@ test("UI Tweaks exposes nine independently counted modules with parent-gated def
   assert.equal(detail.props.label, "Dock 图标");
   assert.ok(JSON.stringify(detail.props.description).includes("所属功能：UI Tweaks"));
   assert.ok(JSON.stringify(detail.props.description).includes("ui-tweaks/dock-icon"));
+});
+
+test("subfeature parents show zero, partial and complete installation counts while collapsed and selected", (t) => {
+  const f = uiTweaksFixture(t);
+  const original = buildCatalog({ ...f.context, enabledFeatureIds: [...f.context.enabledFeatureIds, "ui-tweaks"] });
+  for (const [locale, suffix, installedWord, absentWord, punctuation] of [
+    ["zh-CN", "已安装", "已安装", "未安装", "，"],
+    ["en-US", "installed", "Installed", "Not installed", ", "],
+    ["de-DE", "installed", "Installed", "Not installed", ", "],
+  ]) for (const [enabled, count] of [[false, 0], [true, 0], [true, 1], [true, 9]]) {
+    const catalog = structuredClone(original), parent = catalog.features.find(feature => feature.id === "ui-tweaks");
+    parent.enabled = enabled;
+    for (const subfeature of parent.subfeatures) {
+      subfeature.enabled = count === 9 || count === 1 && subfeature.id === "custom-font-input";
+    }
+    const before = JSON.stringify(catalog), expected = `${count}/9 ${suffix}`;
+    const render = uiHarness(catalog, locale);
+    summaryRow(render()).props.control.props.onClick();
+    item(render(), "independent").children[0].props.onClick(clickEvent());
+    const row = item(render(), "independent/ui-tweaks"), status = row.children[0].children.at(-1);
+    assert.equal(row.props["aria-expanded"], false);
+    assert.equal(status.children[0], expected, `${locale}: ${enabled}/${count}`);
+    assert.equal(row.props["aria-label"], `UI Tweaks${punctuation}${expected}`);
+    assert.equal(status.props.style.color, count > 0 ? "var(--color-text-success)" : undefined);
+    assert.equal(row.children[0].children.some(node => node?.type === "span" && node.children[0] === "9"), false);
+    row.children[0].props.onClick(clickEvent());
+    assert.equal(collect(render(), node => node.type === "native-row").at(-1).props.control.children[0], expected);
+    row.children[0].children[0].props.onClick(clickEvent());
+    const font = item(render(), "independent/ui-tweaks/ui-tweaks/custom-font-input");
+    assert.equal(font.children[0].children.at(-1).children[0], count > 0 ? installedWord : absentWord);
+    assert.equal(buildFeatureTree(catalog).enabled, count + 2);
+    assert.equal(buildFeatureTree(catalog).total, 13);
+    assert.equal(JSON.stringify(catalog), before);
+  }
+});
+
+test("a parent's subfeature status excludes dependent features and leaves their leaf statuses unchanged", (t) => {
+  const f = uiTweaksFixture(t);
+  manifest(f.root, "dependent", { requires: ["ui-tweaks"] });
+  const catalog = buildCatalog({ ...f.context,
+    enabledFeatureIds: ["community-features-in-gui-settings", "ui-tweaks", "dependent"] });
+  const parent = catalog.features.find(feature => feature.id === "ui-tweaks");
+  for (const subfeature of parent.subfeatures) subfeature.enabled = subfeature.id === "custom-font-input";
+  const render = uiHarness(catalog);
+  summaryRow(render()).props.control.props.onClick();
+  assert.equal(item(render(), "dependencies/ui-tweaks").children[0].children.at(-1).children[0], "1/9 已安装");
+  assert.equal(item(render(), "dependencies/ui-tweaks/dependent").children[0].children.at(-1).children[0], "已安装");
 });
 
 test("public subfeature metadata survives enabled-only update builders and never reports a child of a disabled parent installed", (t) => {
@@ -438,6 +562,7 @@ test("a new resource file adds a locale and feature translations with per-messag
   assert.equal(language.locale, "fr");
   assert.equal(language.messages.show, "Show");
   assert.equal(language.format("summary", { enabled: 1, total: 4 }), "4 disponibles · 1 activées");
+  assert.equal(language.format("subfeatureStatus", { enabled: 1, total: 9 }), "1/9 installed");
   const catalog = buildCatalog(fixture(t).context), original = JSON.stringify(catalog);
   const render = uiHarness(catalog, "fr-CA", "linux", resources);
   assert.equal(collect(render(), (node) => node.type === "native-header")[0].props.title, "Fonctionnalités communautaires");
@@ -629,7 +754,8 @@ function writeAsar(file, catalog) {
 }
 
 test("native hooks generate builder snapshots and remove only the staged legacy file", (t) => {
-  const f = fixture(t), catalog = buildCatalog({ ...f.context, enabledFeatureIds: [...f.context.enabledFeatureIds, "private"] });
+  const f = bundledSubfeaturesFixture(t), catalog = buildCatalog({ ...f.context,
+    enabledFeatureIds: [...f.context.enabledFeatureIds, "private", "automation-extensions", "ui-tweaks"] });
   const sourceLegacy = path.join(f.featureDir, SNAPSHOT_NAME);
   fs.writeFileSync(sourceLegacy, "source legacy file must remain untouched");
   for (const format of ["deb", "rpm", "pacman"]) {
@@ -659,6 +785,9 @@ test("native hooks generate builder snapshots and remove only the staged legacy 
       enabledFeatureIds: ["community-features-in-gui-settings"] });
     assert.deepEqual(rebuilt.features.map((item) => item.id), catalog.features.filter((item) => item.origin === "repo").map((item) => item.id));
     assert.equal(rebuilt.features.filter((item) => item.enabled).length, 1);
+    assert.ok(rebuilt.features.find((item) => item.id === "automation-extensions").subfeatures
+      .every((item) => item.enabledWhen === "parent" && item.enabled === false));
+    assert.equal(rebuilt.features.find((item) => item.id === "ui-tweaks").subfeatures.length, 9);
   }
   assert.equal(prepareUpdateBuilderCatalog(temporary(t)), false);
 });
