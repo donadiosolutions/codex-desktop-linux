@@ -4161,3 +4161,13 @@ test("negotiated transport drift never falls back to the legacy adapter", () => 
   const source = (fixture.transport + fixture.factory).replace("Number.isSafeInteger", "Number.isFinite");
   assert.equal(findTransportSymbols(source), null);
 });
+
+
+test("negotiated transport rejects unrelated or missing header producers", () => {
+  const { findTransportSymbols } = require("./patch.js");
+  const fixture = require("./fixtures/upstream-26.1021.22027.json");
+  for (const replacement of ["", "headers:other,", "headers:r,headers:other,"]) {
+    const source = (fixture.transport + fixture.factory).replace("headers:r,", replacement);
+    assert.equal(findTransportSymbols(source), null);
+  }
+});

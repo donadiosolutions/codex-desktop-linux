@@ -56,11 +56,23 @@ function findTransportSymbols(source) {
       codecMatches[0].index >= adapterMatches[0].index ||
       adapterMatches[0].index >= keepAliveMatches[0].index) return null;
 
+  let headersFunction;
+  if (sshClassSource.includes("headers:") || new RegExp(
+    `(${IDENT})=${escapeRegExp(namespace)}\\.(${IDENT})\\(\\),${escapeRegExp(socket)}=new `,
+  ).test(sshClassSource)) {
+    const headersMatches = [...sshClassSource.matchAll(new RegExp(
+      `(${IDENT})=${escapeRegExp(namespace)}\\.(${IDENT})\\(\\),${escapeRegExp(socket)}=new ${escapeRegExp(namespace)}\\.${escapeRegExp(webSocketClass)}\\(${escapeRegExp(webSocketUrl)},\\{perMessageDeflate:!1,headers:\\1,createConnection:`, "g",
+    ))];
+    if (headersMatches.length !== 1 || sshClassSource.split("headers:").length !== 2 ||
+        !sshClassSource.includes(`new ${namespace}.${codecMatches[0][1]}(${socket},${headersMatches[0][1]}!=null)`)) return null;
+    headersFunction = headersMatches[0][2];
+  }
+
   return {
     namespace,
     webSocketClass,
     webSocketUrl,
-    headersFunction: sshClassSource.match(new RegExp(`(${IDENT})=${escapeRegExp(namespace)}\\.(${IDENT})\\(\\),${escapeRegExp(socket)}=new `))?.[2],
+    headersFunction,
     codecClass: codecMatches[0][1],
     adapterClass,
     keepAlive: keepAliveMatches[0][1],
