@@ -87,6 +87,11 @@ function lifecycleContract(source, builder, syncSource) {
   if (resumeOwner == null) throw drift("expected a thread configuration owner");
   const resumeSource = source.slice(resumeOwner.start, resumeOwner.end);
   const selection = escapeRegExp(resume.groups.selection);
+  const threadGuard = uniqueMatch(resumeSource, new RegExp(
+    `null!=(?<node>${ID})&&null!=(?<identity>${ID})` +
+    `(?<daemon>&&"1"===(?:${ID}\\(\\)|process)\\.env\\.CODEX_APP_SERVER_USE_LOCAL_DAEMON)?` +
+    `&&\\(${ID}\\[\`mcp_servers\\.\\$\\{${ID}\\.${ID}\\}\`\\]=${escapeRegExp(builder)}\\(\\{browserBackends:${selection}\\.browserBackends,`, "g"),
+  "expected local identity guards on the thread configuration builder");
   uniqueMatch(resumeSource, new RegExp(
     `(?<cached>${ID})=${ID}\\.browserUseTinysky\\?${ID}:null,` +
     `${ID}=${ID}\\?await ${ID}\\.getAuthenticatedPrincipal\\(\\)\\.catch\\(\\(\\)=>null\\):null,` +
@@ -102,7 +107,11 @@ function lifecycleContract(source, builder, syncSource) {
   if (sync.groups.context != null && sync.groups.selection !== cached.groups.selection) {
     throw drift("plugin root receiver is not the cached selection");
   }
-  return { argument: owner.groups.argument, sync, resume, selection: cached.groups.selection };
+  const daemon = threadGuard.groups.daemon;
+  return { argument: owner.groups.argument, sync, resume, selection: cached.groups.selection,
+    daemon: daemon == null ? null : {
+      index: resumeOwner.start + threadGuard.index + threadGuard[0].indexOf(daemon), length: daemon.length,
+    } };
 }
 
 function enclosingFunction(source, targetIndex) {
@@ -242,13 +251,18 @@ function applyUnifiedComputerUseModulePatch(source) {
   if ((current && callOwnerSource.includes(publishRoot)) || (patched && !completePropagation)) {
     throw drift("incomplete trusted root propagation");
   }
-  if (patched) return source;
+  // Shared local app-server connections do not inherit the GUI's daemon launch
+  // marker. Preserve local identity/configuration guards and carry their
+  // per-thread browser access environment into CUA for either local transport.
+  if (patched) return lifecycle.daemon == null ? source :
+    source.slice(0, lifecycle.daemon.index) + source.slice(lifecycle.daemon.index + lifecycle.daemon.length);
   const pluginRoot = root.groups.pluginRoot;
   // Caller and helper have independent minified scopes. A caller alias can be
   // an existing destructured parameter or local in the helper. Use a fresh
   // helper binding, including nested scopes that capture the injected value.
   const builderRoot = freshBuilderRoot(builderSource);
   const edits = [
+    ...(lifecycle.daemon == null ? [] : [{ ...lifecycle.daemon, replacement: "" }]),
     {
       index: match.index,
       length: match[0].length,

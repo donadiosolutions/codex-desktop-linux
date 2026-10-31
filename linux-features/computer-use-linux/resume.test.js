@@ -57,7 +57,7 @@ function trustedServicesConstant(chunks, exportName) {
 
 // Run the actual packaged helper and per-thread override function with inert
 // external dependencies. No Electron, app-server, profile, or network is used.
-function resumeHarness(source, trustedServicesKey) {
+function resumeHarness(source, trustedServicesKey, chunks) {
   const builder = only(source, new RegExp(
     `function (${IDENT})\\(\\{browserBackends:(${IDENT}),deferTools:${IDENT},surfaces:${IDENT},` +
     `nodeRepl:${IDENT},accessBootstrapPath:(${IDENT})\\}`,
@@ -82,6 +82,17 @@ function resumeHarness(source, trustedServicesKey) {
   const identity = only(resumeSource, new RegExp(`=${cache[1]}\\?(${IDENT})\\(${principal[1]}\\)\\?\\?(${IDENT}):null`, "g"));
   const env = only(resumeSource, new RegExp(
     `Object\\.assign\\(${IDENT}\\.env,\\{\\[(${IDENT})\\.${IDENT}\\]:${IDENT},\\[\\1\\.${IDENT}\\]:(${IDENT})\\(\\)\\.env\\[(${IDENT})\\]\\?\\?"",`, "g"));
+  const accessKeys = only(resumeSource, new RegExp(
+    `Object\\.assign\\(${IDENT}\\.env,\\{\\[${IDENT}\\.(${IDENT})\\]:${IDENT},` +
+    `\\[${IDENT}\\.(${IDENT})\\]:${IDENT}\\(\\)\\.env\\[${IDENT}\\]\\?\\?"",\\[${IDENT}\\.(${IDENT})\\]:`, "g"));
+  const accessConstants = new Map(accessKeys.slice(1).map(key => {
+    const exports = chunks.flatMap(({ source }) => [...source.matchAll(new RegExp(
+      `[,{]${escapeRegExp(key)}:\\(\\)=>(${IDENT})[,}]`, "g"))].map(match => ({ source, binding: match[1] })));
+    assert.equal(exports.length, 1);
+    const value = only(exports[0].source, new RegExp(
+      `(?:let |,)${escapeRegExp(exports[0].binding)}="(BROWSER_USE_ACCESS_[A-Z_]+)"`, "g"));
+    return [key, value[1]];
+  }));
   const fallback = only(resumeSource, new RegExp(`:\\{\\.\\.\\.${IDENT},\\.\\.\\.(${IDENT})\\}\\}$`, "g"));
   const cleanup = only(resumeSource, new RegExp(`\\)\\),(${IDENT})\\(${IDENT}\\["mcp_servers\\.node_repl"\\],${selection}\\.cuaReplSurfaces\\)`, "g"));
   const packageRoot = only(buildSource, new RegExp(
@@ -97,8 +108,11 @@ function resumeHarness(source, trustedServicesKey) {
 
   let cached;
   let instructionsAvailable = true;
+  let accessEnv = {};
+  let connectionKind = "local";
   const constants = new Proxy({}, {
-    get: (_, key) => key === services[2] ? trustedServicesKey : String(key),
+    get: (_, key) => key === call[3] ? "cua_repl" :
+      key === services[2] ? trustedServicesKey : accessConstants.get(key) ?? String(key),
   });
   const globals = {
     [packageRoot[1]]: () => path,
@@ -116,15 +130,18 @@ function resumeHarness(source, trustedServicesKey) {
     [platforms[1]]: { linux: "linux" },
     [cache[2]]: async () => cached,
     [cache[4]]: () => ({ browserUseTinysky: true }),
-    [select[1]]: () => { throw Error("Unexpected fallback instead of cached selection"); },
+    [select[1]]: () => {
+      if (connectionKind === "local") throw Error("Unexpected fallback instead of cached selection");
+      return cached.selection;
+    },
     [config[1]]: async () => ({
       "mcp_servers.node_repl": {
         command: "/node", args: [], env: { [packageRoot[4]]: "/bundled", [executable[1]]: "/node" },
       },
     }),
-    [identity[1]]: () => "test-identity",
+    [identity[1]]: principal => principal?.executor ?? null,
     [identity[2]]: "api-key",
-    [env[2]]: () => ({ env: { CODEX_APP_SERVER_USE_LOCAL_DAEMON: "1" } }),
+    [env[2]]: () => ({ env: accessEnv }),
     [env[3]]: "browserIdentity",
     [fallback[1]]: { "mcp_servers.cua_repl": { enabled: false } },
     [cleanup[1]]: () => {},
@@ -138,16 +155,19 @@ function resumeHarness(source, trustedServicesKey) {
   // Function declarations need a shared lexical scope for the builder call.
   vm.createContext(globals);
   const sharedResume = vm.runInContext(`${buildSource}\n(${resumeSource})`, globals);
-  return async (selectionValue, { enabled = true, instructions = true } = {}) => {
+  return async (selectionValue, { enabled = true, instructions = true, kind = "local", browserAccess = {} } = {}) => {
     cached = { selection: selectionValue, cuaReplEnabled: enabled };
     instructionsAvailable = instructions;
+    connectionKind = kind;
+    accessEnv = { ...browserAccess, browserIdentity: browserAccess.BROWSER_USE_ACCESS_PIPE_PATH };
     const result = await sharedResume({
+      desktopFeatureAvailability: { browserUseTinysky: true },
       appServerConnection: {
-        hostConfig: { kind: "local" },
-        getAuthenticatedPrincipal: async () => ({}),
+        hostConfig: { kind },
+        getAuthenticatedPrincipal: async () => ({ executor: browserAccess.BROWSER_USE_ACCESS_EXECUTOR_ID ?? "test-identity" }),
       },
     });
-    return result[`mcp_servers.${call[3]}`];
+    return result["mcp_servers.cua_repl"];
   };
 }
 
@@ -167,7 +187,7 @@ test("official per-thread CUA overrides carry the trusted root when resuming cha
     new RegExp(`\\[${IDENT}\\.(${IDENT})\\]:JSON\\.stringify\\(${IDENT}\\)`, "g"));
   const trustedServicesKey = trustedServicesConstant(chunks, builderServices[1]);
   assert.equal(trustedServicesKey, "NODE_REPL_TRUSTED_SERVICES");
-  const resume = resumeHarness(patched, trustedServicesKey);
+  const resume = resumeHarness(patched, trustedServicesKey, chunks);
   for (const instructions of [true, false]) {
     for (const surfaces of [["computer"], ["browser"], ["browser", "computer"]]) {
       const cua = await resume({
@@ -188,4 +208,22 @@ test("official per-thread CUA overrides carry the trusted root when resuming cha
   await assert.rejects(resume({
     browserBackends: ["iab"], desktopFeatureAvailability: { deferCuaTools: false }, cuaReplSurfaces: ["computer"],
   }), /Linux Computer Use trusted plugin root is unavailable/);
+  const selection = {
+    browserBackends: ["iab"], desktopFeatureAvailability: { deferCuaTools: false },
+    cuaReplSurfaces: ["browser", "computer"], codexLinuxCuaPluginRoot: "/trusted-plugin",
+  };
+  for (const instructions of [true, false]) {
+    for (const revision of ["first", "resumed"]) {
+      const browserAccess = {
+        BROWSER_USE_ACCESS_EXECUTOR_ID: `${revision}-executor`,
+        BROWSER_USE_ACCESS_PIPE_PATH: `/${revision}/browser.sock`,
+        BROWSER_USE_ACCESS_VERIFYING_IDENTITY: `${revision}-verification`,
+      };
+      const cua = await resume(selection, { instructions, browserAccess });
+      for (const [key, value] of Object.entries(browserAccess)) assert.equal(cua.env[key], value);
+      assert.equal(cua.env.CODEX_APP_SERVER_USE_LOCAL_DAEMON, undefined);
+    }
+  }
+  assert.equal((await resume(selection, { enabled: false })).enabled, false);
+  assert.equal((await resume(selection, { kind: "ssh" })).enabled, false);
 });
