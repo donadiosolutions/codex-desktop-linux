@@ -1,94 +1,52 @@
 "use strict";
 
-const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
-
+const { escapeRegExp, findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
 const { applyAutomationPluginSyncPatch } = require("./plugin-sync.js");
 
 const IDENT = "[A-Za-z_$][\\w$]*";
 const MARKER = "codexLinuxForwardAutomationPipe";
 const PIPE_NAME = "CODEX_APP_TOOLS_PIPE_PATH";
-const DEFERRED_ENV = "(?:,CODEX_APP_TOOLS_DEFERRED:" + IDENT + "\\?`1`:`0`)?";
 const CONFIG_FUNCTION = new RegExp(
-  "async function " + IDENT + "\\(\\{useWsl:" + IDENT + ",resourcesPath:" + IDENT +
-    "=process\\.resourcesPath\\}\\)\\{if\\(!process\\.env\\." + PIPE_NAME +
-    "\\)return " + IDENT + "\\(`missing-pipe`\\);",
-  "gu",
+  `async function ${IDENT}\\(\\{useWsl:${IDENT},resourcesPath:${IDENT}=process\\.resourcesPath\\}\\)\\{` +
+    `if\\(!process\\.env\\[(${IDENT})\\]\\)return ${IDENT}\\("missing-pipe"\\);`, "gu",
 );
 
-function findPipeForwardTargets(source) {
+function findPipeContracts(source, patched) {
   const targets = [];
-  for (const functionMatch of source.matchAll(new RegExp(CONFIG_FUNCTION.source, "gu"))) {
-    const signatureEnd = functionMatch[0].indexOf("}){");
-    if (signatureEnd === -1) continue;
-    const functionOpen = functionMatch.index + signatureEnd + 2;
-    const functionClose = findMatchingBrace(source, functionOpen);
-    if (functionClose === -1) continue;
-    const body = source.slice(functionOpen, functionClose + 1);
-    const servers = [...body.matchAll(new RegExp(`codex_app:(${IDENT})\\}\\}=`, "gu"))];
+  for (const match of source.matchAll(CONFIG_FUNCTION)) {
+    const pipe = match[1];
+    const definitions = [...source.matchAll(new RegExp(`(?:let |var |const |,)${escapeRegExp(pipe)}="${PIPE_NAME}"(?=[,;])`, "gu"))];
+    if (definitions.length !== 1) continue;
+    const open = match.index + match[0].lastIndexOf("{");
+    const close = findMatchingBrace(source, open);
+    if (close === -1) continue;
+    const body = source.slice(open, close + 1);
+    const servers = [...body.matchAll(new RegExp(`mcpServers:\\{codex_app:(${IDENT})\\}\\}=`, "gu"))];
     if (servers.length !== 1) continue;
     const server = servers[0][1];
-    const envMatches = [
-      ...body.matchAll(new RegExp(`(?:,|;let )(${IDENT})=\\{\\.\\.\\.${server}\\.env${DEFERRED_ENV}\\},`, "gu")),
-    ];
-    if (envMatches.length !== 1) continue;
-    const env = envMatches[0][1];
-    if (!body.includes(`env:${env}`)) continue;
-    targets.push({
-      env,
-      replaceEnd: functionOpen + envMatches[0].index + envMatches[0][0].length,
-      replaceStart: functionOpen + envMatches[0].index,
-      server,
-      original: envMatches[0][0],
-    });
+    const insertion = patched ? `,${PIPE_NAME}:process.env[${pipe}]/*${MARKER}*/` : "";
+    const escaped = insertion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const environments = [...body.matchAll(new RegExp(
+      `let (${IDENT})=\\{\\.\\.\\.${escapeRegExp(server)}\\.env${escaped},CODEX_APP_TOOLS_DEFERRED:${IDENT}\\?"1":"0"\\},`, "gu",
+    ))];
+    if (environments.length !== 1 || !body.includes(`env:${environments[0][1]}`)) continue;
+    targets.push({ start: open + environments[0].index, original: environments[0][0], server, pipe });
   }
   return targets;
 }
 
-function findPatchedPipeContracts(source) {
-  const contracts = [];
-  for (const functionMatch of source.matchAll(new RegExp(CONFIG_FUNCTION.source, "gu"))) {
-    const signatureEnd = functionMatch[0].indexOf("}){");
-    if (signatureEnd === -1) continue;
-    const functionOpen = functionMatch.index + signatureEnd + 2;
-    const functionClose = findMatchingBrace(source, functionOpen);
-    if (functionClose === -1) continue;
-    const body = source.slice(functionOpen, functionClose + 1);
-    const servers = [...body.matchAll(new RegExp(`codex_app:(${IDENT})\\}\\}=`, "gu"))];
-    if (servers.length !== 1) continue;
-    const server = servers[0][1];
-    const envMatches = [
-      ...body.matchAll(
-        new RegExp(
-          `(?:,|;let )(${IDENT})=\\{\\.\\.\\.${server}\\.env,${PIPE_NAME}:process\\.env\\.${PIPE_NAME}/\\*${MARKER}\\*/${DEFERRED_ENV}\\},`,
-          "gu",
-        ),
-      ),
-    ];
-    if (envMatches.length !== 1) continue;
-    const env = envMatches[0][1];
-    if (body.includes(`env:${env}`)) contracts.push({ env, server });
-  }
-  return contracts;
-}
-
 function applyAutomationPluginPipeForwardPatch(source) {
-  if (source.includes(MARKER)) {
-    const markerCount = source.split(MARKER).length - 1;
-    if (markerCount === 1 && findPatchedPipeContracts(source).length === 1) return source;
+  const markerCount = source.split(MARKER).length - 1;
+  if (markerCount !== 0) {
+    if (markerCount === 1 && findPipeContracts(source, true).length === 1 && findPipeContracts(source, false).length === 0) return source;
     throw new Error("Automation plugin pipe patch did not match the current bundle exactly once");
   }
-
-  const targets = findPipeForwardTargets(source);
-  if (targets.length !== 1) {
-    throw new Error("Automation plugin pipe patch did not match the current bundle exactly once");
-  }
-
-  const { original, replaceEnd, replaceStart, server } = targets[0];
-  const replacement = original.replace(
-    `...${server}.env`,
-    `...${server}.env,${PIPE_NAME}:process.env.${PIPE_NAME}/*${MARKER}*/`,
-  );
-  return source.slice(0, replaceStart) + replacement + source.slice(replaceEnd);
+  const targets = findPipeContracts(source, false);
+  if (targets.length !== 1) throw new Error("Automation plugin pipe patch did not match the current bundle exactly once");
+  const { start, original, server, pipe } = targets[0];
+  const replacement = original.replace(`...${server}.env`,
+    `...${server}.env,${PIPE_NAME}:process.env[${pipe}]/*${MARKER}*/`);
+  return source.slice(0, start) + replacement + source.slice(start + original.length);
 }
 
 function applyAutomationPluginPipePatch(source) {

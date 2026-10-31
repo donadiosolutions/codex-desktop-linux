@@ -58,3 +58,12 @@ test('descriptor patches only the uniquely owned extracted module and remains id
   assert.throws(()=>patchPluginCliHash(root));
   assert.equal(fs.readFileSync(target,'utf8'),patched);
 });
+
+test('signed 26.1027 chunk with callable fs import remains patchable', () => {
+  const source = 'const marker="chrome_plugin_app_server_processes_stopped";async function iY(e){return(0,eu.createHash)("sha256").update(await tm().readFile(e)).digest("hex")}';
+  const patched = applyPluginCliHashPatch(source);
+  assert.notEqual(patched, source);
+  assert.equal(applyPluginCliHashPatch(patched), patched);
+  assert.match(patched, /createReadStream/);
+  assert.doesNotMatch(patched, /readFile/);
+});

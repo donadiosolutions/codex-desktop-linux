@@ -62,18 +62,23 @@ async function codexLinuxSyncFeatureEnablement(connectionState, enablement, read
 }
 
 function applyFeatureEnablementDedupPatch(source) {
-  const markers = [...source.matchAll(/`app-server-feature-enablement`/gu)];
+  const markers = [...source.matchAll(/["`]app-server-feature-enablement["`]/gu)];
   const marker = markers.length === 1 ? markers[0].index : -1;
-  const start = marker < 0 ? -1 : source.lastIndexOf("=class{", marker);
-  const open = start < 0 ? -1 : start + "=class".length;
+  const classes = [...source.slice(0, Math.max(marker, 0)).matchAll(/(?:=class|class [A-Za-z_$][\w$]*)\{/gu)];
+  const declaration = classes.at(-1);
+  const open = declaration == null ? -1 : declaration.index + declaration[0].length - 1;
   const end = open < 0 ? -1 : findMatchingBrace(source, open);
   const owner = end < 0 ? "" : source.slice(open, end + 1);
   const calls = [...owner.matchAll(new RegExp(
-    `await (${ID})\\.connection\\.sendAppServerRequest\\(\x60experimentalFeature/enablement/set\x60,\\{enablement:(${ID})\\},(${ID})\\)`, "gu",
+    `await (${ID})\\.connection\\.sendAppServerRequest\\(["\x60]experimentalFeature/enablement/set["\x60],\\{enablement:(${ID})\\},(${ID})\\)`, "gu",
   ))];
   const resets = [...owner.matchAll(new RegExp(
-    `if\\((?:(${ID})\\.generation=${ID},)?(${ID})\\.connection\\.getConnectionState\\(\\)!==\x60connected\x60\\)\\{\\2\\.rolloutCompressionRequested=!1(?:,\\2\\.${ID}=(?:!1|null))*;return\\}`, "gu",
-  ))];
+    `if\\((?:${ID}\\.generation=${ID},)?([^{};]+)\\)\\{(${ID})\\.rolloutCompressionRequested=!1(?:,\\2\\.${ID}=(?:!1|null))*;return\\}`, "gu",
+  ))].filter((match) => {
+    const state = match[2];
+    return match[1] === `${state}.connection.getConnectionState()!==\`connected\`` ||
+      match[1] === `"connected"!==${state}.connection.getConnectionState()`;
+  });
   const helper = codexLinuxSyncFeatureEnablement.toString();
   if (source.includes(HELPER)) {
     if (source.includes(helper) && owner.includes(`await ${HELPER}(`) &&
@@ -82,7 +87,7 @@ function applyFeatureEnablementDedupPatch(source) {
              calls[0][1] === resets[0][2] &&
              owner.includes(`async sendEnablement(${calls[0][1]},`)) {
     const [, state, enablement, ready] = calls[0];
-    const responseRequired = owner.includes(".enablement.daybreak_program_propagation!=null");
+    const responseRequired = (/(?:\.enablement\.daybreak_program_propagation!=null|null!=[A-Za-z_$][\w$]*\.enablement\.daybreak_program_propagation)/u).test(owner);
     const patched = owner
       .replace(calls[0][0], `await ${HELPER}(${state},${enablement},${ready},()=>${calls[0][0].slice(6)}${responseRequired ? ",!0" : ""})`)
       .replace(resets[0][0], resets[0][0].replace(`${state}.rolloutCompressionRequested`, `${state}.${STATE}=null,${state}.rolloutCompressionRequested`));

@@ -1,6 +1,6 @@
 "use strict";
 
-const { registerRequestHandlers, hasRegisteredRequestHandlers } = require("../../scripts/patches/lib/request-handlers.js");
+const { registerChronicleBridge, chronicleBridgeRegistered } = require("../chronicle-skysight/patch.js");
 
 const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
 
@@ -174,7 +174,7 @@ function hasCompleteRecordReplayMainBridgePatch(source) {
   const bridgePayload = recordReplayBridgeSource(RECORD_REPLAY_MODULE_EXPRESSIONS);
   return countOccurrences(source, helperPayload) === 1
     && countOccurrences(source, bridgePayload) === 1
-    && hasRegisteredRequestHandlers(source, bridgePayload);
+    && chronicleBridgeRegistered(source, bridgePayload);
 }
 
 function hasAnyRecordReplayMainBridgeArtifact(source) {
@@ -196,10 +196,10 @@ function applyRecordReplayMainBridgePatch(currentSource) {
   }
 
   try {
-    const patched = registerRequestHandlers(currentSource, recordReplayBridgeSource(RECORD_REPLAY_MODULE_EXPRESSIONS));
+    const patched = registerChronicleBridge(currentSource, recordReplayBridgeSource(RECORD_REPLAY_MODULE_EXPRESSIONS));
     return `${recordReplayHelperSource(RECORD_REPLAY_MODULE_EXPRESSIONS)}\n${patched}`;
   } catch (error) {
-    warn(error.message, patchName);
+    warn(`Could not uniquely resolve current signed-release bridge insertion point: ${error.message}`, patchName);
     return currentSource;
   }
 }

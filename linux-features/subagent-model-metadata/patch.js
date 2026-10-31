@@ -25,7 +25,7 @@ function prepare(source) {
   const activation = block(source, `function ${IDENT}\\((${IDENT})\\)\\{(?=return\\{id:\\1\\.conversationId,)`);
   const hydration = block(source, `async hydrateCollabThreads\\((${IDENT})\\)\\{`);
   const turn = one(source,
-    `(${IDENT})===${IDENT}(?:\\.${IDENT})?\\((${IDENT})\\)&&\\((?:/\\*${markers[3]}\\*/)?` +
+    `(${IDENT})===(?:${IDENT}(?:\\.${IDENT})?|\\(0,${IDENT}\\.${IDENT}\\))\\((${IDENT})\\)&&\\((?:/\\*${markers[3]}\\*/)?` +
     `\\2\\.latestModel=\\1\\.params\\.model(?<operator>\\?\\?|\\|\\|)\\2\\.latestModel,` +
     `\\2\\.latestReasoningEffort=\\1\\.params\\.effort\\?\\?\\2\\.latestReasoningEffort,` +
     `\\2\\.latestCollaborationMode=\\1\\.params\\.collaborationMode\\?\\?\\2\\.latestCollaborationMode\\)`);
@@ -33,7 +33,7 @@ function prepare(source) {
 
   const summaryField = one(summary.text, `(?:/\\*${markers[0]}\\*/model:(${IDENT})\\.model,reasoningEffort:\\1\\.reasoningEffort,)?modelProvider:(${IDENT})\\.modelProvider,`);
   const activationField = one(activation.text,
-    `(?:/\\*${markers[1]}\\*/)?latestModel:(?:\x60\x60|(${IDENT})\\.model\\?\\?\x60\x60),` +
+    `(?:/\\*${markers[1]}\\*/)?latestModel:(?:(?:\x60\x60|"")|(${IDENT})\\.model\\?\\?(?:\x60\x60|"")),` +
     `latestReasoningEffort:(?:null|(${IDENT})\\.reasoningEffort\\?\\?null),previousTurnModel:null`);
   const branch = one(hydration.text,
     `let (${IDENT})=this\\.threadsById\\.get\\((${IDENT})\\);` +

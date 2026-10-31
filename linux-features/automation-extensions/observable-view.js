@@ -5,10 +5,17 @@ const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js"
 const IDENT = "[A-Za-z_$][\\w$]*";
 const OBSERVABLE_AUTOMATION_VIEW_MARKER = "codexLinuxObservableAutomationView";
 
-const OUTPUT_HELPER = new RegExp(
-  "function (" + IDENT + ")\\((" + IDENT + ")\\)\\{return\\{contentItems:" +
-    "\\[\\{type:`inputText`,text:(" + IDENT + ")==null\\?`Rendered automation card in the app\\.`:",
-  "gu",
+const CURRENT_OUTPUT_HELPER = new RegExp(
+  `function (${IDENT})\\((${IDENT})\\)\\{return\\{contentItems:\\[\\{type:"inputText",text:null==(${IDENT})\\?"Rendered automation card in the app\\.":`, "gu",
+);
+const CURRENT_DELETE_HANDLER = new RegExp(
+  `if\\("delete"===(${IDENT})\\.mode\\)\\{let (${IDENT})=\\1\\.id\\?\\?"";try\\{let\\{item:(${IDENT}),status:(${IDENT}),success:(${IDENT})\\}=await (${IDENT})\\.delete\\(\\{id:\\2\\}\\);`, "gu",
+);
+const CURRENT_PRIVATE_STORE_DELETE_METHOD = new RegExp(
+  `async delete\\(\\{id:(${IDENT})\\}\\)\\{return this\\.#(${IDENT})\\(\\1,null\\)\\}` +
+  `async #\\2\\((${IDENT}),(${IDENT})\\)\\{\\4\\?\\.assertCurrent\\(\\);` +
+  `let\\{item:(${IDENT}),status:(${IDENT})\\}=this\\.habitatAutomationsService\\?await this\\.habitatAutomationsService\\.delete\\(\\3\\):` +
+  `\\{item:\\(0,(${IDENT})\\.(${IDENT})\\)\\(\\3\\),status:\\(0,\\7\\.(${IDENT})\\)\\(\\3\\)\\},`, "gu",
 );
 const PATCHED_OUTPUT_HELPER = new RegExp(
   "function (" + IDENT + ")\\((" + IDENT + ")\\)\\{return\\{contentItems:" +
@@ -17,26 +24,12 @@ const PATCHED_OUTPUT_HELPER = new RegExp(
     "`Automation does not exist in the app\\.`:`Read automation from the app\\.`:",
   "gu",
 );
-const DELETE_HANDLER = new RegExp(
-  "if\\((" + IDENT + ")\\.mode===`delete`\\)\\{let (" + IDENT +
-    ")=\\1\\.id\\?\\?``;try\\{let\\{item:(" + IDENT + "),status:(" + IDENT +
-    "),success:(" + IDENT + ")\\}=await (" + IDENT + ")\\.delete\\(\\{id:\\2\\}\\);",
-  "gu",
-);
 const STORE_VIEW_METHOD = new RegExp(
   `async view\\(\\{id:(${IDENT})\\}\\)\\{return\\{item:(${IDENT})\\.(${IDENT})\\(\\1\\)\\}\\}`,
   "gu",
 );
-const PRIVATE_STORE_DELETE_METHOD = new RegExp(
-  `async delete\\(\\{id:(${IDENT})\\}\\)\\{return this\\.#(${IDENT})\\(\\1,null\\)\\}` +
-    `async#\\2\\((${IDENT}),(${IDENT})\\)\\{\\4\\?\\.assertCurrent\\(\\);` +
-    `let\\{item:(${IDENT}),status:(${IDENT})\\}=this\\.habitatAutomationsService\\?` +
-    `await this\\.habitatAutomationsService\\.delete\\(\\3\\):` +
-    `\\{item:(${IDENT})\\.(${IDENT})\\(\\3\\),status:\\7\\.(${IDENT})\\(\\3\\)\\},`,
-  "gu",
-);
 const CLASS_OPEN = new RegExp(
-  `var (${IDENT})=class(?: extends ${IDENT}\\.${IDENT})?\\{`,
+  `class (${IDENT})(?: extends ${IDENT}\\.${IDENT})?\\{`,
   "gu",
 );
 
@@ -109,16 +102,15 @@ function enclosingClass(source, index) {
 
 function classDelegatesToHandler(classContract, handlerName) {
   const escapedHandlerName = handlerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const privateDelegation = new RegExp(
+  const currentDelegation = new RegExp(
     `executeUpdateTool\\((${IDENT})\\)\\{return this\\.#(${IDENT})\\(\\1,this\\)\\}` +
-      `[\\s\\S]*?#\\2\\((${IDENT}),(${IDENT})\\)\\{return \\3\\.hostId===\`local\`\\?` +
-      `this\\.habitatAutomationsService\\?\\.isLocalMigrationActive\\(\\)\\?` +
-      `Promise\\.resolve\\(\\{response:\\{success:!1,contentItems:\\[\\{type:\`inputText\`,text:` +
-      `\`Local automation changes must use the Automations app after migration consent\\.\`\\}\\]\\}\\}\\):` +
-      `${escapedHandlerName}\\(\\4,\\3,`,
-    "u",
+    `[\\s\\S]*?#\\2\\((${IDENT}),(${IDENT})\\)\\{return \\3\\.hostId!==${IDENT}\\.${IDENT}\\?` +
+    `Promise\\.resolve\\(\\{response:\\{success:!1,contentItems:\\[\\{type:"inputText",text:"Automations are only supported for local threads\\."\\}\\]\\}\\}\\):` +
+    `this\\.habitatAutomationsService\\?\\.isLocalMigrationActive\\(\\)\\?` +
+    `Promise\\.resolve\\(\\{response:\\{success:!1,contentItems:\\[\\{type:"inputText",text:"Local automation changes must use the Automations app after migration consent\\."\\}\\]\\}\\}\\):` +
+    `${escapedHandlerName}\\(\\4,\\3,`, "u",
   );
-  return privateDelegation.test(classContract.source);
+  return currentDelegation.test(classContract.source);
 }
 
 function linkedStoreContract(source, storeMatches, handlerName) {
@@ -172,18 +164,26 @@ function observableViewMethod(storeId, storeModule, readMethod = "kr") {
   return `async view({id:${storeId}}){return{item:${storeModule}.${readMethod}(${storeId})}}`;
 }
 
+function currentAutomationOutputNeedle(e) {
+  return `null==${e}?"Rendered automation card in the app.":"create"===${e}.mode?"Created automation in the app.":"update"===${e}.mode?"Updated automation in the app.":"not_found"!==${e}.deleteStatus?"Deleted automation in the app.":"Automation already does not exist in the app."`;
+}
+function currentAutomationOutputFunction(name, e, text) {
+  return `function ${name}(${e}){return{contentItems:[{type:"inputText",text:${text}},...null==${e}?[]:[{type:"inputText",text:JSON.stringify(${e})}]],success:!0}}`;
+}
+
 function currentAutomationViewContract(source) {
-  const outputMatches = [...source.matchAll(new RegExp(OUTPUT_HELPER.source, "gu"))];
-  const handlerMatches = [...source.matchAll(new RegExp(DELETE_HANDLER.source, "gu"))];
-  const storeMatches = [...source.matchAll(new RegExp(PRIVATE_STORE_DELETE_METHOD.source, "gu"))];
+  const outputMatches = [...source.matchAll(new RegExp(CURRENT_OUTPUT_HELPER.source, "gu"))];
+  const handlerMatches = [...source.matchAll(new RegExp(CURRENT_DELETE_HANDLER.source, "gu"))];
+  const storeMatches = [...source.matchAll(new RegExp(CURRENT_PRIVATE_STORE_DELETE_METHOD.source, "gu"))];
   if (outputMatches.length !== 1 || handlerMatches.length !== 1 || storeMatches.length === 0) {
     return null;
   }
 
   const output = outputMatches[0];
   if (output[2] !== output[3]) return null;
-  const outputText = automationOutputNeedle(output[2]);
-  if (!occursExactlyOnce(source, automationOutputFunction(output[1], output[2], outputText))) {
+  const outputText = currentAutomationOutputNeedle(output[2]);
+  const outputSource = currentAutomationOutputFunction(output[1], output[2], outputText);
+  if (!occursExactlyOnce(source, outputSource)) {
     return null;
   }
   const handlerMatch = handlerMatches[0];
@@ -193,7 +193,7 @@ function currentAutomationViewContract(source) {
   const linkedStore = linkedStoreContract(source, storeMatches, handler.name);
   if (linkedStore == null) return null;
 
-  return { output, handler: handlerMatch, linkedStore };
+  return { output, handler: handlerMatch, linkedStore, outputSource };
 }
 
 function patchedAutomationViewContract(source) {
@@ -230,6 +230,12 @@ function patchedAutomationViewContract(source) {
   )) {
     return null;
   }
+  if (linkedStore.owner.source.includes("executeNativeUpdateTool=")) {
+    const nativeViews = [...linkedStore.owner.source.matchAll(new RegExp(
+      `view:\\(\\{id:(${IDENT})\\}\\)=>\\((${IDENT})\\.assertCurrent\\(\\),this\\.view\\(\\{id:\\1\\}\\)\\)`, "gu",
+    ))];
+    if (nativeViews.length !== 1) return null;
+  }
   return { output, handler, linkedStore };
 }
 
@@ -246,11 +252,11 @@ function applyObservableAutomationViewPatch(source) {
 
   const outputFunction = contract.output[1];
   const outputValue = contract.output[2];
-  const outputNeedle = automationOutputNeedle(outputValue);
+  const outputNeedle = contract.outputSource;
   if (!occursExactlyOnce(source, outputNeedle)) {
     throw new Error("Automation result text contract is not unique");
   }
-  const outputReplacement = observableAutomationOutput(outputValue);
+  const outputReplacement = automationOutputFunction(outputFunction, outputValue, observableAutomationOutput(outputValue));
 
   const argumentValue = contract.handler[1];
   const host = contract.handler[6];
@@ -261,10 +267,17 @@ function applyObservableAutomationViewPatch(source) {
   const readMethod = contract.linkedStore.store[8];
   const viewMethod = observableViewMethod(storeId, storeModule, readMethod);
 
-  const patched = source
+  let patched = source
     .replace(outputNeedle, outputReplacement)
     .replace(contract.handler[0], viewBranch + contract.handler[0])
     .replace(contract.linkedStore.store[0], viewMethod + contract.linkedStore.store[0]);
+  {
+    const nativeDelete = new RegExp(`delete:\\(\\{id:(${IDENT})\\}\\)=>this\\.#${contract.linkedStore.store[2]}\\(\\1,(${IDENT})\\)`, "gu");
+    const delegates = [...contract.linkedStore.owner.source.matchAll(nativeDelete)];
+    if (delegates.length !== 1) throw new Error("Observable automation native view delegate is ambiguous");
+    const delegate = delegates[0];
+    patched = patched.replace(delegate[0], `${delegate[0]},view:({id:${delegate[1]}})=>(${delegate[2]}.assertCurrent(),this.view({id:${delegate[1]}}))`);
+  }
   if (patchedAutomationViewContract(patched) == null) {
     throw new Error("Observable automation view patch did not produce the complete contract");
   }

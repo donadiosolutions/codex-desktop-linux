@@ -20,16 +20,16 @@ const {
 } = require("./observable-view.js");
 
 function automationViewFixture(hostClass = null) {
+  const current = require("./fixtures/current-view.json");
   return [
     '"use strict";',
     "const store=new Map([[`existing`,{id:`existing`,kind:`heartbeat`,name:`Acceptance`,prompt:`Report marker`,rrule:`FREQ=WEEKLY;BYDAY=SU;BYHOUR=23;BYMINUTE=59`,status:`PAUSED`}]]);",
-    "const api={kr:e=>store.get(e)??null,Or:e=>store.delete(e)?`deleted`:`not_found`};",
-    "function Oz(e){return{contentItems:[{type:`inputText`,text:e==null?`Rendered automation card in the app.`:e.mode===`create`?`Created automation in the app.`:e.mode===`update`?`Updated automation in the app.`:e.deleteStatus===`not_found`?`Automation already does not exist in the app.`:`Deleted automation in the app.`},...e==null?[]:[{type:`inputText`,text:JSON.stringify(e)}]],success:!0}}",
-    "function Mz(e){return{response:{contentItems:[{type:`inputText`,text:e}],success:!1}}}",
-    "async function jz(e,{threadId:t,argumentsValue:n},r){let i={success:!0,data:n};if(!i.success)return Mz(`invalid`);let a=i.data;if(a.mode===`delete`){let t=a.id??``;try{let{item:n,status:r,success:i}=await e.delete({id:t});return{response:i?Oz({automationId:t,mode:`delete`,deleteStatus:r===`not_found`?`not_found`:`deleted`,snapshot:n==null?null:{kind:n.kind,name:n.name,rrule:n.rrule}}):Mz(`failed`).response,mutation:{mode:`delete`,id:t,item:n,status:r}}}catch(e){return{...Mz(`failed`),mutation:{mode:`delete`,id:t,item:null,status:`host_error`}}}}return{response:Oz()}}",
-    hostClass ?? "var Fz=class{habitatAutomationsService;async delete({id:e}){return this.#n(e,null)}async#n(e,t){t?.assertCurrent();let{item:r,status:i}=this.habitatAutomationsService?await this.habitatAutomationsService.delete(e):{item:api.kr(e),status:api.Or(e)},a=i===`deleted`||i===`not_found`;return{item:r,success:a,status:i}}executeUpdateTool(e){return this.#r(e,this)}#r(e,t){return e.hostId===`local`?this.habitatAutomationsService?.isLocalMigrationActive()?Promise.resolve({response:{success:!1,contentItems:[{type:`inputText`,text:`Local automation changes must use the Automations app after migration consent.`}]}}):jz(t,e,e=>null):null}};",
-    "globalThis.run=async id=>(await jz(new Fz,{threadId:`thread`,argumentsValue:{mode:`view`,id}},()=>null)).response;",
-    "globalThis.runViaHost=async(id,migrating)=>{let host=new Fz;host.habitatAutomationsService={isLocalMigrationActive:()=>migrating};return(await host.executeUpdateTool({hostId:`local`,threadId:`thread`,argumentsValue:{mode:`view`,id}})).response};",
+    "const eo={TF:class{}},em={$Cz:()=>({}),OeD:e=>store.get(e)??null},ar={n:`local`},Lp={safeParse:data=>({success:!0,data})};",
+    current.output,
+    current.handler,
+    hostClass ?? current.host,
+    "globalThis.run=async id=>(await new Lb().executeUpdateTool({hostId:`local`,threadId:`thread`,argumentsValue:{mode:`view`,id}})).response;",
+    "globalThis.runViaHost=async(id,migrating)=>{let host=new Lb;host.habitatAutomationsService={isLocalMigrationActive:()=>migrating};return(await host.executeUpdateTool({hostId:`local`,threadId:`thread`,argumentsValue:{mode:`view`,id}})).response};",
   ].join("");
 }
 
@@ -179,14 +179,26 @@ test("automation plugin enablement rejects flattened tools from another function
   }
 });
 
+// Keep runtime assertions compact while expressing the current minifier's
+// string literals, computed pipe constant, and local-host comparison order.
+function currentPipeFixture(source) {
+  return 'let rP="CODEX_APP_TOOLS_PIPE_PATH",fixtureDeferred=false;' + source
+    .replace(/`([^`]*?)`/gu, (literal, value) => value.includes("${") ? literal : JSON.stringify(value))
+    .replaceAll("process.env.CODEX_APP_TOOLS_PIPE_PATH", "process.env[rP]")
+    .replace(/,([A-Za-z_$][\w$]*)=\{\.\.\.([A-Za-z_$][\w$]*)\.env\},/gu,
+      ';let $1={...$2.env,CODEX_APP_TOOLS_DEFERRED:fixtureDeferred?"1":"0"},')
+    .replace(/([A-Za-z_$][\w$]*)\.hostConfig\.kind!=="local"/gu, '"local"!==$1.hostConfig.kind')
+    .replaceAll('i.bi(e.appServerVersion,"pluginMcpConfigOverrides")', '(0,i.bi)(e.appServerVersion,"pluginMcpConfigOverrides")');
+}
+
 test("adopted app servers receive the Desktop automation pipe explicitly", async () => {
-  const source = [
+  const source = currentPipeFixture([
     "const process={env:{CODEX_APP_TOOLS_PIPE_PATH:`/tmp/codex-app-tools.sock`},resourcesPath:`/resources`};",
     "const base={mcpServers:{codex_app:{command:`launch`,env:{BASE:`preserved`}}}};",
     "function unavailable(reason){return null}",
     "async function nl({useWsl:e,resourcesPath:t=process.resourcesPath}){if(!process.env.CODEX_APP_TOOLS_PIPE_PATH)return unavailable(`missing-pipe`);let{mcpServers:{codex_app:s}}=base,c={...s.env},l=null;return{...s,command:s.command,cwd:`/plugin`,enabled:!1,env:c}}",
     "globalThis.read=nl;globalThis.removePipe=()=>delete process.env.CODEX_APP_TOOLS_PIPE_PATH;",
-  ].join("");
+  ].join(""));
   const descriptor = descriptors.find(({ id }) => id === "automation-plugin-pipe");
 
   assert.ok(descriptor);
@@ -208,13 +220,13 @@ test("adopted app servers receive the Desktop automation pipe explicitly", async
 });
 
 test("current plugin pipe preserves deferred-tool configuration", async () => {
-  const source = [
+  const source = currentPipeFixture([
     "const process={env:{CODEX_APP_TOOLS_PIPE_PATH:`/pipe`},resourcesPath:`/resources`};",
     "const base={mcpServers:{codex_app:{env:{BASE:`preserved`},omit_tools_from:[`deferred`,`other`]}}};",
     "let defer=true;function el(){return null}function K(){return{deferCodexAppTools:defer}}",
     "async function $c({useWsl:e,resourcesPath:t=process.resourcesPath}){if(!process.env.CODEX_APP_TOOLS_PIPE_PATH)return el(`missing-pipe`);let{mcpServers:{codex_app:a}}=base,{deferCodexAppTools:o}=K();o&&(a.omit_tools_from=a.omit_tools_from?.filter(e=>e!==`deferred`));let s={...a.env,CODEX_APP_TOOLS_DEFERRED:o?`1`:`0`},u=null;return{...a,enabled:!1,env:s}}",
     "globalThis.read=$c;globalThis.disableDefer=()=>defer=false;",
-  ].join("");
+  ].join(""));
   const descriptor = descriptors.find(({ id }) => id === "automation-plugin-pipe");
   const patched = descriptor.apply(source);
   const context = vm.createContext({});
@@ -247,7 +259,7 @@ test("automation pipe forwarding fails closed on drift and incomplete markers", 
 
 function desktopPluginSyncContext() {
   const upstream = require("./fixtures/upstream-26.1021.22027.json");
-  const source = [
+  const source = currentPipeFixture([
     "const process={env:{CODEX_APP_TOOLS_PIPE_PATH:`/pipe/first`},resourcesPath:`/resources`,platform:`linux`};",
     "const base={mcpServers:{codex_app:{command:`scripts/launch`,args:[`./server.mjs`],env:{BASE:`preserved`,CODEX_MCP_NODE_PATH:`/node`},default_tools_approval_mode:`approve`,tools:{automation_update:{approval_mode:`prompt`}}}}};",
     "let version=`first`,installed=true,disk=`upstream manifest`,pending=null,reloads=0,fail=false;",
@@ -263,7 +275,7 @@ function desktopPluginSyncContext() {
     "globalThis.snapshot=()=>({reloads,disk});globalThis.restart=()=>{version=`second`;process.env.CODEX_APP_TOOLS_PIPE_PATH=`/pipe/second`};",
     "globalThis.reinstall=()=>{disk=`upstream manifest`};globalThis.removePipe=()=>delete process.env.CODEX_APP_TOOLS_PIPE_PATH;",
     "globalThis.failReload=()=>{fail=true};globalThis.uninstall=()=>{installed=false};",
-  ].join("");
+  ].join(""));
   const descriptor = descriptors.find(({ id }) => id === "automation-plugin-pipe");
   const patched = descriptor.apply(source);
   const context = vm.createContext({ pathApi: require("node:path").posix });
@@ -320,8 +332,8 @@ test("transport refresh keeps remote, unavailable, legacy and failed-reload beha
 test("transport synchronization fails closed on ambiguous owners and damaged markers", () => {
   const { descriptor, source, patched } = desktopPluginSyncContext();
   const { sync } = require("./fixtures/upstream-26.1021.22027.json");
-  assert.throws(() => descriptor.apply(source + sync.replace("uoe(", "anotherSync(")), /synchronization patch did not match/);
-  assert.throws(() => descriptor.apply(source.replace("i.bi(e.appServerVersion,`pluginMcpConfigOverrides`)", "changed(e.appServerVersion,`pluginMcpConfigOverrides`)")), /synchronization patch did not match/);
+  assert.throws(() => descriptor.apply(source + currentPipeFixture(sync.replace("uoe(", "anotherSync(")).replace('let rP="CODEX_APP_TOOLS_PIPE_PATH",fixtureDeferred=false;', "")), /synchronization patch did not match/);
+  assert.throws(() => descriptor.apply(source.replace('(0,i.bi)(e.appServerVersion,"pluginMcpConfigOverrides")', 'changed(e.appServerVersion,"pluginMcpConfigOverrides")')), /synchronization patch did not match/);
   assert.throws(() => descriptor.apply(patched.replace("await uoe(e);", "await wrongOwner(e);")), /synchronization patch did not match/);
   assert.throws(() => descriptor.apply(patched + "/*codexLinuxSyncAutomationPluginBeforeResume*/"), /synchronization patch did not match/);
 });
@@ -384,8 +396,8 @@ test("automation view patch fails closed on drift and incomplete markers", () =>
     /did not match the current or patched bundle/,
   );
   const partial = automationViewFixture().replace(
-    "return{response:Oz()}",
-    "return{response:Oz()}/*codexLinuxObservableAutomationView*/",
+    "return{response:Lm()}",
+    "return{response:Lm()}/*codexLinuxObservableAutomationView*/",
   );
   assert.throws(
     () => applyObservableAutomationViewPatch(partial),
@@ -443,8 +455,8 @@ test("automation view patch rejects an unrelated matching store class", () => {
 
 test("automation view patch rejects a private store routed to a different handler", () => {
   const mismatchedHost = automationViewFixture().replace(
-    ":jz(t,e,e=>null):null",
-    ":unrelated(t,e,e=>null):null",
+    ":Lw(t,e,e=>e instanceof LS?e.message:null)",
+    ":unrelated(t,e,e=>e instanceof LS?e.message:null)",
   );
   assert.throws(
     () => applyObservableAutomationViewPatch(mismatchedHost),

@@ -313,3 +313,19 @@ test("malformed effective booleans cannot be protected by matching malformed con
     h.calls[0].resolve({});await flush();
   }
 });
+
+// Reduced owner from signed official Linux 26.1027.30824.
+const rspackShape = 'class CurrentSync{logger=(0,em.log)("app-server-feature-enablement");sync(e){let t=1;if(e.generation=t,"connected"!==e.connection.getConnectionState()){e.rolloutCompressionRequested=!1,e.supportsPropagation=null,e.acknowledgedGeneration=null;return}}async sendEnablement(e,t){let i={example:!0},s=()=>{};let a=!1;try{let t=await e.connection.sendAppServerRequest("experimentalFeature/enablement/set",{enablement:i},s);a=null!=t.enablement.daybreak_program_propagation}catch(e){throw e}return a}}';
+test("signed 26.1027 named owner preserves propagation response and reconnect reset", async () => {
+  const patched = applyFeatureEnablementDedupPatch(rspackShape);
+  assert.notEqual(patched, rspackShape);
+  assert.equal(applyFeatureEnablementDedupPatch(patched), patched);
+  assert.match(patched, /codexLinuxFeatureEnablementSync=null/);
+  const Owner = new Function("em", `${patched};return CurrentSync;`)({log:()=>({})});
+  const owner = new Owner(); let sends=0;
+  const state={connection:{getConnectionState:()=>"connected",sendAppServerRequest:async()=>{sends++;return {enablement:{daybreak_program_propagation:true}}}}};
+  assert.deepEqual(await Promise.all([owner.sendEnablement(state,1),owner.sendEnablement(state,1)]),[true,true]);
+  assert.equal(sends,1);
+  state.connection.getConnectionState=()=>"disconnected";owner.sync(state);
+  assert.equal(state.codexLinuxFeatureEnablementSync,null);
+});

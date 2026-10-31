@@ -2,14 +2,14 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const MARKER = "/*codexLinuxStreamingPluginCliHash*/";
-const OWNER = "`chrome_plugin_app_server_processes_stopped`";
+const OWNER = /["`]chrome_plugin_app_server_processes_stopped["`]/gu;
 const ID = "[A-Za-z_$][\\w$]*";
-const original = new RegExp(`async function (${ID})\\((${ID})\\)\\{return\\(0,(${ID})\\.createHash\\)\\(\x60sha256\x60\\)\\.update\\(await (${ID})\\.default\\.readFile\\(\\2\\)\\)\\.digest\\(\x60hex\x60\\)\\}`, "g");
+const original = new RegExp(`async function (${ID})\\((${ID})\\)\\{return\\(0,(${ID})\\.createHash\\)\\(["\x60]sha256["\x60]\\)\\.update\\(await (?:${ID}\\.default|${ID}\\(\\))\\.readFile\\(\\2\\)\\)\\.digest\\(["\x60]hex["\x60]\\)\\}`, "g");
 function replacement(name, argument, crypto) {
   return `async function ${name}(${argument}){${MARKER}let codexLinuxHash=(0,${crypto}.createHash)(\`sha256\`);for await(let codexLinuxChunk of require(\`node:fs\`).createReadStream(${argument}))codexLinuxHash.update(codexLinuxChunk);return codexLinuxHash.digest(\`hex\`)}`;
 }
 function applyPluginCliHashPatch(source) {
-  if (source.split(OWNER).length !== 2) throw new Error("Expected one Chrome plugin CLI provisioning owner");
+  if ([...source.matchAll(OWNER)].length !== 1) throw new Error("Expected one Chrome plugin CLI provisioning owner");
   const matches = [...source.matchAll(original)];
   if (source.includes(MARKER)) {
     const patched = [...source.matchAll(new RegExp(`async function (${ID})\\((${ID})\\)\\{\\/\\*codexLinuxStreamingPluginCliHash\\*\\/let codexLinuxHash=\\(0,(${ID})\\.createHash`, "g"))];
@@ -25,7 +25,7 @@ function patchPluginCliHash(extractedDir) {
   const candidates = fs.readdirSync(buildDir).filter(name => name.endsWith(".js")).map(name => {
     const file = path.join(buildDir, name);
     return {file, source: fs.readFileSync(file, "utf8")};
-  }).filter(({source}) => source.includes(OWNER));
+  }).filter(({source}) => [...source.matchAll(OWNER)].length > 0);
   if (candidates.length !== 1) throw new Error("Expected one Chrome plugin CLI module");
   const [{file, source}] = candidates;
   const patched = applyPluginCliHashPatch(source);

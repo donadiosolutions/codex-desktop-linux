@@ -15,6 +15,11 @@ const ledger = { id: "ledger", model: "gpt-6-sol", reasoningEffort: "medium", cr
 
 function evaluate(source) {
   const context = {
+    m3: { J: (id) => id }, yH: { pR: (conversation) => conversation.turns.at(-1) },
+    bg: (thread) => thread, bf: (input) => input.threadRecencyAt ?? input.updatedAt,
+    by: () => ({}), vX: () => false, rm: (thread) => thread.daybreakProgramPropagationEnrolled === true,
+    rf: (thread, fallback) => thread.inheritedDaybreakSelection ?? fallback,
+    rw: (selection) => ({ status: selection?.status ?? "unset" }), vw: () => true,
     r: { os: (id) => id, ha: () => ({}) },
     i: { ys: (id) => id },
     Fy: (thread) => thread,
@@ -46,6 +51,7 @@ function store(context, thread = ledger, conversation) {
     threadsById: new Map(thread ? [[thread.id, thread]] : []),
     conversations: new Map(conversation ? [[conversation.id, conversation]] : []),
     pendingCollabThreadReads: new Set(), runtimeThreadStatusEvidenceByThreadId: new Map(),
+    getCachedDisplayThreadTitle: () => "Fixture",
     withThreadMetadata: (value) => value, getThreadSummary: () => null,
     getThreadHasUnreadTurn: () => false, reads: 0,
     captureThreadModelSettings(id) {
@@ -207,4 +213,31 @@ test("runner leaves the disabled bundle intact and rejects enabled ambiguous bun
     assert.equal(enabledFeatureFailuresFromReport(ambiguous).length, 1);
     assert.equal(fs.readFileSync(target, "utf8"), fixture);
   } finally { fs.rmSync(dir, { recursive: true }); }
+});
+
+
+test("26.1027 imported calls and quoted literals retain the complete metadata contract", async () => {
+  const source = fs.readFileSync(path.join(__dirname, "fixture-current.js"), "utf8");
+  const patched = applyPatch(source);
+  assert.notEqual(patched, source);
+  assert.equal(applyPatch(patched), patched);
+  const context = evaluate(patched);
+  const summary = context.Lv(store(context).getThreadSummaryFromThread(ledger));
+  assert.equal(summary.latestModel, ledger.model);
+  assert.equal(summary.latestReasoningEffort, ledger.reasoningEffort);
+  const conversation = { id: "ledger", latestModel: "", latestReasoningEffort: null };
+  const cached = store(context, ledger, conversation);
+  await cached.hydrateCollabThreads(["ledger"]);
+  assert.equal(cached.reads, 0);
+  assert.equal(conversation.latestModel, ledger.model);
+  assert.equal(conversation.latestReasoningEffort, ledger.reasoningEffort);
+  const missing = store(context, { id: "ledger" });
+  await missing.hydrateCollabThreads(["ledger"]);
+  assert.equal(missing.reads, 1);
+  assert.equal(missing.conversations.get("ledger").latestModel, ledger.model);
+  const turn = { params: { model: "", effort: null } };
+  const current = { latestModel: ledger.model, latestReasoningEffort: ledger.reasoningEffort, turns: [turn] };
+  context.updateLatest(turn, current);
+  assert.equal(current.latestModel, ledger.model);
+  assert.equal(current.latestReasoningEffort, ledger.reasoningEffort);
 });
