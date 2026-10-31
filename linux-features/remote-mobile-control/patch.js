@@ -398,10 +398,12 @@ function applyLinuxRemoteMobileAppServerRemoteControlLaunchPatch(source) {
     source.slice(0, launchReturn.index) +
     patchedReturn +
     source.slice(launchReturn.index + launchReturn[0].length);
-  replaced = replaced.replace(
-    `function ${launchName}(){`,
-    `function ${launchName}(codexLinuxRemoteMobileStartupCommand){`,
-  );
+  replaced =
+    replaced.slice(0, functionIndex) +
+    replaced.slice(functionIndex).replace(
+      `function ${launchName}(){`,
+      `function ${launchName}(codexLinuxRemoteMobileStartupCommand){`,
+    );
   for (const owner of owners) {
     replaced = replaced.replace(owner.body, owner.body.replace(
       owner.calls,

@@ -1776,6 +1776,29 @@ test("Linux remote mobile startup policy and sign-out preserve upstream argument
   }
 });
 
+test("Linux remote mobile startup patch changes the targeted argument builder when its name is duplicated earlier", () => {
+  const source = `function uB(){return ["unrelated"]}${syntheticCurrentLocalAppServerLaunchBundle()}`;
+  const patched = applyLinuxRemoteMobileAppServerRemoteControlPatch(source);
+  const context = {
+    JSON,
+    process: { platform: "linux", env: {} },
+    override: () => null,
+    resolve: () => ({ executablePath: "/bundled-cli" }),
+  };
+  const args = vm.runInNewContext(
+    `(()=>{${patched};return wslTransport({hostConfig:{},repoRoot:".",startupCommand:{args:["--print-startup-config"]}}).args})()`,
+    context,
+  );
+
+  assert.deepEqual(Array.from(args), [
+    "-c",
+    "features.code_mode_host=true",
+    "app-server",
+    "--analytics-default-enabled",
+    "--print-startup-config",
+  ]);
+});
+
 test("Linux remote mobile app-server patch rejects drifted or ambiguous startup transport owners", () => {
   const source = syntheticCurrentLocalAppServerLaunchBundle();
   const owner = source.slice(source.indexOf("function launch("), source.indexOf("function native("));
