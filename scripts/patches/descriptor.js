@@ -89,6 +89,9 @@ function webviewAssetPatch(descriptor) {
   if (descriptor.assetMatch != null && typeof descriptor.assetMatch !== "function") {
     throw new Error(`Webview asset patch '${id ?? "unknown"}' assetMatch must be a function`);
   }
+  if (descriptor.matchPolicy != null && !["unique", "all"].includes(descriptor.matchPolicy)) {
+    throw new Error(`Webview asset patch '${id ?? "unknown"}' has unsupported matchPolicy '${descriptor.matchPolicy}'`);
+  }
   return patchDescriptor(PHASE_WEBVIEW_ASSET, descriptor);
 }
 

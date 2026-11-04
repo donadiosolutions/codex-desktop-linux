@@ -3,11 +3,57 @@
 const APPSHOT_HELPER_MARKER = "codexLinuxAppshotStartCapture";
 const APPSHOT_AVAILABILITY_MARKER = "codexLinuxAppshotsPlatformAvailable";
 const IDENT = "[A-Za-z_$][\\w$]*";
+const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
 const CURRENT_APPSHOT_AVAILABILITY = new RegExp(
   `(requirements\\?\\.allowAppshots!==!1\\}function (${IDENT})\\((${IDENT})\\)\\{return )` +
     `\\3===\\\`macOS\\\`\\|\\|\\3===\\\`windows\\\`\\}`,
   "g",
 );
+const CURRENT_RSPACK_APPSHOT_PLATFORM =
+  /function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*)\)\{return\s*"macOS"===\2\|\|"windows"===\2\}/u;
+const PATCHED_RSPACK_APPSHOT_PLATFORM =
+  /function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*)\)\{return "linux"===\2\/\*codexLinuxAppshotsPlatformAvailable\*\/\|\|"macOS"===\2\|\|"windows"===\2\}/u;
+
+function appshotRspackModule(source) {
+  if (!source.includes("requirements?.allowAppshots!==!1") || !source.includes('"1304276663"')) return null;
+  const map = source.indexOf("__webpack_modules__={");
+  if (map < 0) return null;
+  const openMap = map + "__webpack_modules__=".length;
+  const closeMap = findMatchingBrace(source, openMap);
+  if (closeMap < 0) return null;
+  const modules = [];
+  let cursor = openMap + 1;
+  while (cursor < closeMap) {
+    while (source[cursor] === "," || /\s/u.test(source[cursor] ?? "")) cursor += 1;
+    const header = source.slice(cursor, closeMap).match(/^([A-Za-z_$][\w$]*)\(([^()]*)\)\{/u);
+    if (header == null) return null;
+    const parameters = header[2].split(",");
+    const bodyOpen = cursor + header[0].length - 1;
+    const bodyClose = findMatchingBrace(source, bodyOpen);
+    if (bodyClose < 0 || bodyClose > closeMap) return null;
+    const body = source.slice(bodyOpen + 1, bodyClose);
+    const exportMatch = body.match(/^([A-Za-z_$][\w$]*)\.d\(([A-Za-z_$][\w$]*),\{([^{}]*)\}\);/u);
+    if (exportMatch != null && exportMatch[1] === parameters[2] && exportMatch[2] === parameters[1] &&
+        body.includes("requirements?.allowAppshots!==!1") && body.includes('"1304276663"')) {
+      const platform = rspackAppshotPlatformMatch(body);
+      if (platform != null) modules.push({ index: cursor, end: bodyClose + 1, text: source.slice(cursor, bodyClose + 1), body, platform });
+    }
+    cursor = bodyClose + 1;
+    if (source[cursor] === "}") break;
+    if (source[cursor] !== ",") return null;
+    cursor += 1;
+  }
+  return modules.length === 1 ? modules[0] : null;
+}
+
+function rspackAppshotPlatformMatch(moduleSource) {
+  const patterns = [CURRENT_RSPACK_APPSHOT_PLATFORM, PATCHED_RSPACK_APPSHOT_PLATFORM];
+  const matches = patterns.flatMap((pattern) => [...moduleSource.matchAll(new RegExp(pattern.source, "gu"))]);
+  if (matches.length !== 1) return null;
+  const [match] = matches;
+  const calls = [...moduleSource.matchAll(new RegExp(`!${match[1]}\\(([A-Za-z_$][\\w$]*)\\)`, "gu"))];
+  return calls.length === 2 ? match : null;
+}
 const PATCHED_APPSHOT_AVAILABILITY = new RegExp(
   `requirements\\?\\.allowAppshots!==!1\\}function ${IDENT}\\((${IDENT})\\)\\{return ` +
     `\\1===\\\`linux\\\`\\/\\*${APPSHOT_AVAILABILITY_MARKER}\\*\\/\\|\\|` +
@@ -31,6 +77,19 @@ function applyLinuxAppshotAvailabilityPatch(currentSource) {
     );
   }
 
+  const rspackModule = appshotRspackModule(currentSource);
+  const platform = rspackModule?.platform;
+  if (rspackModule != null && platform != null) {
+    const fn = platform[1];
+    const variable = platform[2];
+    const patchedModule = rspackModule.text.replace(
+      CURRENT_RSPACK_APPSHOT_PLATFORM,
+      `function ${fn}(${variable}){return "linux"===${variable}/*${APPSHOT_AVAILABILITY_MARKER}*/||"macOS"===${variable}||"windows"===${variable}}`,
+    );
+    return currentSource.slice(0, rspackModule.index) + patchedModule +
+      currentSource.slice(rspackModule.end);
+  }
+
   if (currentSource.includes("macOS") || currentSource.includes("appshot")) {
     warn("Could not find AppShots availability gate", "Linux AppShots availability patch");
   }
@@ -39,8 +98,11 @@ function applyLinuxAppshotAvailabilityPatch(currentSource) {
 
 function matchesLinuxAppshotAvailabilityContract(source) {
   CURRENT_APPSHOT_AVAILABILITY.lastIndex = 0;
+  const rspackModule = appshotRspackModule(source);
   return [...source.matchAll(CURRENT_APPSHOT_AVAILABILITY)].length === 1 ||
-    PATCHED_APPSHOT_AVAILABILITY.test(source);
+    (rspackModule != null && CURRENT_RSPACK_APPSHOT_PLATFORM.test(rspackModule.text)) ||
+    PATCHED_APPSHOT_AVAILABILITY.test(source) ||
+    (rspackModule != null && PATCHED_RSPACK_APPSHOT_PLATFORM.test(rspackModule.text));
 }
 
 function linuxAppshotWaylandHelperSource() {
@@ -264,7 +326,7 @@ const descriptors = [
     id: "linux-appshots-availability",
     phase: "webview-asset",
     order: 1090,
-    pattern: /^app-initial-[^.]+\.js$/,
+    pattern: /\.js$/,
     assetMatch: matchesLinuxAppshotAvailabilityContract,
     missingDescription: "AppShots availability bundle",
     skipDescription: "Linux AppShots availability patch",

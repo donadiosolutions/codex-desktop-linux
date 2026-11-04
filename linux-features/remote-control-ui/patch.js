@@ -9,7 +9,23 @@ function warn(message, patchName) {
 }
 
 function applyRemoteConnectionsVisibilityPatch(source) {
-  let patched = source.replace(
+  const currentOwner = /Object\.getOwnPropertyDescriptor\((?<features>[A-Za-z_$][\w$]*),"remote_connections"\)\?\.value===!0\|\|(?<fallback>[A-Za-z_$][\w$]*)(?<linux>\|\|navigator\.userAgent\.includes\(`Linux`\))?(?<tail>[,}])/g;
+  const owners = [...source.matchAll(currentOwner)];
+  if (owners.length === 1 && owners[0].groups.features !== owners[0].groups.fallback) {
+    const owner = owners[0];
+    if (owner.groups.linux != null) return source;
+    const replacement = owner[0].replace(owner.groups.tail, `||${LINUX_GATE}${owner.groups.tail}`);
+    return source.slice(0, owner.index) + replacement + source.slice(owner.index + owner[0].length);
+  }
+  const quotedGate = /([A-Za-z_$][\w$]*)\("4114442250"\)/gu;
+  const quotedMatches = [...source.matchAll(quotedGate)];
+  if (quotedMatches.length === 1 && source.includes('Object.getOwnPropertyDescriptor(')) {
+    const owner = quotedMatches[0];
+    const replacement = `(${owner[1]}("4114442250")||${LINUX_GATE})`;
+    return source.slice(0, owner.index) + replacement + source.slice(owner.index + owner[0].length);
+  }
+  let patched = source;
+  patched = patched.replace(
     /([A-Za-z_$][\w$]*)\(`4114442250`\)(?!\|\|navigator\.userAgent\.includes\(`Linux`\))/g,
     `($1(\`4114442250\`)||${LINUX_GATE})`,
   );
@@ -17,7 +33,7 @@ function applyRemoteConnectionsVisibilityPatch(source) {
     /([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),`4114442250`\)(?!\|\|navigator\.userAgent\.includes\(`Linux`\))/g,
     `($1($2,\`4114442250\`)||${LINUX_GATE})`,
   );
-  if (patched !== source || source.includes(`\`4114442250\`)||${LINUX_GATE}`)) {
+  if (patched !== source || source.includes(`\`4114442250\`)||${LINUX_GATE}`) || source.includes(`"4114442250"||${LINUX_GATE}`)) {
     return patched;
   }
   warn("Could not find remote connections Statsig gate", "remote control UI remote connections visibility patch");
@@ -25,6 +41,9 @@ function applyRemoteConnectionsVisibilityPatch(source) {
 }
 
 function applyRemoteControlConnectionsVisibilityPatch(source) {
+  if (source.includes(REMOTE_CONTROL_UI_VISIBILITY_MARKER)) {
+    return source;
+  }
   const contract = remoteControlConnectionsVisibilityContract(source);
   if (contract?.state === "patched" || contract?.state === "mobile-patched") {
     return source;
@@ -84,7 +103,17 @@ function remoteControlConnectionsVisibilityContract(source) {
 }
 
 function matchesRemoteControlConnectionsVisibilityContract(source) {
-  return remoteControlConnectionsVisibilityContract(source) != null;
+  return source.includes("remoteControlConnectionsState") &&
+    remoteControlConnectionsVisibilityContract(source) != null;
+}
+
+function matchesRemoteConnectionsVisibilityContract(source) {
+  return /Object\.getOwnPropertyDescriptor\([A-Za-z_$][\w$]*,"remote_connections"\)\?\.value===!0\|\|[A-Za-z_$][\w$]*\}/u.test(source) || source.includes('`4114442250`');
+}
+
+function matchesExperimentalFeaturesContract(source) {
+  return source.includes("remote_control") && /(?:name!==[`"']remote_control[`"']|[`"']remote_control[`"']!==[A-Za-z_$][\w$]*\.name)/.test(source) &&
+    /name\.startsWith\([`"']realtime_[`"']\)/.test(source);
 }
 
 function applyExperimentalFeaturesPatch(source) {
@@ -94,6 +123,12 @@ function applyExperimentalFeaturesPatch(source) {
   }
   if (source.includes("!e.name.startsWith(`realtime_`)&&e.name!==`chronicle`")) {
     return source;
+  }
+  for (const quote of ["`", '"', "'"]) {
+    const current = `&&e.name!==${quote}remote_control${quote}`;
+    if (source.includes(current)) return source.replace(current, "");
+    const reversed = `&&${quote}remote_control${quote}!==e.name`;
+    if (source.includes(reversed)) return source.replace(reversed, "");
   }
   if (source.includes("remote_control")) {
     warn(
@@ -111,7 +146,8 @@ module.exports = {
       phase: "webview-asset",
       order: 20500,
       ciPolicy: "optional",
-      pattern: /^app-initial-[^.]+\.js$/,
+      pattern: /^(?:async\/)?\d+\.[0-9a-f]+\.js$/,
+      assetMatch: matchesRemoteConnectionsVisibilityContract,
       missingDescription: "remote connection visibility bundle",
       skipDescription: "remote control UI remote connections visibility patch",
       apply: applyRemoteConnectionsVisibilityPatch,
@@ -121,8 +157,9 @@ module.exports = {
       phase: "webview-asset",
       order: 20510,
       ciPolicy: "optional",
-      pattern: /^[^.]+\.js$/,
+      pattern: /^(?:async\/)?\d+\.[0-9a-f]+\.js$/,
       assetMatch: matchesRemoteControlConnectionsVisibilityContract,
+      matchPolicy: "all",
       missingDescription: "remote control connections visibility bundle",
       skipDescription: "remote control UI remote control connections visibility patch",
       apply: applyRemoteControlConnectionsVisibilityPatch,
@@ -132,7 +169,9 @@ module.exports = {
       phase: "webview-asset",
       order: 20520,
       ciPolicy: "optional",
-      pattern: /^settings-route-state-.*\.js$/,
+      pattern: /^(?:async\/)?\d+\.[0-9a-f]+\.js$/,
+      assetMatch: matchesExperimentalFeaturesContract,
+      matchPolicy: "all",
       missingDescription: "experimental features query bundle",
       skipDescription: "remote control UI experimental features patch",
       apply: applyExperimentalFeaturesPatch,

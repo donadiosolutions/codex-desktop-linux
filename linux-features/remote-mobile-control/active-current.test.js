@@ -1,0 +1,28 @@
+"use strict";
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const descriptors = require("./patch.js");
+const current = 'function({latestTurnStatus:e,resumeState:t,streamRole:n,threadRuntimeStatus:a}){return null==n?"needs_resume"===t?"needs-resume":"read-only":"follower"===n.role?"follower":a?.type==="active"||"inProgress"===e?"active":"inactive"}';
+const descriptor = descriptors.find(d => d.id === "linux-remote-mobile-active-status");
+test("current active status preserves follower priority and recovers absent streams", () => {
+  assert.equal(descriptor.assetMatch(current), true);
+  const patched = descriptor.apply(current);
+  assert.notEqual(patched, current);
+  assert.equal(descriptor.apply(patched), patched);
+  const status = vm.runInNewContext(`(${patched})`);
+  assert.equal(status({streamRole:null,threadRuntimeStatus:{type:"active"}}),"active");
+  assert.equal(status({streamRole:null,latestTurnStatus:"inProgress"}),"active");
+  assert.equal(status({streamRole:{role:"follower"},threadRuntimeStatus:{type:"active"}}),"follower");
+  assert.equal(status({streamRole:null,resumeState:"needs_resume"}),"needs-resume");
+  assert.equal(status({streamRole:null}),"read-only");
+  assert.equal(status({streamRole:{role:"leader"}}),"inactive");
+  assert.equal(descriptor.assetMatch(patched),true);
+  const incomplete = patched.replace('?"follower":','?"other":');
+  assert.equal(descriptor.assetMatch(incomplete),false);
+  assert.equal(descriptor.apply(incomplete),incomplete);
+  assert.equal(descriptor.assetMatch(current+current),false);
+  const damaged=current.replace('"follower"===n.role','"follower"===a.role');
+  assert.equal(descriptor.assetMatch(damaged),false);
+  assert.equal(descriptor.apply(damaged),damaged);
+});

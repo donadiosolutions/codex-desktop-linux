@@ -16,9 +16,10 @@ const PATCHED_READY_PATTERN = new RegExp(
   "g",
 );
 const FETCH_TAIL =
-  `\\{let ${JS_IDENT}=\\{method:${JS_IDENT},headers:${JS_IDENT},body:${JS_IDENT}\\(\\),` +
-  `redirect:[^,{}]{1,120},signal:${JS_IDENT},credentials:${JS_IDENT}\\?"include":"same-origin"\\};` +
-  `${JS_IDENT}=await this\\.options\\.applicationNetwork\\.fetch\\(`;
+  `\\{let (?<fetchOptions>${JS_IDENT})=\\{method:(?<fetchMethod>${JS_IDENT}),headers:${JS_IDENT},body:${JS_IDENT}\\(\\),` +
+  `redirect:[^,{}]{1,120},signal:${JS_IDENT},credentials:(?<fetchCookies>${JS_IDENT})\\?"include":"same-origin"\\};` +
+  `!\\k<fetchCookies>&&\\(0,${JS_IDENT}\\.${JS_IDENT}\\)\\((?<fetchUrl>${JS_IDENT}),\\k<fetchMethod>\\)&&` +
+  `\\(\\k<fetchOptions>\\.credentials="omit"\\),${JS_IDENT}=await this\\.options\\.applicationNetwork\\.fetch\\(\\k<fetchUrl>,\\k<fetchOptions>\\)`;
 const FETCH_GATE = new RegExp(`if\\(null==(${JS_IDENT})\\)(?=${FETCH_TAIL})`, "g");
 const PATCHED_FETCH_GATE = new RegExp(
   `if\\(null==(${JS_IDENT})&&!codexLinuxProxyAuthEntry\\(\\)\\)(?=${FETCH_TAIL})`,

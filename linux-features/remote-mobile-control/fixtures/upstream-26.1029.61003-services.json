@@ -1,0 +1,13 @@
+{
+  "upstreamVersion": "26.1029.61003",
+  "asset": "async/855047.05049c3449.js",
+  "sha256": "dc3fb9df1947a7f2b4626f27ae5c0df963caa2b4c1ffaa45c5de4528072b1f60",
+  "hostToggleModule": "WbV5(e,t,n){var a=n(\"Dgwo\"),i=n(\"ihPm\");async function s(e,t,n,{shouldApplyStatus:r=()=>!0}={}){let o=e.get(i.AP,t),l=await (0,a.V)(e,t).sendRequest(n?\"remoteControl/enable\":\"remoteControl/disable\",null),c=e.get(i.AP,t),d=c!==o&&(c?.status===\"connected\"||c?.status===\"errored\");return!r()||n&&d||(0,i.Lt)(e,t,l),l}n.d(t,{p:()=>s})}",
+  "additionalOwners": [
+    {
+      "asset": "async/14625.95f35fcee5.js",
+      "sha256": "d6ae270818dc18ca781e350edb3d332b80bd691395cfac9c7d23fcb77121fbc2",
+      "hostToggleModule": "WbV5(e,t,n){var o=n(\"Dgwo\"),s=n(\"ihPm\");async function i(e,t,n,{shouldApplyStatus:r=()=>!0}={}){let a=e.get(s.AP,t),l=await (0,o.V)(e,t).sendRequest(n?\"remoteControl/enable\":\"remoteControl/disable\",null),c=e.get(s.AP,t),d=c!==a&&(c?.status===\"connected\"||c?.status===\"errored\");return!r()||n&&d||(0,s.Lt)(e,t,l),l}n.d(t,{p:()=>i})}"
+    }
+  ]
+}

@@ -135,26 +135,26 @@ const CURRENT_PARCEL_HELPER =
   "async function oye(e,t){return new sye(await Promise.resolve().then(" +
   "r.t.bind(r,93861,23)),e,t).start()}";
 const CURRENT_GIT_ROUTE_PREFIX =
-  'case"git":{let s=getIgnoreSource(),e=new Que(s,e=>{let t=e.getPid();if(null==t)return;notify(e)});' +
-  "return{git:{watchIgnoreSources:s?void 0:" +
-  "{getEnvironment:async()=>(function(){let e=process.env.HOME;" +
+  'case"git":{let s=c2(),t=new Tz(s,e=>{let t=e.getPid();if(null==t)return;notify(e)});' +
+  "return{git:{getWatchIgnoreSources:s?void 0:()=>({" +
+  "getEnvironment:async()=>(function(){let e=process.env.HOME;" +
   'return{defaultExcludesFile:null==e?null:`${e}/.config/git/ignore`,globalConfigFiles:[]}})(),' +
-  "getWatchTargets:Bee}," +
-  "createExecutionHost:h=>{if(h.id===e.id&&!isRemote(h))return e;" +
+  "getWatchTargets:Bee,pruneIgnoredDirectories:!0})," +
+  "createExecutionHost:h=>{if(h.id===t.id&&!isRemote(h))return t;" +
   'if(null==n)throw Error("Git hosts require a main RPC connection");' +
   "return new nde(n,h)},startMetadataWatch:(t,n)=>t.isLocal?" +
   '"linux"===process.platform&&!1!==n.recursive?oye(n,{ignoredPaths:[]}):' +
-  "e.startFileWatch(n):t.startFileWatch(n),";
+  "t.startFileWatch(n):t.startFileWatch(n),";
 const CURRENT_PARCEL_ROUTE =
-  "startWorkingTreeWatch:(t,n,r)=>{if(!t.isLocal)return t.startFileWatch(n);" +
-  'if("linux"===process.platform)return oye(n,{ignoredPaths:[E().join(n.path,".git"),...r]});' +
-  "if(0===r.length)return e.startFileWatch(n)";
+  "startWorkingTreeWatch:(e,r,n)=>{if(!e.isLocal)return e.startFileWatch(r);" +
+  'if("linux"===process.platform)return oye(r,{ignoredPaths:[E().join(r.path,".git"),...n]});' +
+  "if(0===n.length)return t.startFileWatch(r)";
 const CURRENT_WATCHBOUND_ROUTE =
-  `startWorkingTreeWatch:(t,n,r)=>{if(!t.isLocal)return t.startFileWatch(n);` +
-  `if("linux"===process.platform)return /*${PARCEL_WATCH_MARKER}*/e.startFileWatch({...n,` +
+  `startWorkingTreeWatch:(e,r,n)=>{if(!e.isLocal)return e.startFileWatch(r);` +
+  `if("linux"===process.platform)return /*${PARCEL_WATCH_MARKER}*/t.startFileWatch({...r,` +
   `[Symbol.for(\`${PARCEL_FALLBACK_SYMBOL_KEY}\`)]:()=>` +
-  'oye(n,{ignoredPaths:[E().join(n.path,".git"),...r]})});' +
-  "if(0===r.length)return e.startFileWatch(n)";
+  'oye(r,{ignoredPaths:[E().join(r.path,".git"),...n]})});' +
+  "if(0===n.length)return t.startFileWatch(r)";
 const CURRENT_GIT_ROUTE_SUFFIX = '}}}}case"open-in":';
 
 function currentWorkerSource(route = CURRENT_PARCEL_ROUTE) {
@@ -162,7 +162,7 @@ function currentWorkerSource(route = CURRENT_PARCEL_ROUTE) {
     "(()=>{var n={",
     CURRENT_PARCEL_EXTERNAL,
     ",83481(e,t,r){\"use strict\";",
-    'class Que{runsInsideWsl;processOwner;workspaceRoot=new WorkerRoot(this);hostConfig={id:"local",display_name:"Local",' +
+    'class Tz{runsInsideWsl;processOwner;workspaceRoot=new WorkerRoot(this);hostConfig={id:"local",display_name:"Local",' +
       'kind:"local"};id="local";isLocal=!0;',
     CURRENT_WORKER_LOCAL_FILE_WATCH,
     "}class CurrentWorkerRemote{",
@@ -297,8 +297,12 @@ test("the worker patch injects one Watchbound adapter and is idempotent", () => 
 });
 
 test("the current OpenAI Parcel route hands the working tree to the Watchbound host", () => {
+  const pristineWorker = currentWorkerSource();
+  assert.match(pristineWorker, /class Tz\{runsInsideWsl;processOwner;/u);
+  assert.match(pristineWorker, /getWatchIgnoreSources:[\s\S]*?pruneIgnoredDirectories:!0/u);
+  assert.match(pristineWorker, /startWorkingTreeWatch:\(e,r,n\)=>\{[\s\S]*?oye\(r,/u);
   const first = patchWorkerSource(
-    currentWorkerSource(),
+    pristineWorker,
     normalizedSettings(),
   );
   assert.equal(first.matched, 1);
@@ -308,7 +312,7 @@ test("the current OpenAI Parcel route hands the working tree to the Watchbound h
   assert.equal(PARCEL_WORKING_TREE_WATCH.test(first.source), false);
   assert.match(
     first.source,
-    /codexLinuxWatchboundParcelWorkingTreeWatch\*\/e\.startFileWatch\(\{\.\.\.n,/u,
+    /codexLinuxWatchboundParcelWorkingTreeWatch\*\/t\.startFileWatch\(\{\.\.\.r,/u,
   );
   assert.match(
     first.source,
@@ -316,7 +320,7 @@ test("the current OpenAI Parcel route hands the working tree to the Watchbound h
   );
   assert.ok(first.source.includes(CURRENT_WATCHBOUND_ROUTE));
   assert.ok(first.source.includes(CURRENT_PARCEL_HELPER));
-  assert.match(first.source, /\]:\(\)=>oye\(n,\{ignoredPaths:/u);
+  assert.match(first.source, /\]:\(\)=>oye\(r,\{ignoredPaths:/u);
   assert.ok(first.source.includes(CURRENT_WORKER_REMOTE_FILE_WATCH));
 
   const second = patchWorkerSource(first.source, normalizedSettings());
@@ -340,8 +344,8 @@ test("correlates minified aliases instead of pinning their spellings", () => {
     "await Promise.resolve().then(load.t.bind(load,93861,23)),root,settings).start()}";
   const gitRoutePrefix =
     "case\"git\":{let ignoreSource=getIgnoreSource(),localHost=new LocalHost(ignoreSource,event=>{notify(event)});return{git:{" +
-    "watchIgnoreSources:ignoreSource?void 0:{getEnvironment:async()=>(function(){return readIgnoreEnvironment()})()," +
-    "getWatchTargets:getWatchTargets},createExecutionHost:executionOptions=>{" +
+    "getWatchIgnoreSources:ignoreSource?void 0:()=>({getEnvironment:async()=>(function(){return readIgnoreEnvironment()})()," +
+    "getWatchTargets:getWatchTargets,pruneIgnoredDirectories:!0}),createExecutionHost:executionOptions=>{" +
     "if(executionOptions.id===localHost.id&&!isRemote(executionOptions))return localHost;" +
     "if(null==mainConnection)" +
     "throw Error(\"Git hosts require a main RPC connection\");" +
@@ -357,7 +361,7 @@ test("correlates minified aliases instead of pinning their spellings", () => {
   const worker = currentWorkerSource(parcelRoute)
     .replace(CURRENT_PARCEL_HELPER, parcelHelper)
     .replace(CURRENT_GIT_ROUTE_PREFIX, gitRoutePrefix)
-    .replace("class Que{", "class LocalHost{");
+    .replace("class Tz{", "class LocalHost{");
 
   const first = patchWorkerSource(worker, normalizedSettings());
   assert.equal(first.matched, 1);
@@ -618,7 +622,7 @@ test("rejects markers outside the exact current Watchbound handoff", (t) => {
 
 test("rejects dual ownership, unrelated lookalikes, and unproven minified aliases", (t) => {
   const parcelCall =
-    'oye(n,{ignoredPaths:[E().join(n.path,".git")]})';
+    'oye(r,{ignoredPaths:[E().join(r.path,".git")]})';
   const unmarkedHandoff = CURRENT_WATCHBOUND_ROUTE.replace(
     `/*${PARCEL_WATCH_MARKER}*/`,
     "",
@@ -640,22 +644,22 @@ test("rejects dual ownership, unrelated lookalikes, and unproven minified aliase
     },
     {
       name: "a changed minified Parcel alias",
-      worker: currentWorkerSource(CURRENT_PARCEL_ROUTE.replace("oye(n,", "Qve(n,")),
+      worker: currentWorkerSource(CURRENT_PARCEL_ROUTE.replace("oye(r,", "Qve(r,")),
     },
     {
       name: "an uncorrelated local host alias",
       worker: currentWorkerSource(
         CURRENT_PARCEL_ROUTE.replace(
-          "if(0===r.length)return e.startFileWatch(n)",
-          "if(0===r.length)return other.startFileWatch(n)",
+          "if(0===n.length)return t.startFileWatch(r)",
+          "if(0===n.length)return other.startFileWatch(r)",
         ),
       ),
     },
     {
       name: "a routed local host with a different class",
       worker: currentWorkerSource().replace(
-        'case"git":{let s=getIgnoreSource(),e=new Que',
-        'case"git":{let s=getIgnoreSource(),e=new OtherHost',
+        'case"git":{let s=c2(),t=new Tz',
+        'case"git":{let s=c2(),t=new OtherHost',
       ),
     },
     {
@@ -799,8 +803,8 @@ test("rejects missing, duplicate, and partial current contracts", (t) => {
       name: "completed route retargeted to a different local class",
       overrides: {
         worker: completedWorker.replace(
-          'case"git":{let s=getIgnoreSource(),e=new Que',
-          'case"git":{let s=getIgnoreSource(),e=new OtherHost',
+          'case"git":{let s=c2(),t=new Tz',
+          'case"git":{let s=c2(),t=new OtherHost',
         ),
         bootstrap: completedBootstrap,
       },

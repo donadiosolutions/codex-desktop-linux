@@ -138,6 +138,72 @@ function selectorPattern() {
   return /(?<native>[\w$]+)=(?<ready>[\w$]+)&&(?<features>[\w$]+)\.computerUse&&(?<legacy>[\w$]+)\.enabled&&\("win32"===(?<runtime>[\w$]+)\.platform\|\|"darwin"===\k<runtime>\.platform&&null!=\k<legacy>\.paths\.serviceAppPath\)(?<linux>\|\|\k<ready>&&"linux"===\k<runtime>\.platform&&\k<features>\.computerUse&&\k<legacy>\.enabled)?,(?<mode>[\w$]+)=(?<modeLinux>"linux"===\k<runtime>\.platform\?\k<native>:)?(?<modeValue>\k<features>\.computerUse&&\(!\k<features>\.browserUseTinysky\|\|"darwin"!==\k<runtime>\.platform\|\|\k<legacy>\.enabled\))(?=,)/g;
 }
 
+function applyCurrentRspackComputerUsePatch(source) {
+  const marker = "CODEX_LINUX_CUA_HOST_SOCKET:process.env.CODEX_LINUX_CUA_HOST_SOCKET";
+  if (source.includes(marker)) {
+    if (!source.includes("native-client.mjs") || !source.includes("scripts\",\"native-service.mjs")) {
+      throw drift("partial current Rspack native bridge");
+    }
+    return source;
+  }
+
+  const selector = uniqueMatch(source, selectorPattern(), "expected one native surface selector");
+  const { native, ready, runtime, features, legacy, mode, modeValue, linux } = selector.groups;
+  if (linux != null) throw drift("partially patched current Rspack selector");
+
+  const builder = uniqueMatch(source,
+    /function (?<name>[\w$]+)\(\{browserBackends:(?<backends>[\w$]+),deferTools:(?<defer>[\w$]+),surfaces:(?<surfaces>[\w$]+),nodeRepl:(?<nodeRepl>[\w$]+),accessBootstrapPath:(?<bootstrap>[\w$]+)\}\)\{/g,
+    "expected current native config builder");
+  const builderOwner = enclosingFunction(source, builder.index);
+  if (builderOwner == null || builderOwner.start !== builder.index) throw drift("current config builder owner changed");
+  const builderSource = source.slice(builderOwner.start, builderOwner.end);
+  const { surfaces, nodeRepl } = builder.groups;
+  const service = uniqueMatch(builderSource,
+    new RegExp(`${surfaces}\\.includes\\("computer"\\)&&\\((?<services>[\\w$]+)\\.sky="@oai/sky/service"\\)`, "g"),
+    "expected current sky service registration");
+  const envPrefix = `...${nodeRepl}?.env,CUA_REPL_ENABLED_SURFACES:${surfaces}.join(","),`;
+  const envIndex = builderSource.indexOf(envPrefix);
+  if (envIndex < 0 || builderSource.indexOf(envPrefix, envIndex + envPrefix.length) >= 0) {
+    throw drift("expected one current CUA environment builder");
+  }
+  const syncCall = uniqueMatch(source,
+    /Object\.assign\((?<config>[\w$]+),(?<builder>[\w$]+)\(\{\.\.\.(?<argument>[\w$]+),accessBootstrapPath:(?<bootstrap>[\w$]+)\}\)\)/g,
+    "expected verified plugin config initialization");
+  if (syncCall.groups.builder !== builder.groups.name) throw drift("plugin config uses a different CUA builder");
+  const owner = enclosingFunction(source, syncCall.index);
+  if (owner == null) throw drift("plugin config initialization owner changed");
+  const ownerSource = source.slice(owner.start, owner.end);
+  const pluginRoot = uniqueMatch(ownerSource,
+    new RegExp(`(?<root>[\\w$]+)=\\(0,[\\w$]+\\.[\\w$]+\\)\\(\\{codexHome:${syncCall.groups.argument}\\.codexHome,localVersion:(?<plugin>[\\w$]+)\\.plugin\\.localVersion,marketplaceName:\\k<plugin>\\.marketplace\\.name,pluginName:\\k<plugin>\\.plugin\\.name\\}\\)` , "g"),
+    "expected verified CUA plugin root");
+  const rootArgument = new RegExp(`${builder.groups.name}\\(\\{\\.\\.\\.${syncCall.groups.argument},accessBootstrapPath:${syncCall.groups.bootstrap}\\}\\)`);
+  if (!rootArgument.test(ownerSource)) throw drift("changed trusted plugin root initialization");
+  const pluginRootParam = freshBuilderRoot(builderSource);
+
+  const threadGate = uniqueMatch(source,
+    /&&"1"===eq\(\)\.env\.CODEX_APP_SERVER_USE_LOCAL_DAEMON/g,
+    "expected current local CUA thread gate");
+
+  const replacements = [
+    [selector.index, selector[0].length,
+      `${native}=${ready}&&${features}.computerUse&&${legacy}.enabled&&("win32"===${runtime}.platform||"darwin"===${runtime}.platform&&null!=${legacy}.paths.serviceAppPath)||${ready}&&"linux"===${runtime}.platform&&${features}.computerUse&&${legacy}.enabled,${mode}="linux"===${runtime}.platform?${native}:${modeValue}`],
+    [builderOwner.start + service.index, service[0].length,
+      `${surfaces}.includes("computer")&&(${service.groups.services}.sky=${pluginRootParam}?require("node:path").join(${pluginRootParam},"scripts","native-service.mjs"):JSON.parse(${nodeRepl}?.env[el.ytA]??"{}").sky??"@oai/sky/service")`],
+    [builderOwner.start + envIndex, envPrefix.length,
+      `...${nodeRepl}?.env,CODEX_LINUX_CUA_HOST_SOCKET:process.env.CODEX_LINUX_CUA_HOST_SOCKET,NODE_REPL_JS_BANNER:${pluginRootParam}?${bannerExpression(pluginRootParam)}:${nodeRepl}?.env.NODE_REPL_JS_BANNER,CUA_REPL_ENABLED_SURFACES:${surfaces}.join(","),`],
+    [builder.index + builder[0].length - 2, 1, `,${pluginRootParam})`],
+    [syncCall.index, syncCall[0].length,
+      syncCall[0].replace(/\}\)\)$/, `},${pluginRoot.groups.root}))`)],
+    [threadGate.index, threadGate[0].length, ""],
+  ];
+  let patched = source;
+  for (const [index, length, replacement] of replacements.sort((a, b) => b[0] - a[0])) {
+    patched = patched.slice(0, index) + replacement + patched.slice(index + length);
+  }
+  if (!patched.includes(marker) || !patched.includes("native-client.mjs")) throw drift("current native bridge insertion failed");
+  return patched;
+}
+
 function applyUnifiedComputerUsePatch(chunk) {
   if (!chunk.includes("cuaReplSurfaces")) {
     // The rspack main process spans several chunks; only one owns CUA setup.
@@ -153,6 +219,11 @@ function applyUnifiedComputerUsePatch(chunk) {
   }
   const bounds = moduleBounds(chunk, chunkSelectors[0].index);
   const source = chunk.slice(bounds.start, bounds.end);
+  if (source.includes("async function rG(") &&
+      (source.includes("CODEX_APP_SERVER_USE_LOCAL_DAEMON") || source.includes("CODEX_LINUX_CUA_HOST_SOCKET:process.env.CODEX_LINUX_CUA_HOST_SOCKET"))) {
+    const patchedCurrent = applyCurrentRspackComputerUsePatch(source);
+    return patchedCurrent === source ? chunk : chunk.slice(0, bounds.start) + patchedCurrent + chunk.slice(bounds.end);
+  }
   const patchedModule = applyUnifiedComputerUseModulePatch(source);
   return patchedModule === source ? chunk : chunk.slice(0, bounds.start) + patchedModule + chunk.slice(bounds.end);
 }

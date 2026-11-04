@@ -45,6 +45,14 @@ function currentFilteredCopilotReasoningEffortModelListFixture() {
   return "function Jv({authMethod:e,availableModels:t,defaultModel:n,enabledReasoningEfforts:r,includeUltraReasoningEffort:i,models:a,useHiddenModels:o}){let s=[],c=null,l=o&&e!==`amazonBedrock`,u=a.some(e=>e.supportedReasoningEfforts.some(({reasoningEffort:e})=>e===`max`)),d=i&&a.some(e=>e.supportedReasoningEfforts.some(({reasoningEffort:e})=>e===`ultra`));return a.forEach(n=>{if(l?t.has(n.model):!n.hidden){let t=i?n.supportedReasoningEfforts:n.supportedReasoningEfforts.filter(({reasoningEffort:e})=>e!==`ultra`),a=(e===`copilot`?[t.find(e=>e.reasoningEffort===`medium`)??{reasoningEffort:`medium`,description:`medium effort`}]:t).filter(({reasoningEffort:e})=>vg(e)&&r.has(e)),o={...n,supportedReasoningEfforts:a};s.push(o),n.isDefault&&(c=o)}}),c??=s.find(e=>e.model===n)??null,{models:s,defaultModel:c,hasModelSupportingMaxReasoningEffort:u,hasModelSupportingUltraReasoningEffort:d}}";
 }
 
+function currentRspackCopilotModelListFixture() {
+  return 'function w(n,o,e){let a=("copilot"===n?[e.find(e=>"medium"===e.reasoningEffort)??{reasoningEffort:"medium",description:"medium effort"}]:e).filter(({reasoningEffort:e})=>vg(e)&&o.has(e));return a}';
+}
+
+function currentRspackCopilotPersistenceFixture() {
+  return 'function Hlo(){let ye=async(e,t,n)=>{await Ag(o,p).setDefaultModelConfig(e,t,j.profile);return!0},be=(t,n,r)=>vso(o,["conversation"],{model:t,reasoningEffort:n,serviceTier:a},()=>ye(t,n,"current",a)),xe=be,Se=(e,t)=>vso(o,["default"],{model:e,reasoningEffort:t},()=>ye(e,t,"default")),Ce=Se,we;return we={setDefaultModelAndReasoningEffort:Ce,setModelAndReasoningEffortForNextTurn:_e,setModelAndReasoningEffort:xe,modelSettings:de}}';
+}
+
 function currentCopilotReasoningEffortUiFixture() {
   return currentCopilotReasoningEffortDropdownFixture() +
     currentCopilotReasoningSlashFixture();
@@ -62,6 +70,10 @@ function currentCopilotReasoningSlashFixture() {
     "function KYc(){let l=c?.requiresAuth??!0,m=Fza(f),h=c?.authMethod===`copilot`;let A=o.formatMessage({id:`composer.reasoningSlashCommand.title`});let M=l&&m&&!h&&!0,N;return{enabled:M,dependencies:N}}",
     "function permissionGate(){let A=O.length>0,j=!w&&!A;return{shouldAutoDenyPermissionRequest:j}}",
   ].join("");
+}
+
+function currentRspackCopilotReasoningSlashFixture() {
+  return 'function dx(){let j=M?.requiresAuth??!0;let R=n,P=M?.authMethod==="copilot";let h=S.formatMessage({id:"composer.reasoningSlashCommand.title"});let H=j&&R&&!P&&!0;return{id:"reasoning",title:h,enabled:H,dependencies:[j,R,P]}}function next(){}';
 }
 
 function retiredCopilotReasoningEffortUiFixture() {
@@ -135,8 +147,26 @@ test("current package descriptors use their semantic asset owners", () => {
   assert.equal(loaded[2].assetMatch(currentCopilotReasoningSlashFixture()), false);
   assert.equal(loaded[3].assetMatch(currentCopilotReasoningSlashFixture()), true);
   assert.equal(loaded[3].assetMatch(currentCopilotReasoningEffortDropdownFixture()), false);
-  assert.equal(loaded[1].pattern.test(adjacentChunk), false);
+  assert.equal(loaded[1].pattern.test(adjacentChunk), true);
   assert.ok([loaded[0], ...loaded.slice(2)].every((descriptor) => descriptor.pattern.test(adjacentChunk)));
+});
+
+test("recognizes current Rspack model-list and persistence source shapes", () => {
+  const [persistence, modelList] = require("./patch.js").descriptors;
+  const source = currentRspackCopilotModelListFixture();
+  assert.equal(modelList.assetMatch(source), true);
+  assert.notEqual(modelList.apply(source), source);
+  assert.equal(persistence.assetMatch(currentRspackCopilotPersistenceFixture()), true);
+});
+
+test("removes only the Copilot auth gate from the current reasoning slash owner", () => {
+  const source = currentRspackCopilotReasoningSlashFixture();
+  const descriptor = require("./patch.js").descriptors[3];
+  assert.equal(descriptor.assetMatch(source), true);
+  const patched = applyCopilotReasoningEffortUiPatch(source);
+  assert.match(patched, /H=j&&R&&!0\/\*codexLinuxCopilotReasoningEffortUi\*\//);
+  assert.doesNotMatch(patched, /H=j&&R&&!P/);
+  assert.match(patched, /P=M\?\.authMethod==="copilot"/);
 });
 
 test("Copilot persistence validation rejects missing and duplicate replacement owners unchanged", () => {
@@ -177,8 +207,7 @@ test("Copilot persistence validation rejects missing and duplicate replacement o
     );
     assert.equal(readAsset(extractedDir, "app-initial-one.js"), source);
     assert.equal(readAsset(extractedDir, "app-initial-two.js"), source);
-    assert.equal(warnings.length, 1);
-    assert.match(warnings[0], /Found multiple current model-and-reasoning persistence owner contracts/);
+    assert.deepEqual(warnings, []);
   });
 });
 
@@ -372,8 +401,7 @@ test("feature descriptor loader exposes the Copilot webview asset patches only w
     assert.match(currentSettingsChunk, descriptors[1].pattern);
     assert.match(currentUiChunk, descriptors[2].pattern);
     assert.match(currentSlashChunk, descriptors[3].pattern);
-    assert.equal(descriptors[1].pattern.test("unrelated-bundle.js"), false);
-    assert.ok([descriptors[0], ...descriptors.slice(2)].every((descriptor) => descriptor.pattern.test("unrelated-bundle.js")));
+    assert.ok(descriptors.every((descriptor) => descriptor.pattern.test("async/104066.68b4099784.js")));
   });
 });
 

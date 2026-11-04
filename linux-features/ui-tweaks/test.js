@@ -45,6 +45,7 @@ const {
   ENGLISH_REASONING_LABELS,
   ZH_CN_LOCALE_ASSET_PATTERN,
   applyEnglishReasoningLabels,
+  descriptors: reasoningEffortDescriptors,
 } = require("./patches/reasoning-effort-labels.js");
 const {
   DEFAULT_MAX_UI_FONT_SIZE,
@@ -777,6 +778,21 @@ test("reasoning effort labels stay in English in the Simplified Chinese locale",
   assert.doesNotMatch("zh-TW-rBlCyjlT.js", ZH_CN_LOCALE_ASSET_PATTERN);
 });
 
+test("Rspack locale messages keep defaultMessage labels in English", () => {
+  const source = Object.entries(ENGLISH_REASONING_LABELS)
+    .map(([key], index) => `{defaultMessage:"zh-${index}",id:"${key}"}`)
+    .join(",");
+  const patched = applyEnglishReasoningLabels(source);
+  for (const [key, label] of Object.entries(ENGLISH_REASONING_LABELS)) {
+    assert.ok(patched.includes(`defaultMessage:"${label}",id:"${key}"`));
+  }
+  assert.equal(applyEnglishReasoningLabels(patched), patched);
+  assert.equal(
+    reasoningEffortDescriptors.find((patch) => patch.id === "reasoning-effort-labels-english").matchPolicy,
+    "all",
+  );
+});
+
 test("reasoning effort label drift warns and leaves the asset unchanged", () => {
   const source = simplifiedChineseLocaleFixture().replace(
     '"composer.mode.local.reasoning.ultra.label":`极高`',
@@ -880,12 +896,22 @@ test("patch injects sidebar project-name stylesheet runtime once", () => {
   assert.equal((patched.match(new RegExp(STYLE_ID, "g")) ?? []).length, 1);
 });
 
-test("sidebar project name selector follows the semantic project-row marquee contract", () => {
+test("sidebar project name selector follows the current project-row label contract", () => {
   assert.equal(
     PROJECT_NAME_SELECTOR,
-    `[${PROJECT_ROW_ATTRIBUTE}] [data-marquee-text]`,
+    `[${PROJECT_ROW_ATTRIBUTE}][data-app-action-sidebar-project-label]`,
   );
   assert.doesNotMatch(PROJECT_NAME_SELECTOR, /folder-row|text-fade-truncate/);
+});
+
+test("Rspack project row owner remains a unique semantic sidebar target", () => {
+  const source = 'f=i.rW.sidebarProjectRow({collapsed:n,label:u,projectId:h});return (0,a.jsx)("button",{...f,"data-sidebar-project-drop-zone":w});';
+  const descriptor = patches.find((patch) => patch.id === "sidebar-project-name-style");
+  assert.equal(descriptor.assetMatch(source), true);
+  const patched = descriptor.apply(source);
+  assert.match(patched, new RegExp(RUNTIME_MARKER));
+  assert.match(patched, /data-app-action-sidebar-project-label/u);
+  assert.equal(descriptor.assetMatch(patched), true);
 });
 
 test("feature manifest defaults reach descriptor context through the feature loader", () => {

@@ -22,7 +22,7 @@ function applyLinuxCodexAppThreadToolsPatch(currentSource) {
   }
 
   const needleRegex =
-    /readDynamicTools:e=>([A-Za-z_$][\w$]*)\.request\(e\),traceRequest\(e\)\{/;
+    /readDynamicTools:e=>([A-Za-z_$][\w$]*)\.request\(e\),traceRequest(?:\(e\)\{|:e=>)/;
   const needleMatch = needleRegex.exec(currentSource);
   if (needleMatch == null || needleRegex.exec(currentSource.slice(needleMatch.index + needleMatch[0].length)) != null) {
     console.warn(
@@ -37,7 +37,7 @@ function applyLinuxCodexAppThreadToolsPatch(currentSource) {
   // Bind to the enclosing returned runtime inputs, rather than an arbitrary
   // lookback: current releases add fields between the guard and tool request.
   const runtimeInputsRegex =
-    /return\{hasDesktopRuntime:!0,usesDesktopMcp:([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*)\),/g;
+    /return\{hasDesktopRuntime:!0,usesDesktopMcp:(?<predicate>\(0,[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*\)|[A-Za-z_$][\w$]*)\((?<hostId>[A-Za-z_$][\w$]*)\),/g;
   const desktopMcpMatches = [...currentSource.matchAll(runtimeInputsRegex)].filter((match) => {
     const openIndex = match.index + "return".length;
     return openIndex < matchIndex && findMatchingBrace(currentSource, openIndex) >= matchIndex + needle.length;
@@ -48,10 +48,11 @@ function applyLinuxCodexAppThreadToolsPatch(currentSource) {
     );
     return currentSource;
   }
-  const [, desktopMcpPredicate, hostIdVar] = desktopMcpMatches[0];
+  const { predicate: desktopMcpPredicate, hostId: hostIdVar } = desktopMcpMatches[0].groups;
 
+  const traceRequest = needle.endsWith("traceRequest:e=>") ? "traceRequest:e=>" : "traceRequest(e){";
   const replacement =
-    `readDynamicTools:e=>${dynamicToolsVar}.request(${desktopMcpPredicate}(${hostIdVar})?{...e,featureOverrides:{...e.featureOverrides,thread_tools:!0}}:e/*${LINUX_CODEX_APP_THREAD_TOOLS_MARKER}*/),traceRequest(e){`;
+    `readDynamicTools:e=>${dynamicToolsVar}.request((${desktopMcpPredicate})(${hostIdVar})?{...e,featureOverrides:{...e.featureOverrides,thread_tools:!0}}:e/*${LINUX_CODEX_APP_THREAD_TOOLS_MARKER}*/),${traceRequest}`;
   return currentSource.slice(0, matchIndex) +
     replacement +
     currentSource.slice(matchIndex + needle.length);
@@ -225,13 +226,35 @@ function applyLinuxComputerUseFeaturePatch(currentSource) {
 }
 
 function applyCurrentComputerUseHostPlatformContract(currentSource) {
+  const currentRspackPatterns = [
+    /isHostCompatiblePlatform:(?<host>"macOS"===(?<platform>[A-Za-z_$][\w$]*)\|\|"windows"===\k<platform>),isPlatformLoading:[A-Za-z_$][\w$]*,windowType:"electron"/g,
+    /isHostCompatiblePlatform:(?<host>"Linux"===(?<platform>[A-Za-z_$][\w$]*)\|\|"macOS"===\k<platform>\|\|"windows"===\k<platform>),isPlatformLoading:[A-Za-z_$][\w$]*,windowType:"electron"/g,
+  ];
+  const currentRspackMatches = currentRspackPatterns.flatMap(pattern => [...currentSource.matchAll(pattern)]).filter(match => {
+    const context = currentSource.slice(Math.max(0, match.index - 1600), match.index + match[0].length);
+    return context.includes("areRequirementsPending:") &&
+      context.includes("areRequiredFeaturesEnabled:") &&
+      context.includes("isComputerUseGateEnabled:") &&
+      context.includes("isBrowserAndComputerUseAllowed:");
+  });
+  if (currentRspackMatches.length > 0) {
+    if (currentRspackMatches.length !== 1) return null;
+    const match = currentRspackMatches[0];
+    if (match.groups.host.startsWith('"Linux"===')) return currentSource;
+    const start = match.index + match[0].indexOf(match.groups.host);
+    return currentSource.slice(0, start) + `"Linux"===${match.groups.platform}||${match.groups.host}` +
+      currentSource.slice(start + match.groups.host.length);
+  }
   const contractPattern =
     /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\{areRequirementsPending:([A-Za-z_$][\w$]*),areRequiredFeaturesEnabled:([A-Za-z_$][\w$]*),enabled:([A-Za-z_$][\w$]*),isBrowserAndComputerUseAllowed:([A-Za-z_$][\w$]*),isAnyFeatureLoading:([A-Za-z_$][\w$]*),isComputerUseGateEnabled:([A-Za-z_$][\w$]*),isHostCompatiblePlatform:([^,{}]+),isPlatformLoading:([A-Za-z_$][\w$]*),windowType:`electron`\}\)/g;
   const candidates = [];
   let match;
   while ((match = contractPattern.exec(currentSource)) != null) {
     const context = currentSource.slice(Math.max(0, match.index - 1200), match.index + match[0].length);
-    if (!context.includes("featureName:`computer_use`")) {
+    const currentRspack = context.includes('windowType:"electron"') &&
+      context.includes("isComputerUseGateEnabled:") && context.includes("isBrowserAndComputerUseAllowed:");
+    const priorContract = context.includes("featureName:`computer_use`");
+    if (!currentRspack && !priorContract) {
       continue;
     }
 

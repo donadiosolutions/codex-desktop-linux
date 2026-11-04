@@ -3,6 +3,10 @@
 const { registerChronicleBridge, chronicleBridgeRegistered } = require("../chronicle-skysight/patch.js");
 
 const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
+const fs = require("node:fs");
+const path = require("node:path");
+const { extractedAppPatch } = require("../../scripts/patches/descriptor.js");
+const { javascriptSourceParses } = require("../../scripts/patches/lib/javascript-syntax.js");
 
 const RECORD_REPLAY_PLUGIN_NAME = "record-and-replay";
 const HUD_RUNTIME_VERSION = 5;
@@ -263,16 +267,19 @@ function recordReplayActiveSpeechContextExpression(dispatchVar, transcriptVar) {
 
 function recordReplayCurrentChatGptBlocks(source) {
   const id = String.raw`[A-Za-z_$][\w$]*`;
-  const starts = source.matchAll(new RegExp(String.raw`if\((?<transcript>${id})\.length>0\|\|(?<handlers>${id})\.chatgpt!=null\)\{`, "g"));
+  const starts = source.matchAll(new RegExp(String.raw`if\((?<transcript>${id})\.length>0\|\|(?:(?<handlers>${id})\.chatgpt!=null|null!=(?<currentHandlers>${id})\.chatgpt)\)\{`, "g"));
   const blocks = [];
   for (const start of starts) {
     const openBrace = start.index + start[0].length - 1;
     const closeBrace = findMatchingBrace(source, openBrace);
     if (closeBrace === -1) continue;
     const text = source.slice(start.index, closeBrace + 1);
-    if (countOccurrences(text, "global-dictation-record-history-item") !== 1 ||
-        countOccurrences(text, "transcript_dispatched") !== 1) continue;
-    const actionMatches = [...text.matchAll(new RegExp(String.raw`else if\((?<actionContext>${id})\.action===\`send\`\)`, "g"))];
+    const legacy = countOccurrences(text, "global-dictation-record-history-item") === 1 && countOccurrences(text, "transcript_dispatched") === 1;
+    const current = countOccurrences(text, 'global-dictation-record-history-item') === 1 && countOccurrences(text, '"transcript_dispatched"') === 1;
+    if (!legacy && !current) continue;
+    const actionMatches = [...text.matchAll(current
+      ? new RegExp(String.raw`else if\("send"===(?<actionContext>${id})\.action\)`, "g")
+      : new RegExp(String.raw`else if\((?<actionContext>${id})\.action===\`send\`\)`, "g"))];
     if (actionMatches.length !== 1) continue;
     const capture = text.match(
       new RegExp(String.raw`^if\([^{}]+\)\{(?<capture>\(globalThis\.codexLinuxRecordReplayCaptureTranscript\?\.\(\k<transcript>,(?<captureAction>${id})\.action\)[^;]+\);)?`.replace("\\k<transcript>", start.groups.transcript)),
@@ -282,7 +289,7 @@ function recordReplayCurrentChatGptBlocks(source) {
       index: start.index,
       groups: {
         transcript: start.groups.transcript,
-        actionContext: actionMatches[0].groups.actionContext,
+        actionContext: actionMatches[0].groups.actionContext ?? actionMatches[0].groups.actionContext2,
         capture: capture?.groups?.capture,
         captureAction: capture?.groups?.captureAction,
       },
@@ -322,6 +329,26 @@ function applyRecordReplayHudPatch(currentSource) {
   return currentSource + separator + recordReplayHudRuntimeSource();
 }
 
+function patchRecordReplayHudEntry(extractedDir) {
+  const htmlPath = path.join(extractedDir, "webview", "index.html");
+  if (!fs.existsSync(htmlPath)) return { changed: false };
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const entries = [...html.matchAll(/<script\b[^>]*\bsrc="\/assets\/([^"]+\.js)"[^>]*><\/script>/gu)]
+    .map((match) => match[1]);
+  const entryName = entries.at(-1);
+  if (entryName == null || entries.length === 0 || path.basename(entryName) !== entryName) return { changed: false };
+  const entryPath = path.join(extractedDir, "webview", "assets", entryName);
+  if (!fs.existsSync(entryPath)) return { changed: false };
+  const original = fs.readFileSync(entryPath, "utf8");
+  const patched = applyRecordReplayHudPatch(original);
+  if (!javascriptSourceParses(patched)) {
+    warn(`HUD runtime would make ${entryName} invalid JavaScript`, "Record & Replay HUD runtime patch");
+    return { changed: false, assetName: entryName };
+  }
+  if (patched !== original) fs.writeFileSync(entryPath, patched, "utf8");
+  return { changed: patched !== original, assetName: entryName };
+}
+
 function applyRecordReplayDictationTranscriptPatch(currentSource) {
   const patchName = "Record & Replay dictation transcript patch";
   const state = recordReplayDictationTranscriptState(currentSource);
@@ -358,8 +385,9 @@ function hasRecordReplayDictationTranscriptContract(source) {
 
 function recordReplayCompiledGlobalDictationPattern() {
   const id = String.raw`[A-Za-z_$][\w$]*`;
+  const dispatch = String.raw`[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*`;
   return new RegExp(
-    String.raw`(?<dispatch>${id})\.dispatchMessage\(\`global-dictation-completed\`,\{sessionId:(?<session>${id})\.sessionId,text:(?<transcript>${id})\}\),(?<suffix>\k<session>\.analytics\.performance\.mark\(\`transcript_dispatched\`\))`,
+    String.raw`(?<dispatch>${dispatch})\.dispatchMessage\(["'\x60]global-dictation-completed["'\x60],\{sessionId:(?<session>${id})\.sessionId,text:(?<transcript>${id})\}\),(?<suffix>\k<session>\.analytics\.performance\.mark\(["'\x60]transcript_dispatched["'\x60]\))`,
     "",
   );
 }
@@ -402,22 +430,19 @@ const descriptors = [
     order: 152,
     apply: applyRecordReplayMainBridgePatch,
   },
-  {
+  extractedAppPatch({
     id: "record-replay-hud",
-    phase: "webview-asset",
+    phase: "extracted-app:post-webview",
     order: 153,
     ciPolicy: "optional",
-    pattern: /^index-.*\.js$/,
-    missingDescription: "webview index bundle",
-    skipDescription: "Record & Replay HUD runtime patch",
-    apply: applyRecordReplayHudPatch,
-  },
+    apply: patchRecordReplayHudEntry,
+  }),
   {
     id: "record-replay-dictation-transcript",
     phase: "webview-asset",
     order: 20695,
     ciPolicy: "optional",
-    pattern: /^app-initial-[A-Za-z0-9_-]+\.js$/,
+    pattern: /^(?:async\/)?\d+\.[0-9a-f]+\.js$/,
     assetMatch: hasRecordReplayDictationTranscriptContract,
     missingDescription: "composer dictation bundle",
     skipDescription: "Record & Replay dictation transcript patch",
@@ -428,7 +453,8 @@ const descriptors = [
     phase: "webview-asset",
     order: 20696,
     ciPolicy: "optional",
-    pattern: /^global-dictation-.*\.js$/,
+    pattern: /^(?:async\/)?\d+\.[0-9a-f]+\.js$/,
+    assetMatch: (source) => source.includes("global-dictation-completed") && recordReplayCompiledGlobalDictationPattern().test(source),
     missingDescription: "global dictation bundle",
     skipDescription: "Record & Replay global dictation transcript patch",
     apply: applyRecordReplayGlobalDictationTranscriptPatch,
@@ -442,6 +468,7 @@ module.exports = {
   applyRecordReplayGlobalDictationTranscriptPatch,
   applyRecordReplayPluginGatePatch,
   applyRecordReplayHudPatch,
+  patchRecordReplayHudEntry,
   applyRecordReplayMainBridgePatch,
   descriptors,
   recordReplayBridgeSource,

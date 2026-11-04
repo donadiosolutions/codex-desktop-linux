@@ -3,7 +3,7 @@
 const DEFAULT_PROJECT_NAME_STYLE = "font-weight: 700 !important;";
 const PROJECTS_SIDEBAR_ASSET_PATTERN = /^[^.]+\.js$/;
 const PROJECT_ROW_ATTRIBUTE = "data-app-action-sidebar-project-row";
-const PROJECT_NAME_SELECTOR = `[${PROJECT_ROW_ATTRIBUTE}] [data-marquee-text]`;
+const PROJECT_NAME_SELECTOR = `[${PROJECT_ROW_ATTRIBUTE}][data-app-action-sidebar-project-label]`;
 const STYLE_ID = "codex-linux-ui-tweaks-sidebar-project-name-style";
 const RUNTIME_MARKER = "codexLinuxUiTweaksSidebarProjectNameStyleRuntime";
 const UNSAFE_PROJECT_NAME_STYLE_PATTERN = /[{}@<>]|\r|\n|\/\*|\*\/|\burl\s*\(/i;
@@ -79,11 +79,13 @@ function normalizedProjectNameStyle(context) {
 }
 
 function looksLikeSidebarProjectBundle(source) {
-  return SIDEBAR_PROJECT_NAME_MARKERS.every((marker) => source.includes(marker));
+  return SIDEBAR_PROJECT_NAME_MARKERS.every((marker) => source.includes(marker)) ||
+    (source.includes("data-sidebar-project-drop-zone") &&
+      /sidebarProjectRow\(\{collapsed:[A-Za-z_$][\w$]*,label:[A-Za-z_$][\w$]*,projectId:[A-Za-z_$][\w$]*\}\)/u.test(source));
 }
 
 function hasPartialSidebarProjectMarkers(source) {
-  return SIDEBAR_PROJECT_NAME_MARKERS.some((marker) => source.includes(marker));
+  return SIDEBAR_PROJECT_NAME_MARKERS.some((marker) => source.includes(marker)) || source.includes("sidebarProjectRow({collapsed:");
 }
 
 function applySidebarProjectNameStylePatch(source, context = {}) {

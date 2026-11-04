@@ -28,6 +28,18 @@ function enabled(context) {
   return reasoningLabelConfig(context).enabled !== false;
 }
 
+function isReasoningLocaleBundle(source) {
+  return Object.keys(ENGLISH_REASONING_LABELS).every((key) => {
+    const index = source.indexOf(`"${key}"`);
+    if (index < 0) return false;
+    const start = source.lastIndexOf("{", index);
+    const end = source.indexOf("}", index);
+    if (start < 0 || end < 0) return false;
+    const object = source.slice(start, end + 1);
+    return object.includes("defaultMessage:");
+  });
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -47,6 +59,22 @@ function applyEnglishReasoningLabels(source, context = {}) {
     for (const [key, label] of Object.entries(ENGLISH_REASONING_LABELS)) {
       const replacement = `"${key}":\`${label}\``;
       if (source.includes(replacement)) {
+        continue;
+      }
+
+      const messagePattern = new RegExp(
+        `(?:id:"${escapeRegExp(key)}",defaultMessage:"([^"\\\\]*)"|\\{defaultMessage:"([^"\\\\]*)",id:"${escapeRegExp(key)}")`,
+        "gu",
+      );
+      const messageMatches = [...source.matchAll(messagePattern)];
+      if (messageMatches.length > 0) {
+        for (const match of messageMatches) {
+          const currentMessage = match[1] ?? match[2];
+          replacements.push([
+            new RegExp(escapeRegExp(match[0]), "gu"),
+            match[0].replace(`defaultMessage:"${currentMessage}"`, `defaultMessage:"${label}"`),
+          ]);
+        }
         continue;
       }
 
@@ -82,6 +110,8 @@ const descriptors = [
     order: 20_797,
     ciPolicy: "optional",
     pattern: ZH_CN_LOCALE_ASSET_PATTERN,
+    assetMatch: isReasoningLocaleBundle,
+    matchPolicy: "all",
     missingDescription: "Simplified Chinese locale bundle",
     skipDescription: "ui-tweaks English reasoning effort label patch",
     apply: (source, context = {}) =>

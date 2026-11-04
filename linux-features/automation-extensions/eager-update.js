@@ -1,11 +1,11 @@
 "use strict";
 
-const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
+const { escapeRegExp, findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
 
 const IDENT = "[A-Za-z_$][\\w$]*";
 const EAGER = new RegExp(`${IDENT}\\.name!==\\\`automation_update\\\`&&${IDENT}&&\\(!${IDENT}\\.has\\(${IDENT}\\.name\\)\\|\\|${IDENT}\\.includes\\(${IDENT}\\.name\\)\\)`);
 const DYNAMIC = new RegExp(
-  `\\.map\\((${IDENT})=>\\(\\{type:\`function\`,\\.\\.\\.\\1,\\.\\.\\.(` +
+  `\\.map\\((${IDENT})=>\\(\\{type:(['\"\\x60])function\\2,\\.\\.\\.\\1,\\.\\.\\.(` +
     `${IDENT}&&\\(!${IDENT}\\.has\\(\\1\\.name\\)\\|\\|${IDENT}\\.includes\\(\\1\\.name\\)\\)` +
     `)\\?\\{deferLoading:!0\\}:\\{\\}\\}\\)\\)`,
   "u",
@@ -34,8 +34,8 @@ function applyAutomationUpdateEagerToolPatch(source) {
   }
   return source.replace(
     DYNAMIC,
-    (_match, tool, deferCondition) =>
-      `.map(${tool}=>({type:\`function\`,...${tool},...${tool}.name!==\`automation_update\`&&${deferCondition}?{deferLoading:!0}:{}}))`,
+    (_match, tool, quote, deferCondition) =>
+      `.map(${tool}=>({type:${quote}function${quote},...${tool},...${tool}.name!==\`automation_update\`&&${deferCondition}?{deferLoading:!0}:{}}))`,
   );
 }
 
@@ -106,11 +106,76 @@ function hasAutomationPluginEnabledToolsKeyContract(source) {
 function matchesAutomationPluginEnableContract(source) {
   return source.includes(AUTOMATION_PLUGIN_ENABLE_MARKER) ||
     hasAutomationPluginEnabledToolsKeyContract(source) &&
-      findAutomationPluginConfigAssignments(source).length === 1;
+      findAutomationPluginConfigAssignments(source).length === 1 ||
+    matchesCurrentAutomationToolOwner(source);
+}
+
+function matchesCurrentAutomationToolOwner(source) {
+  if (!source.includes("__webpack_modules__") || !source.includes("automation_update") || !EAGER.test(source)) return false;
+  const factories = rspackFactories(source);
+  const owners = factories.flatMap(factory => {
+    const definitions = [...factory.body.matchAll(new RegExp(
+      `(${IDENT})="automation_update";function (${IDENT})\\(\\)\\{return null==(${IDENT})&&\\(\\3=\\{name:\\1,`, "gu"))];
+    if (definitions.length !== 1) return [];
+    const [, nameVariable, toolFunction] = definitions[0];
+    const exportMatches = [...factory.body.matchAll(new RegExp(
+      `${escapeRegExp(factory.require)}\\.d\\(${escapeRegExp(factory.exports)},\\{([^}]*)\\}`, "gu"))];
+    const exported = exportMatches.flatMap(([, entries]) => [...entries.matchAll(new RegExp(
+      `(${IDENT}):\\(\\)=>${escapeRegExp(toolFunction)}(?:,|$)`, "gu"))]);
+    return exported.length === 1 ? [{ ...factory, nameVariable, toolFunction, exportName: exported[0][1] }] : [];
+  });
+  if (owners.length !== 1) return false;
+  const owner = owners[0];
+  const mapperFactories = factories.filter(({ body }) =>
+    body.includes("eagerToolNames") && body.includes(".name!==`automation_update`&&") &&
+      body.includes("deferLoading:!0") && /\.map\([^)]*=>\(\{type:["']function["'],/u.test(body));
+  if (mapperFactories.length !== 1) return false;
+  const ownerId = owner.moduleId;
+  const mapperId = mapperFactories[0].moduleId;
+  return factories.some(({ body, require: aggregateRequire }) => {
+    if (aggregateRequire == null) return false;
+    const importPattern = new RegExp(`(?:let |var |const |,)(${IDENT})=${escapeRegExp(aggregateRequire)}\\(["']([^"']+)["']\\)`, "gu");
+    const imports = [...body.matchAll(importPattern)];
+    const ownerImport = imports.find(([, , id]) => id === ownerId);
+    const mapperImport = [...body.matchAll(importPattern)].find(([, , id]) => id === mapperId);
+    if (ownerImport == null || mapperImport == null) return false;
+    const toolAlias = ownerImport[1], mapperAlias = mapperImport[1];
+    const escapedToolAlias = escapeRegExp(toolAlias);
+    const escapedMapperAlias = escapeRegExp(mapperAlias);
+    const escapedExport = escapeRegExp(owner.exportName);
+    const hasToolReference = new RegExp(`\\(0,${escapedToolAlias}\\.${escapedExport}\\)\\(\\)`).test(body);
+    const hasMappedCatalog = new RegExp(`\\(0,${escapedMapperAlias}\\.[A-Za-z_$][\\w$]*\\)\\(\\{tools:[^}]*eagerToolNames:[^}]*\\}\\)`).test(body);
+    const toolPosition = body.indexOf(`(0,${toolAlias}.${owner.exportName})()`);
+    const mapperPosition = body.indexOf(`(0,${mapperAlias}.`);
+    const mapperCall = new RegExp(`\\(0,${escapedMapperAlias}\\.([A-Za-z_$][\\w$]*)\\)\\(\\{tools:(${IDENT}),`).exec(body.slice(mapperPosition));
+    const toolListBinding = mapperCall?.[2] ?? null;
+    const listStart = toolListBinding == null ? -1 : body.lastIndexOf(`${toolListBinding}=`, mapperPosition);
+    const listPassed = mapperCall != null && listStart >= 0 && toolPosition > listStart &&
+      mapperPosition - listStart < 30_000 && body.slice(listStart, mapperPosition).includes(`(0,${toolAlias}.${owner.exportName})()`);
+    return hasToolReference && hasMappedCatalog && listPassed && EAGER.test(mapperFactories[0].body);
+  });
+}
+
+function rspackFactories(source) {
+  const starts = [...source.matchAll(new RegExp(`(?:^|,)((?:${IDENT})|function)\\(([^)]*)\\)\\{`, "gu"))];
+  return starts.flatMap(match => {
+    const open = match.index + match[0].lastIndexOf("{");
+    const close = findMatchingBrace(source, open);
+    if (close <= open) return [];
+    const params = match[2].split(",");
+    if (params.length < 2 || params.length > 3 || params.some(param => !new RegExp(`^${IDENT}$`).test(param))) return [];
+    const body = source.slice(open, close + 1);
+    const moduleId = match[1] === "function" ? null : match[1];
+    const exports = params[1];
+    const require = params[2] ?? null;
+    const exportsMap = [...body.matchAll(new RegExp(`(${IDENT})\\.d\\(${exports},\\{([^}]*)\\}`, "gu"))];
+    return [{ name: match[1], exports, require, moduleId, body, exportsMap }];
+  });
 }
 
 function applyAutomationPluginEnablePatch(source) {
   if (source.includes(AUTOMATION_PLUGIN_ENABLE_MARKER)) return source;
+  if (matchesCurrentAutomationToolOwner(source)) return source;
 
   if (!hasAutomationPluginEnabledToolsKeyContract(source)) {
     if (source.includes("codex_app.enabled_tools") || source.includes("codex_app.tools")) {

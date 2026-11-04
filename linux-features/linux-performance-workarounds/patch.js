@@ -6,11 +6,13 @@ const { applyFeatureEnablementDedupPatch } = require("./feature-enablement.js");
 const {
   applyLinuxAppShellTabLayoutPerformancePatch,
   applyLinuxMarkdownAnimationPerformancePatch,
-  applyLinuxSidebarScrollPerformancePatch,
   matchesLinuxAppShellTabLayoutPerformanceContract,
   matchesLinuxMarkdownAnimationPerformanceContract,
-  matchesLinuxSidebarScrollPerformanceContract,
 } = require("./implementation.js");
+const {
+  applyLinuxSidebarScrollPerformancePatch,
+  matchesLinuxSidebarScrollPerformanceContract,
+} = require("./scroll.js");
 
 module.exports = [
   extractedAppPatch({
@@ -55,6 +57,7 @@ module.exports = [
     ciPolicy: "optional",
     pattern: /^[A-Za-z0-9_-]+\.css$/,
     assetMatch: matchesLinuxMarkdownAnimationPerformanceContract,
+    matchPolicy: "all",
     missingDescription: "streaming Markdown animation stylesheet",
     skipDescription: "Markdown animation performance workaround",
     apply: applyLinuxMarkdownAnimationPerformancePatch,

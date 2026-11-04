@@ -56,6 +56,32 @@ function contract(source) {
 }
 
 function applyProjectGroupLastUpdatedSortPatch(source) {
+  const signedPatched = [...source.matchAll(/function\(\{groups:([\w$]+),getRecencyAt:([\w$]+),projectOrder:n,sortMode:([\w$]+)\}\)\{if\(\3!==`updated_at`\)return \(0,([\w$]+)\.([\w$]+)\)\(\1,n\);return \1\.map\(\(e,n\)=>\(\{group:e,index:n,recencyAt:e\.threadKeys\.reduce\(\(e,n\)=>Math\.max\(e,\2\(n\)\?\?0\),e\.projectUpdatedAt\?\?0\)\}\)\)\.sort\(\(e,t\)=>t\.recencyAt-e\.recencyAt\|\|e\.index-t\.index\)\.map\(\(\{group:e\}\)=>e\)\}/g)];
+  const signedPatchedCall = signedPatched.length === 1
+    ? `getRecencyAt:${signedPatched[0][2]},sortMode:${signedPatched[0][3]}`
+    : null;
+  if (signedPatchedCall && (source.match(new RegExp(escapeRegExp(signedPatchedCall), "g")) ?? []).length === 1) return source;
+  const inlineGroup = /function\(\{groups:([\w$]+),projectOrder:([\w$]+)\}\)\{return\(0,([\w$]+)\.([\w$]+)\)\(([\w$]+),([\w$]+)\)\}/g;
+  const helperMatches = [...source.matchAll(inlineGroup)];
+  const invocation = /\{groups:([\w$]+)\(\{groups:([\w$]+),items:([\w$]+)\}\),projectOrder:\(0,([\w$]+)\.([\w$]+)\)\(([\w$]+),[\w$]+(?:\.[\w$]+)*\.PROJECT_ORDER\)\}/g;
+  const callMatches = [...source.matchAll(invocation)];
+  if (helperMatches.length === 1 && callMatches.length === 1) {
+    const helper = helperMatches[0];
+    const call = callMatches[0];
+    const prefix = source.slice(0, helper.index);
+    const modeMatches = [...prefix.matchAll(/\{chatSortMode:[\w$]+,projectSortMode:([\w$]+)\}=[\w$.]+\([\w$.]+\)/g)];
+    const mode = modeMatches.at(-1)?.[1];
+    const selectorTail = modeMatches.length ? prefix.slice(modeMatches.at(-1).index + modeMatches.at(-1)[0].length) : "";
+    const recency = selectorTail.match(/,([\w$]+)=e=>/)?.[1];
+    const [, groupAlias, orderAlias, moduleAlias, orderFn, helperGroups, helperOrder] = helper;
+    if (!mode || !recency || !source.includes(`getRecencyAt:${recency}`)) {
+      console.warn("WARN: Could not find current project group sorting insertion points - skipping project group Last updated sort feature patch");
+      return source;
+    }
+    const replacement = `function({groups:${groupAlias},getRecencyAt:${recency},projectOrder:n,sortMode:${mode}}){if(${mode}!==\`updated_at\`)return (0,${moduleAlias}.${orderFn})(${helperGroups},n);return ${groupAlias}.map((e,n)=>({group:e,index:n,recencyAt:e.threadKeys.reduce((e,n)=>Math.max(e,${recency}(n)??0),e.projectUpdatedAt??0)})).sort((e,t)=>t.recencyAt-e.recencyAt||e.index-t.index).map(({group:e})=>e)}`;
+    const updatedCall = `${call[0].slice(0, -1)},getRecencyAt:${recency},sortMode:${mode}}`;
+    return source.slice(0, helper.index) + replacement + source.slice(helper.index + helper[0].length).replace(call[0], updatedCall);
+  }
   const found = contract(source);
   if (!found) {
     console.warn("WARN: Could not find current project group sorting insertion points - skipping project group Last updated sort feature patch");
@@ -73,7 +99,13 @@ const descriptors = [{
   order: 20_900,
   ciPolicy: "optional",
   pattern: /^[A-Za-z0-9_-]+\.js$/,
-  assetMatch: (source) => contract(source) != null,
+  assetMatch: (source) => {
+    if (contract(source) != null) return true;
+    const helpers = [...source.matchAll(/function\(\{groups:([\w$]+),projectOrder:([\w$]+)\}\)\{return\(0,[\w$]+\.[\w$]+\)\([\w$]+,[\w$]+\)\}/g)];
+    const patched = [...source.matchAll(/function\(\{groups:[\w$]+,getRecencyAt:[\w$]+,projectOrder:[\w$]+,sortMode:[\w$]+\}\)\{if\([\w$]+!==`updated_at`\)return \(0,[\w$]+\.[\w$]+\)\([\w$]+,[\w$]+\);/g)];
+    const modes = [...source.matchAll(/\{chatSortMode:[\w$]+,projectSortMode:([\w$]+)\}=[\w$.]+\([\w$.]+\)/g)];
+    return modes.length === 1 && ((helpers.length === 1 && /getRecencyAt:[\w$]+,items:[\w$]+,projectGroups:/.test(source)) || (patched.length === 1 && source.includes("sortMode:")));
+  },
   missingDescription: "unique project group sort webview bundle",
   skipDescription: "project group Last updated sorting feature patch",
   apply: applyProjectGroupLastUpdatedSortPatch,

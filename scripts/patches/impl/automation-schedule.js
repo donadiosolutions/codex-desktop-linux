@@ -7,6 +7,7 @@ const {
   findLastRegexMatch,
 } = require("../lib/minified-js.js");
 const {
+  listWebviewAssetNames,
   readDirectoryNames,
 } = require("../lib/assets.js");
 
@@ -22,24 +23,20 @@ function findContainingNamedFunction(source, offset) {
 }
 
 function findWorkspaceRootDropHandlerBundles(extractedDir) {
-  const candidateDirs = [
-    path.join(extractedDir, ".vite", "build"),
-    path.join(extractedDir, "webview", "assets"),
-  ];
-  return candidateDirs
-    .flatMap((dir) =>
-      readDirectoryNames(dir)
-        .filter((name) => name.endsWith(".js"))
-        .sort()
-        .map((name) => path.join(dir, name)),
-    )
+  const buildDir = path.join(extractedDir, ".vite", "build");
+  const assetsDir = path.join(extractedDir, "webview", "assets");
+  return [
+    ...readDirectoryNames(buildDir).filter((name) => name.endsWith(".js")).map((name) => path.join(buildDir, name)),
+    ...listWebviewAssetNames(assetsDir, /\.js$/u).map((name) => path.join(assetsDir, name)),
+  ]
     .filter((candidate) => {
       try {
         const source = fs.readFileSync(candidate, "utf8");
         return source.includes(AUTOMATION_SCHEDULE_PATCH_MARKER) ||
           (
             source.includes("hasMultipleTimeValues") &&
-            new RegExp(`rruleText:${MINIFIED_IDENTIFIER},time:${MINIFIED_IDENTIFIER}\\((${MINIFIED_IDENTIFIER})\\.byhour,\\1\\.byminute,\\1\\)`).test(source)
+            (source.includes("function Q(e,t){if(!e||e.hasMultipleTimeValues)return null;") ||
+              new RegExp(`rruleText:${MINIFIED_IDENTIFIER},time:${MINIFIED_IDENTIFIER}\\((${MINIFIED_IDENTIFIER})\\.byhour,\\1\\.byminute,\\1\\)`).test(source))
           );
       } catch {
         return false;
@@ -48,15 +45,49 @@ function findWorkspaceRootDropHandlerBundles(extractedDir) {
 }
 
 function applyAutomationScheduleMultiTimePatch(source) {
-  if (source.includes("function codexLinuxNormalizeRruleNumbers(")) {
+  if (source.includes("function codexLinuxNormalizeRruleNumbers(") || source.includes("function codexLinuxScheduleTimes(")) {
     return source;
   }
 
-  const patched = applyGenericAutomationScheduleMultiTimePatch(source);
+  const genericPatched = applyGenericAutomationScheduleMultiTimePatch(source);
+  const patched = genericPatched === source
+    ? applyRspackAutomationScheduleMultiTimePatch(source)
+    : genericPatched;
   if (patched === source) {
     console.warn("WARN: Could not find automation schedule helper block — skipping RRULE multi-time patch");
   }
   return patched;
+}
+
+function applyRspackAutomationScheduleMultiTimePatch(source) {
+  const parserStart = source.indexOf("hasMultipleTimeValues:Array.isArray(p.byhour)");
+  const summaryStart = source.indexOf("function Q(e,t){if(!e||e.hasMultipleTimeValues)return null;", parserStart);
+  if (parserStart < 0 || summaryStart < 0) return source;
+  const parserEnd = source.indexOf(",weekdays:f", parserStart);
+  if (parserEnd < 0) return source;
+  const parserBlock = source.slice(parserStart, parserEnd + ",weekdays:f".length);
+  const expected = "hasMultipleTimeValues:Array.isArray(p.byhour)&&p.byhour.length>1||Array.isArray(p.byminute)&&p.byminute.length>1";
+  if (!parserBlock.startsWith(expected) || !parserBlock.includes("time:(t=p.byhour,n=p.byminute,r=p,")) return source;
+  const parserFn = source.lastIndexOf("function W(e){", parserStart);
+  if (parserFn < 0 || parserStart - parserFn > 20_000) return source;
+  const replacement = parserBlock
+    .replace(expected, "hasMultipleTimeValues:codexLinuxScheduleTimes(p.byhour,p.byminute,p).length>1")
+    .replace(",weekdays:f", ",timeValues:codexLinuxScheduleTimes(p.byhour,p.byminute,p),weekdays:f");
+  const helper = "function codexLinuxScheduleTimes(e,t,n){let r=Array.isArray(e)?e:[e],i=Array.isArray(t)?t:[t];r=r.filter(e=>typeof e==`number`&&Number.isInteger(e)&&e>=0&&e<=23);i=i.filter(e=>typeof e==`number`&&Number.isInteger(e)&&e>=0&&e<=59);n.dtstart&&(r.length||(r=[n.dtstart.getHours()]),i.length||(i=[n.dtstart.getMinutes()]));let a=[];for(let e of r)for(let t of i)a.push(es(e,t));return Array.from(new Set(a)).sort()}";
+  const summaryEnd = source.indexOf("function Z({intervalLabel", summaryStart);
+  if (summaryEnd < 0) return source;
+  let summary = source.slice(summaryStart, summaryEnd);
+  const originalLabel = "let i=(0,u.mm)(e.time,t);";
+  if (!summary.includes(originalLabel)) return source;
+  summary = summary.replace("if(!e||e.hasMultipleTimeValues)return null;", "if(!e)return null;")
+    .replace(originalLabel, "let i=e.timeValues?.length>1?e.timeValues.map(e=>(0,u.mm)(e,t)).filter(Boolean).join(`, `):(0,u.mm)(e.time,t);");
+  if (!summary.includes("e.timeValues?.length>1")) return source;
+  let patched = source.slice(0, parserStart) + replacement + source.slice(parserStart + parserBlock.length);
+  const delta = replacement.length - parserBlock.length;
+  const adjustedSummaryStart = summaryStart + delta;
+  const adjustedSummaryEnd = summaryEnd + delta;
+  patched = patched.slice(0, adjustedSummaryStart) + summary + patched.slice(adjustedSummaryEnd);
+  return patched.slice(0, parserFn) + helper + patched.slice(parserFn);
 }
 
 function applyGenericAutomationScheduleMultiTimePatch(source) {

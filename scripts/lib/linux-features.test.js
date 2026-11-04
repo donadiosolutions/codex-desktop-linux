@@ -189,6 +189,7 @@ test("known retired feature ids are ignored while arbitrary unknown ids fail", (
       "codex-wrapper-updater",
       "conversation-delete",
       "conversation-mode",
+      "daybreak-model-visibility",
       "deferred-update-build",
       "example-feature",
       "open-target-discovery",

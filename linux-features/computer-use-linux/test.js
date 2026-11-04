@@ -216,6 +216,12 @@ test("current host-platform contract enables Linux without dropping requirement 
   assert.equal(applyLinuxComputerUseHostPlatformPatch(patched), patched);
 });
 
+test("current Rspack host-platform lookalikes without the Computer Use gate stay untouched", () => {
+  const source = 'function unrelated(){return{isHostCompatiblePlatform:"macOS"===p||"windows"===p,isPlatformLoading:l,windowType:"electron"}}';
+  assert.equal(matchesLinuxComputerUseHostPlatformContract(source), false);
+  assert.equal(applyLinuxComputerUseHostPlatformPatch(source), source);
+});
+
 test("retired host-platform contract is rejected byte-identically", () => {
   const source = "function owner(){let feature={featureName:`computer_use`},p=`linux`,r=h({areRequiredFeaturesEnabled:b,enabled:c,isAnyFeatureLoading:e,isComputerUseGateEnabled:f,isHostCompatiblePlatform:g(p),isPlatformLoading:i,windowType:`electron`});return r}";
 

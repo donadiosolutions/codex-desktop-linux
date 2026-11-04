@@ -4,6 +4,24 @@
 // owns transport. Never invent an installed/enabled Settings row.
 function applyNativeSettingsAvailabilityPatch(source) {
   if (source.includes("BundledMarketplaceDonor")) throw new Error("Retired synthetic Linux Settings contract");
+  const currentMarker = "/* linux-native-settings-availability */";
+  if (source.includes(currentMarker)) {
+    const alreadyPatched = /\w+="local"===\w+,\w+=\w+&&\(\w+\|\|"macOS"===\w+&&\w+\.isLoading\),\w+=\w+&&!\w+&&\("Linux"===\w+\|\|"macOS"===\w+&&\w+\.available\)&&\w+\/\* linux-native-settings-availability \*\//.test(source);
+    if (source.split(currentMarker).length - 1 === 1 && alreadyPatched) return source;
+    throw new Error("Linux native Settings availability contract missing or ambiguous");
+  }
+  const currentPattern = /(?<local>[\w$]+)="local"===(?<host>[\w$]+),(?<pending>[\w$]+)=\k<local>&&\((?<loading>[\w$]+)\|\|"macOS"===(?<platform>[\w$]+)&&(?<availability>[\w$]+)\.isLoading\),(?<available>[\w$]+)=\k<local>&&!\k<pending>&&"macOS"===\k<platform>&&\k<availability>\.available&&(?<setting>[\w$]+);/g;
+  const currentMatches = [...source.matchAll(currentPattern)];
+  if (currentMatches.length > 0 || source.includes(currentMarker)) {
+    const currentCount = currentMatches.filter(match => match.groups.marker == null).length;
+    if (currentMatches.length !== 1 || currentCount !== 1) {
+      throw new Error("Linux native Settings availability contract missing or ambiguous");
+    }
+    const match = currentMatches[0];
+    const { local, host, pending, loading, platform, availability, available, platformGate, setting } = match.groups;
+    const replacement = `${local}="local"===${host},${pending}=${local}&&(${loading}||"macOS"===${platform}&&${availability}.isLoading),${available}=${local}&&!${pending}&&("Linux"===${platform}||"macOS"===${platform}&&${availability}.available)&&${setting}${currentMarker};`;
+    return source.slice(0, match.index) + replacement + source.slice(match.index + match[0].length);
+  }
   const marker = /[\w$]+===`linux`&&\([\w$]+=\{\.\.\.[\w$]+,available:/g;
   const pattern = /let (?<availability>[\w$]+)=(?<hook>[\w$]+)\((?<args>[^)]*)\),\{platform:(?<platform>[\w$]+)\}=(?<platformHook>[\w$]+)\(\)(?:,|(?<patched>;\k<platform>===`linux`&&\(\k<availability>=\{\.\.\.\k<availability>,available:!0,isFetching:!1,isLoading:!1\}\);let ))(?<next>[\w$]+)=/g;
   const matches = [...source.matchAll(pattern)].filter(match => {
@@ -26,7 +44,7 @@ function applyNativeSettingsAvailabilityPatch(source) {
 // flag: that flag drops the component from the shared Settings query too.
 function nativeSettingsVisibilityState(source) {
   const marker = "/* linux-native-settings-component */";
-  const pattern = /function (?<fn>[\w$]+)\((?<plugins>[\w$]+),(?<hidden>[\w$]+),(?<restrictedMode>[\w$]+)\)\{(?:if\(\k<hidden>\.length===0&&!\k<restrictedMode>\)return \k<plugins>;|(?<patched>\/\* linux-native-settings-component \*\/))let (?<set>[\w$]+)=new Set\(\k<hidden>\);return \k<plugins>\.filter\((?<entry>[\w$]+)=>(?<exclusion>!\(\k<entry>\.marketplaceName===`openai-bundled`&&\k<entry>\.plugin\.name===`computer-use`\)&&)?\(!\k<restrictedMode>\|\|!(?<restricted>[\w$]+)\(\k<entry>\.plugin\.id\)\)&&!\k<set>\.has\(\k<entry>\.plugin\.id\)\)\}/g;
+  const pattern = /function (?<fn>[\w$]+)\((?<plugins>[\w$]+),(?<hidden>[\w$]+),(?<restrictedMode>[\w$]+)\)\{(?:if\((?:\k<hidden>\.length===0|0===\k<hidden>\.length)&&!\k<restrictedMode>\)return \k<plugins>;|(?<patched>\/\* linux-native-settings-component \*\/))let (?<set>[\w$]+)=new Set\(\k<hidden>\);return \k<plugins>\.filter\((?<entry>[\w$]+)=>(?<exclusion>!\(\k<entry>\.marketplaceName===`openai-bundled`&&\k<entry>\.plugin\.name===`computer-use`\)&&)?\(!\k<restrictedMode>\|\|!(?<restricted>(?:[\w$]+|\(0,[\w$]+\.[\w$]+\)))\(\k<entry>\.plugin\.id\)\)&&!\k<set>\.has\(\k<entry>\.plugin\.id\)\)\}/g;
   const matches = [...source.matchAll(pattern)];
   const markerCount = source.split(marker).length - 1;
   const patchedCount = matches.filter((match) => match.groups.patched != null).length;

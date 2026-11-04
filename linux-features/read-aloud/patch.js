@@ -8,6 +8,7 @@ const path = require("node:path");
 const {
   linuxSettingsKeys,
 } = require("../../scripts/patches/lib/settings-keys.js");
+const { listWebviewAssetNames } = require("../../scripts/patches/lib/assets.js");
 const {
   findMatchingBrace,
   requireName,
@@ -86,8 +87,13 @@ function applyMainBundlePatch(source) {
   // Ignore our function-local fallback require when rediscovering the upstream binding.
   const priorHelperMarker = "function codexLinuxReadAloudHandle(e={}){";
   const priorHelperStart = source.indexOf(priorHelperMarker);
+  const priorHelperBundleStart = priorHelperStart < 0
+    ? -1
+    : source.lastIndexOf("function codexLinuxReadAloudCleanText(", priorHelperStart);
   const priorHelperEnd = priorHelperStart < 0 ? -1 : findMatchingBrace(source, priorHelperStart + priorHelperMarker.length - 1);
-  const electronVar = requireName(source.slice(priorHelperEnd + 1), "electron");
+  const priorHelper = priorHelperBundleStart < 0 ? "" : source.slice(priorHelperBundleStart, priorHelperEnd + 1);
+  const electronVar = priorHelper.match(/electronApi=([^}]+)\}catch/)?.[1] ??
+    requireName(source.slice(priorHelperEnd + 1), "electron");
 
   const helper = [
     `function codexLinuxReadAloudCleanText(e){return typeof e!==\`string\`?\`\`:e.replace(/\\r\\n/g,\`\\n\`).replace(new RegExp(\`\\\`\\\`\\\`[\\\\s\\\\S]*?\\\`\\\`\\\`\`,\`gu\`),\` code block. \`).replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/gu,\`$1\`).replace(/[*_#>~]/gu,\`\`).replace(/\\n{3,}/gu,\`\\n\\n\`).trim().slice(0,8e3)}`,
@@ -214,7 +220,7 @@ function countOccurrences(source, needle) {
 
 function inspectAssistantRenderContract(source) {
   const jsxCallPattern =
-    /\(0,([A-Za-z_$][\w$]*)\.jsx\)\(([A-Za-z_$][\w$]*),\{(?=[^{}]*\bitem:)(?=[^{}]*\bassistantCopyText:)(?=[^{}]*\bconversationId:)([^{}]*)\}\)/g;
+    /\(0,([A-Za-z_$][\w$]*)\.jsx\)\(([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*),\{(?=[^{}]*\bitem:)(?=[^{}]*\bassistantCopyText:)(?=[^{}]*\bconversationId:)([^{}]*)\}\)/g;
   const readProp = (props, name) =>
     new RegExp(`(?:^|,)${name}:([A-Za-z_$][\\w$]*)`).exec(props)?.[1] ?? null;
   const candidates = Array.from(source.matchAll(jsxCallPattern), (match) => {
@@ -541,6 +547,8 @@ function removeGeneralSettingsRowPlacement(source) {
 }
 
 function applyGeneralSettingsPatch(source) {
+  const rspackPatched = applyRspackGeneralSettingsPatch(source);
+  if (rspackPatched !== source) return rspackPatched;
   const functionName = exportedGeneralSettingsFunctionName(source) ?? (source.includes("function Gn(){") ? "Gn" : null);
   if (functionName == null) {
     return source;
@@ -647,6 +655,49 @@ function applyGeneralSettingsWrapperPatch(source) {
   return source
     .replace(wrapperRegex, `import{r as ${generalAlias},ReadAloudSettings as ${readAloudAlias}}from"${innerAsset}";`)
     .replace(exportRegex, `export{${generalAlias} as GeneralSettings,${readAloudAlias} as ReadAloudSettings};`);
+}
+
+function applyRspackGeneralSettingsPatch(source) {
+  const exported = source.match(/GeneralSettings:\s*\(\)\s*=>\s*([A-Za-z_$][\w$]*)/);
+  if (!exported || source.includes("function codexLinuxReadAloudRspackSettingsRow(")) return source;
+  const moduleStartMatch = [...source.slice(0, exported.index).matchAll(/(?:^|,)([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{/g)].at(-1);
+  if (!moduleStartMatch) return source;
+  const moduleOpen = source.indexOf("{", moduleStartMatch.index + moduleStartMatch[0].length - 1);
+  const moduleEnd = findMatchingBrace(source, moduleOpen);
+  if (moduleEnd < exported.index) return source;
+  const moduleSource = source.slice(moduleOpen, moduleEnd + 1);
+  const jsx = moduleSource.match(/\(0,([A-Za-z_$][\w$]*)\.jsx\)/)?.[1];
+  const react = moduleSource.match(/\(0,([A-Za-z_$][\w$]*)\.useState\)/)?.[1];
+  const generalFunction = [...moduleSource.matchAll(/function ([A-Za-z_$][\w$]*)\(\)\{/g)].map((match) => {
+    const bodyStart = moduleOpen + match.index + match[0].length - 1;
+    const bodyEnd = findMatchingBrace(source, bodyStart);
+    return { bodyStart, bodyEnd, body: source.slice(bodyStart, bodyEnd + 1) };
+  }).find(({ body }) => body.includes('id:"settings.general.groupTitle"'));
+  if (!jsx || !react || !generalFunction) return source;
+  const header = new RegExp(`\\(0,${jsx}\\.jsx\\)\\(([A-Za-z_$][\\w$]*\\.[A-Za-z_$][\\w$]*)\\.Header,\\{title:\\(0,${jsx}\\.jsx\\)\\([A-Za-z_$][\\w$]*\\.[A-Za-z_$][\\w$]*,\\{id:"settings\\.general\\.groupTitle"`);
+  const sectionType = header.exec(generalFunction.body)?.[1];
+  if (!sectionType) return source;
+  const content = new RegExp(`\\(0,${jsx}\\.jsx\\)\\(${sectionType.replace(/[.]/g, "\\.")}\\.Content,\\{children:\\(0,${jsx}\\.jsxs\\)\\(([A-Za-z_$][\\w$]*\\.[A-Za-z_$][\\w$]*),\\{children:\\[([^\\[\\]]*)\\]\\}\\)\\}`);
+  const contentMatch = content.exec(generalFunction.body);
+  if (!contentMatch) return source;
+  const componentPair = new RegExp(`\\(0,${jsx}\\.jsx\\)\\(([A-Za-z_$][\\w$]*)\\.([A-Za-z_$][\\w$]*),\\{label:[^{}]{0,500}control:\\(0,${jsx}\\.jsx\\)\\(([A-Za-z_$][\\w$]*)\\.([A-Za-z_$][\\w$]*),\\{checked:`, "g");
+  const componentPairs = [...moduleSource.matchAll(componentPair)];
+  const pairKeys = new Set(componentPairs.map((match) => `${match[1]}.${match[2]}|${match[3]}.${match[4]}`));
+  if (pairKeys.size !== 1) return source;
+  const [row, toggle] = [...pairKeys][0].split("|");
+  const helper = `function codexLinuxReadAloudRspackSettingsRow(){let[e,t]=${react}.useState(!1),[n,r]=${react}.useState(1.05),[i,a]=${react}.useState(!0),[o,s]=${react}.useState(null),clamp=e=>{let t=Number(e);return Number.isFinite(t)?Math.min(1.4,Math.max(.7,Math.round(t*20)/20)):1.05};${react}.useEffect(()=>{let alive=!0;Promise.all([globalThis.codexLinuxReadAloudGetSetting?.(${JSON.stringify(SETTINGS_KEY)}),globalThis.codexLinuxReadAloudGetSetting?.(${JSON.stringify(KOKORO_SPEED_KEY)})]).then(([enabled,speed])=>{if(!alive)return;t(enabled===!0),r(clamp(speed??1.05)),s(null)}).catch(error=>{alive&&s(error instanceof Error?error.message:String(error))}).finally(()=>{alive&&a(!1)});return()=>{alive=!1}},[]);let toggle=enabled=>{t(enabled),s(null),Promise.resolve(globalThis.codexLinuxReadAloudSetSetting?.(${JSON.stringify(SETTINGS_KEY)},enabled)).catch(error=>{t(!enabled),s(error instanceof Error?error.message:String(error))})},pace=event=>{let value=clamp(event.currentTarget.value);r(value),s(null),Promise.resolve(globalThis.codexLinuxReadAloudSetSetting?.(${JSON.stringify(KOKORO_SPEED_KEY)},value)).catch(error=>s(error instanceof Error?error.message:String(error)))};return(0,${jsx}.jsx)(${row},{label:"Read aloud responses",description:"Listen to assistant responses with a local voice.",control:(0,${jsx}.jsxs)("div",{className:"flex flex-wrap items-center justify-end gap-2",children:[(0,${jsx}.jsx)(${toggle},{checked:e,disabled:i,onChange:toggle,ariaLabel:"Read aloud responses"}),e?(0,${jsx}.jsxs)("div",{className:"flex flex-wrap items-center justify-end gap-2",children:[(0,${jsx}.jsx)("button",{type:"button",disabled:i,onClick:event=>globalThis.${SETUP_MARKER}?.("choose-folder",event.currentTarget),children:"Choose folder"}),(0,${jsx}.jsx)("button",{type:"button",disabled:i,onClick:event=>globalThis.${SETUP_MARKER}?.("download",event.currentTarget),children:"Download voice"}),(0,${jsx}.jsxs)("label",{className:"flex items-center gap-2",children:[(0,${jsx}.jsx)("span",{children:"Speech pace"}),(0,${jsx}.jsx)("input",{type:"range",min:.7,max:1.4,step:.05,value:n,disabled:i,onChange:pace,"aria-label":"Speech pace"}),(0,${jsx}.jsx)("span",{children:n.toFixed(2)+"x"})]})]}):null,o?(0,${jsx}.jsx)("span",{role:"status",children:o}):null]})})}`;
+  const helperSource = helper
+    .replace("[n,r]=", "[codexSpeed,r]=")
+    .replace("value:n,disabled:i", "value:codexSpeed,disabled:i")
+    .replace("children:n.toFixed(2)", "children:codexSpeed.toFixed(2)");
+  const children = contentMatch[2];
+  const replacement = contentMatch[0].replace(`children:[${children}]`, `children:[${children},(0,${jsx}.jsx)(codexLinuxReadAloudRspackSettingsRow,{})]`);
+  if (replacement === contentMatch[0]) return source;
+  const changedFunction = generalFunction.body.replace(contentMatch[0], replacement);
+  const changedSource = source.slice(0, generalFunction.bodyStart) + changedFunction + source.slice(generalFunction.bodyEnd + 1);
+  const insertAt = changedSource.indexOf(`function ${exported[1]}(){`);
+  if (insertAt < moduleOpen || insertAt > moduleEnd) return source;
+  return changedSource.slice(0, insertAt) + helperSource + changedSource.slice(insertAt);
 }
 
 function applySettingsSectionsNavPatch(source) {
@@ -826,9 +877,20 @@ function applyAppMainRoutePatch(source) {
 function patchMatchingAssets(assetsDir, pattern, apply) {
   let matched = false;
   let changed = 0;
-  for (const candidate of fs.readdirSync(assetsDir).filter((name) => pattern.test(name)).sort()) {
+  const sourcePattern = pattern.source;
+  const sentinels = sourcePattern.startsWith("^settings-sections-")
+    ? ["computer-use", "general-settings"]
+    : sourcePattern.startsWith("^settings-shared-")
+      ? ["settings.nav."]
+      : sourcePattern.startsWith("^settings-page-")
+        ? ["computer-use", "local-environments"]
+        : sourcePattern.startsWith("^app-main-")
+          ? ["general-settings"]
+          : [];
+  for (const candidate of listWebviewAssetNames(assetsDir, pattern).filter((name) => pattern.test(path.basename(name)))) {
     const assetPath = path.join(assetsDir, candidate);
     const source = fs.readFileSync(assetPath, "utf8");
+    if (sentinels.length > 0 && !sentinels.some((sentinel) => source.includes(sentinel))) continue;
     const patched = apply(source);
     if (patched === source) {
       continue;
@@ -872,10 +934,8 @@ function applySettingsAssetPatch(extractedDir) {
     }
   }
 
-  const generalCandidates = fs
-    .readdirSync(assetsDir)
-    .filter((name) => /^general-settings-.*\.js$/.test(name))
-    .sort();
+  const assetNames = listWebviewAssetNames(assetsDir, /\.js$/u);
+  const generalCandidates = assetNames.filter((name) => /^general-settings-.*\.js$/u.test(path.basename(name)));
   for (const candidate of generalCandidates) {
     const assetPath = path.join(assetsDir, candidate);
     const source = fs.readFileSync(assetPath, "utf8");
@@ -886,6 +946,20 @@ function applySettingsAssetPatch(extractedDir) {
       changed += 1;
       matched = true;
     } else if (source.includes(SETTINGS_KEY) || source.includes("ReadAloudSettings")) {
+      matched = true;
+    }
+  }
+
+  for (const candidate of assetNames) {
+    const assetPath = path.join(assetsDir, candidate);
+    const source = fs.readFileSync(assetPath, "utf8");
+    if (!source.includes("GeneralSettings:") || !source.includes('id:"settings.general.groupTitle"')) continue;
+    const patched = applyRspackGeneralSettingsPatch(source);
+    if (patched !== source) {
+      fs.writeFileSync(assetPath, patched, "utf8");
+      changed += 1;
+      matched = true;
+    } else if (source.includes("function codexLinuxReadAloudRspackSettingsRow(")) {
       matched = true;
     }
   }
@@ -929,12 +1003,20 @@ function matchesAssistantRuntimeContract(source) {
   return primaryThreadPartition && inspectAssistantRenderContract(source).state !== "invalid";
 }
 
+function matchesReadAloudRuntimeAsset(source, assetName) {
+  return /^\d+\.[0-9a-f]+\.js$/u.test(assetName) &&
+    source.includes("__rspack_esm_id") &&
+    source.includes("window.electronBridge") &&
+    source.includes('new CustomEvent("codex-message-from-view",{detail:');
+}
+
 module.exports = {
   applyAppMainRoutePatch,
   applyGeneralSettingsPatch,
   applyGeneralSettingsWrapperPatch,
   applyAssistantRenderPatch,
   matchesAssistantRuntimeContract,
+  matchesReadAloudRuntimeAsset,
   applyIndexRuntimePatch,
   applyMainBundlePatch,
   applySettingsAssetPatch,
@@ -956,7 +1038,9 @@ module.exports = {
       phase: "webview-asset",
       order: 20610,
       ciPolicy: "optional",
-      pattern: /^app-initial-[A-Za-z0-9_-]+\.js$/,
+      pattern: /^\d+\.[0-9a-f]+\.js$/u,
+      assetMatch: matchesReadAloudRuntimeAsset,
+      matchPolicy: "all",
       missingDescription: "official app-initial runtime bundle",
       skipDescription: "read aloud webview runtime patch",
       apply: applyIndexRuntimePatch,
@@ -966,7 +1050,7 @@ module.exports = {
       phase: "webview-asset",
       order: 20620,
       ciPolicy: "optional",
-      pattern: /^[A-Za-z0-9_-]+\.js$/,
+      pattern: /\.js$/u,
       assetMatch: matchesAssistantRuntimeContract,
       missingDescription: "current primary thread assistant bundle",
       skipDescription: "read aloud assistant runtime patch",

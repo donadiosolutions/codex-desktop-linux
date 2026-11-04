@@ -58,6 +58,9 @@ function normalizeDescriptor(descriptor, sourcePath = null, index = 0) {
   if (descriptor.assetMatch != null && typeof descriptor.assetMatch !== "function") {
     throw new Error(`Patch descriptor '${id}' assetMatch must be a function`);
   }
+  if (descriptor.matchPolicy != null && !["unique", "all"].includes(descriptor.matchPolicy)) {
+    throw new Error(`Patch descriptor '${id}' has unsupported matchPolicy '${descriptor.matchPolicy}'`);
+  }
   const ciPolicy = descriptor.ciPolicy ?? OPTIONAL;
   if (!CI_POLICIES.has(ciPolicy)) {
     throw new Error(
@@ -506,6 +509,7 @@ function applyWebviewAssetPatchDescriptors(extractedDir, descriptors, context, r
           (source) => descriptor.apply(source, context),
           missingWarning,
           ambiguousWarning,
+          descriptor.matchPolicy,
         ),
       { matched: 0, changed: 0, assetName: null },
     );

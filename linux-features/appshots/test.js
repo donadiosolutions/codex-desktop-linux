@@ -44,6 +44,10 @@ function appshotAvailabilityAtomBundleFixture() {
   return "async function q1o({scope:e,hostId:t,queryClient:n}){return(await n.ensureQueryData({queryKey:Adn({hostId:t}),queryFn:()=>Mdn(e,t)})).requirements?.allowAppshots!==!1}function J1o(e){return e===`macOS`||e===`windows`}";
 }
 
+function currentRspackAppshotAvailabilityFixture() {
+  return 'const __webpack_modules__={VZNz(e,t,n){n.d(t,{MX:()=>_});var p=n("OMIV");let h=(0,r.i1)(s.u,(e,{get:t})=>{let n=t(d.IU);if(!y(n)||!t(p.JW,"1304276663"))return!1;let{data:r}=t(c.b9,{hostId:e});return null!=r&&r.requirements?.allowAppshots!==!1});async function _(){let r="macOS";if(!y(r))return!1;return!1}function y(e){return"macOS"===e||"windows"===e}},Nxsk(e,t,n){}};';
+}
+
 function appshotMainProcessBundleFixture() {
   return [
     "var FO=new Map;",
@@ -170,18 +174,35 @@ test("appshots availability descriptor matches the current bundle", () => {
     (descriptor) => descriptor.id === "linux-appshots-availability",
   );
 
-  assert.equal(descriptor.pattern.test("appshot-availability-BoK-Z77O.js"), false);
-  assert.equal(
-    descriptor.pattern.test(
-      "app-initial~app-main~page-CMpPiY3-.js",
-    ),
-    false,
-  );
-  assert.ok(
-    descriptor.pattern.test("app-initial-BTphDPeq.js"),
-  );
+  assert.equal(descriptor.pattern.test("async/24191.7b05d5cf83.js"), true);
+  assert.equal(descriptor.pattern.test("async/24191.7b05d5cf83.css"), false);
   assert.equal(descriptor.assetMatch(appshotAvailabilityAtomBundleFixture()), true);
   assert.equal(descriptor.assetMatch("function unrelated(){return `windows`}"), false);
+});
+
+test("current Rspack AppShots availability gate matches and enables Linux", () => {
+  const descriptor = descriptors.find(
+    (entry) => entry.id === "linux-appshots-availability",
+  );
+  const source = currentRspackAppshotAvailabilityFixture();
+  assert.equal(descriptor.pattern.test("async/24191.7b05d5cf83.js"), true);
+  assert.equal(descriptor.assetMatch(source), true);
+  const patched = applyLinuxAppshotAvailabilityPatch(source);
+  assert.notEqual(patched, source);
+  assert.match(patched, /return "linux"===e\/\*codexLinuxAppshotsPlatformAvailable\*\/\|\|"macOS"===e\|\|"windows"===e/u);
+  assert.doesNotThrow(() => new Function(patched));
+  assert.equal(descriptor.assetMatch(patched), true);
+  assert.equal(applyLinuxAppshotAvailabilityPatch(patched), patched);
+});
+
+test("AppShots availability does not match an unrelated platform helper", () => {
+  const descriptor = descriptors.find(
+    (entry) => entry.id === "linux-appshots-availability",
+  );
+  const source = currentRspackAppshotAvailabilityFixture()
+    .replace('function y(e){return"macOS"===e||"windows"===e}', "")
+    .replace('Nxsk(e,t,n){}}', 'Nxsk(e,t,n){function y(e){return"macOS"===e||"windows"===e}}');
+  assert.equal(descriptor.assetMatch(source), false);
 });
 
 test("stages the Linux bare modifier monitor helper and Wayland portal hook", () => {

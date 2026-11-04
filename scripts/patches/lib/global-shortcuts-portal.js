@@ -457,17 +457,32 @@ function installPortalBackend(source) {
     new RegExp(`${escapeRegExp(accessReady)}&&\\(${IDENT}\\|\\|${IDENT}\\)&&${IDENT}\\.forEach\\((${IDENT})=>\\{\\1\\(\\)\\}\\),${IDENT}\\}`, "u"),
     match => match.replace(/,([\w$]+)\}$/u, ",codexLinuxGlobalShortcutsPortalSchedule(),$1}"), "application access publication");
   const quitting = new RegExp(
-    `markAppQuitting:\\(\\)=>\\{(?=let (?<pending>${IDENT})=${IDENT}\\(\\);${notNull("\\k<pending>")}&&${IDENT}\\(\\k<pending>\\),` +
-      `(?:${IDENT}(?:\\?\\.|\\.)markAppQuitting\\(\\),){2,}${IDENT}\\.dispose\\(\\)\\})`,
+    `markAppQuitting:\\(\\)=>\\{(?=(?:${IDENT}(?:\\?\\.|\\.)markAppQuitting\\(\\),){2,}${IDENT}\\.dispose\\(\\)\\})`,
     "u",
   );
   uniqueAnchor(quitting, "accepted application quit before window cleanup");
   patched = replaceUnique(patched, quitting,
     match => `${match}codexLinuxGlobalShortcutsPortalShutdown();`, "accepted application quit before window cleanup");
   const shutdown = new RegExp(`async function ${IDENT}\\(\\{hotkeyWindowLifecycleManager:(${IDENT}),globalDictationLifecycleManager:(${IDENT}),flushAndDisposeContext:${IDENT},disposables:${IDENT}\\}\\)\\{(?=\\1\\.dispose\\(\\),\\2\\.dispose\\(\\),await )`, "u");
-  uniqueAnchor(shutdown, "application shutdown before shortcut disposal");
-  patched = replaceUnique(patched, shutdown,
-    match => `${match}await codexLinuxGlobalShortcutsPortalShutdown();`, "application shutdown before shortcut disposal");
+  const legacyShutdowns = [...patched.matchAll(new RegExp(shutdown.source, "gu"))];
+  if (legacyShutdowns.length === 1) {
+    uniqueAnchor(shutdown, "application shutdown before shortcut disposal");
+    patched = replaceUnique(patched, shutdown,
+      match => `${match}await codexLinuxGlobalShortcutsPortalShutdown();`, "application shutdown before shortcut disposal");
+  } else {
+    // Current main bundles drain from a will-quit callback and dispose both
+    // shortcut managers before starting asynchronous flush work. Begin portal
+    // teardown at each branch's disposal point so no later registration can
+    // replace KDE's saved action set during shutdown.
+    const drain = new RegExp(`(?<before>${IDENT}\\.dispose\\(\\),${IDENT}\\.dispose\\(\\)),Promise\\.allSettled\\(\\[`, "gu");
+    const drains = [...patched.matchAll(drain)];
+    if (legacyShutdowns.length !== 0 || drains.length !== 2 ||
+        drains.some(match => moduleStartAt(patched, match.index) !== moduleStartAt(patched, patched.indexOf(anchorText)))) {
+      throw new Error("application shutdown before shortcut disposal matched unexpected lifecycle contract");
+    }
+    patched = patched.replace(drain, (_match, _before, _offset, _whole, groups) =>
+      `${groups.before},codexLinuxGlobalShortcutsPortalShutdown(),Promise.allSettled([`);
+  }
   // Capture suspension: the first nested suspend pauses the portal session and
   // stops unregistering Electron accelerators that a portal registration owns.
   const suspend = new RegExp(`if\\(1===\\((?<depth>${IDENT})\\+=1\\)\\)for\\(let (?<item>${IDENT}) of\\((?<effects>(?:${IDENT}\\(!0\\),)*)${escapeRegExp(registry)}\\)\\)` +

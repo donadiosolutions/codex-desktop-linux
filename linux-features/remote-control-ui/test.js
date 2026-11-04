@@ -171,31 +171,27 @@ test("remote-control UI descriptors match the current app chunks", () => {
   const remoteControlConnectionsPatch = featurePatches.find((patch) => patch.id === "remote-control-connections-visibility");
   const experimentalFeaturesPatch = featurePatches.find((patch) => patch.id === "experimental-features");
 
-  assert.ok(
-    remoteConnectionsPatch.pattern.test("app-initial-BTphDPeq.js"),
-  );
+  assert.ok(remoteConnectionsPatch.pattern.test("async/24191.7b05d5cf83.js"));
   assert.equal(
-    remoteConnectionsPatch.pattern.test(
-      "app-initial~app-main~hotkey-window-new-thread-page~hotkey-window-home-page~composer-utility-bar-D9zyQF1n.js",
-    ),
+    remoteConnectionsPatch.pattern.test("app-initial-BTphDPeq.js"),
     false,
   );
 
   assert.equal(
-    remoteControlConnectionsPatch.pattern.test("app-primary-40386834d0f6.js"),
+    remoteControlConnectionsPatch.pattern.test("async/389433.23e9feaa6e.js"),
     true,
   );
   assert.equal(
     remoteControlConnectionsPatch.pattern.test(
-      "remote-control-connections-visibility-current.js",
+      "async/389433.23e9feaa6e.js",
     ),
     true,
   );
   assert.equal(remoteControlConnectionsPatch.pattern.test("remote-control-connections-visibility.js.map"), false);
 
-  assert.ok(experimentalFeaturesPatch.pattern.test("settings-route-state-BwIfDYxh.js"));
+  assert.ok(experimentalFeaturesPatch.pattern.test("async/208689.77fb5123f8.js"));
   assert.equal(
-    experimentalFeaturesPatch.pattern.test("experimental-features-queries-old.js"),
+    experimentalFeaturesPatch.pattern.test("settings-route-state-BwIfDYxh.js"),
     false,
   );
 });
@@ -254,18 +250,18 @@ test("remote-control UI feature patches matching webview assets and records patc
         fs.writeFileSync(path.join(buildDir, "main.js"), "console.log('main bundle');");
         fs.writeFileSync(path.join(tempApp, "package.json"), JSON.stringify({ name: "codex" }));
 
-        const appInitialAsset = "app-initial-current.js";
+        const appInitialAsset = "24191.7b05d5cf83.js";
         fs.writeFileSync(
           path.join(assetsDir, appInitialAsset),
           "function Twt(){let e=(0,kwt.c)(3),{data:t}=Vr(y4,Br(B2)),n=BN(`4114442250`);if(t?.config[`features.remote_connections`]===!0)return!0;let r=t?.config.features;if(typeof r!=`object`||!r||Array.isArray(r))return n;let i;return e[0]!==r||e[1]!==n?(i=Object.getOwnPropertyDescriptor(r,`remote_connections`)?.value===!0||n,e[0]=r,e[1]=n,e[2]=i):i=e[2],i}function D8(e){return e(RN,`4114442250`)?`enabled`:`disabled`}",
         );
-        const visibilityAsset = "remote-control-connections-visibility-current.js";
+        const visibilityAsset = "389433.23e9feaa6e.js";
         fs.writeFileSync(
           path.join(assetsDir, visibilityAsset),
           "function a({remoteControlConnectionsState:e,slingshotEnabled:t}){return t&&(e?.available??!0)&&e?.accessRequired!==!0}",
         );
         fs.writeFileSync(
-          path.join(assetsDir, "settings-route-state-BwIfDYxh.js"),
+          path.join(assetsDir, "208689.77fb5123f8.js"),
           "var Z=`remote_control`;function Ie(e){return e.stage===`beta`?e.name!==`memories`&&e.name!==`multi_agent`&&e.name!==`plugins`&&e.name!==`plugin`&&e.name!==`remote_control`&&!e.name.startsWith(`realtime_`)&&e.name!==`chronicle`&&e.name!==`workspace_dependencies`:!1}",
         );
 
@@ -295,7 +291,7 @@ test("remote-control UI feature patches matching webview assets and records patc
           /navigator\.userAgent\.includes\(`Linux`\)/,
         );
         assert.doesNotMatch(
-          fs.readFileSync(path.join(assetsDir, "settings-route-state-BwIfDYxh.js"), "utf8"),
+          fs.readFileSync(path.join(assetsDir, "208689.77fb5123f8.js"), "utf8"),
           /e\.name!==`remote_control`/,
         );
         assert.deepEqual(

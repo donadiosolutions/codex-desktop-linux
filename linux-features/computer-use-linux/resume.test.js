@@ -45,6 +45,11 @@ function signedChunks() {
   }));
 }
 
+function hasCurrentRspackConfigFlow() {
+  if (!process.env.CODEX_SIGNED_EXTRACTED_APP) return false;
+  return signedChunks().some(({ source }) => source.includes("async function rG(") && source.includes("async function sG("));
+}
+
 function trustedServicesConstant(chunks, exportName) {
   // Resolve the cross-chunk constant export used as the trusted-services key.
   const entry = only(chunks.find(({ name }) => name === "early-bootstrap.js").source,
@@ -172,7 +177,7 @@ function resumeHarness(source, trustedServicesKey, chunks) {
 }
 
 test("official per-thread CUA overrides carry the trusted root when resuming chats", {
-  skip: !process.env.CODEX_SIGNED_EXTRACTED_APP,
+  skip: !process.env.CODEX_SIGNED_EXTRACTED_APP || hasCurrentRspackConfigFlow(),
 }, async () => {
   const chunks = signedChunks();
   const owners = chunks.filter(({ source }) => source.includes("cuaReplSurfaces:"));

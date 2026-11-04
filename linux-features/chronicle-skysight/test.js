@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const { execFileSync } = require("node:child_process");
+const { findRequestHandlerMap } = require("../../scripts/patches/lib/request-handlers.js");
 
 const {
   applyChronicleSkysightMainBridgePatch,
@@ -62,7 +63,7 @@ function currentChronicleMainFixture() {
     "var appOptions={getSkysightRecorderController:()=>Cr().skysight?xe:null,artifactSessionHostLifecycle:null};",
     "var connection={enableSkysightChronicle:()=>xe.enable(),resumeChronicle:()=>xe.resume()};",
     "class Host{constructor(){this.options=appOptions;let i=connection;this.services={chronicle:\"darwin\"===process.platform&&null!=this.options.getSkysightRecorderController?new $O(i,this.options.getSkysightRecorderController,()=>Cr().skysight,()=>globalThis.applications,e=>globalThis.resolvedApplications,{list:()=>globalThis.history,listSuggestions:()=>globalThis.historySuggestions,listSummaryIntervals:e=>[e]}):void 0}}}var host=new Host;",
-    "class Bridge{handlers={\"set-remote-wsl-connections-enabled\":async()=>null}}var bridge=new Bridge().handlers;",
+    'var electron={ipcMain:{handle(){}}},channel="test";function trusted(){return true}function context(){return null}var Bridge=class{globalState;windowManager;chunkedMessageSender;fetchWrapper;constructor(options){Object.assign(this,options)}async handleMessage(e,t){switch(t.type){case"fetch":await this.fetchWrapper.handleRequest(e,t);break;case"cancel-fetch":this.fetchWrapper.cancelRequest(e,t);break;case"other":return"untouched"}}};var Context=class{constructor(){this.messageHandler=new Bridge({})}async handleMessage(e,t){await this.messageHandler.handleMessage(e,t)}};electron.ipcMain.handle(channel,async(t,n)=>{if(!trusted(t))return;let a=context(t.sender);a?await a.handleMessage(t.sender,n):null});var bridge={};',
   ].join("");
 }
 
@@ -232,19 +233,15 @@ test("chronicle-skysight fails closed for missing duplicate ambiguous mixed and 
     .replace("class Hse{", "class Hsf{");
   const variants = {
     retiredMinifier: retiredMinifierChronicleMainFixture(),
-    retiredHandlerAnchor: current.replace(
-      '"set-remote-wsl-connections-enabled":',
-      '"get-global-state":async({key:',
+    missingFetchRoute: current.replace(
+      'case"fetch":await this.fetchWrapper.handleRequest(e,t);break;',
+      'case"fetch-disabled":await this.fetchWrapper.handleRequest(e,t);break;',
     ),
-    missingHandlerAnchor: current.replace(
-      '"set-remote-wsl-connections-enabled":',
-      '"set-remote-wsl-connections-disabled":',
+    missingIpcTrustGate: current.replace('if(!trusted(t))return;', 'if(false)return;'),
+    missingMessageHandlerWiring: current.replace(
+      "this.messageHandler=new Bridge(",
+      "this.unusedHandler=new Bridge(",
     ),
-    duplicateHandlerAnchor: current.replace(
-      '"set-remote-wsl-connections-enabled":',
-      '"set-remote-wsl-connections-enabled":()=>null,"set-remote-wsl-connections-enabled":',
-    ),
-    mixedHandlerAnchors: `${current}var retiredBridge={"get-global-state":async({key:e})=>null};`,
     missing: current.replace('this.request("skysightStatus")', 'this.request("statusChanged")'),
     missingRollback: current.replace("Failed to enable Chronicle and stop the recorder during rollback", "Failed"),
     duplicateController: current.slice(0, serviceStart) + duplicateController + current.slice(serviceStart),
@@ -282,6 +279,19 @@ test("chronicle-skysight fails closed for missing duplicate ambiguous mixed and 
     assert.equal(result.warnings.length, 1, name);
     assert.match(result.warnings[0], /coherent current Chronicle controller contract/, name);
   }
+});
+
+test("chronicle-skysight registers through the current trusted fetch bridge", () => {
+  const current = currentChronicleMainFixture();
+  assert.equal(chronicleControllerContract(current), "current");
+  const patched = applyChronicleSkysightMainBridgePatch(current);
+  assert.notEqual(patched, current);
+  assert.equal(chronicleControllerContract(patched), "patched");
+  assert.match(patched, /codexLinuxRequestHandlers=\{[\s\S]*?\};/);
+  assert.match(patched, /vscode:\/\/codex\/"/);
+  assert.match(patched, /codexLinuxHandleRequest\(e,t\)/);
+  assert.equal(applyChronicleSkysightMainBridgePatch(patched), patched);
+  assert.doesNotThrow(() => new (require("node:vm").Script)(patched));
 });
 
 test("chronicle-skysight drives recorder controls without exposing the unsupported Linux service", async () => {
@@ -323,8 +333,9 @@ test("chronicle-skysight drives recorder controls without exposing the unsupport
     },
   };
 
+  const requestHandlers = findRequestHandlerMap(patched).text;
   require("node:vm").runInNewContext(
-    `${patched};globalThis.chronicle=host.services.chronicle;globalThis.controller=xe;globalThis.bridge=bridge;`,
+    `${patched};globalThis.chronicle=host.services.chronicle;globalThis.controller=xe;globalThis.bridge={${requestHandlers}};`,
     context,
   );
   assert.equal(context.globalThis.chronicle, undefined);

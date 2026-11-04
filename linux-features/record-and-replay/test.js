@@ -208,9 +208,9 @@ test("record-and-replay patch descriptor loads only when feature is enabled", ()
 test("record-and-replay dictation descriptor tracks moved upstream composer bundle", () => {
   const descriptor = descriptors.find((patch) => patch.id === "record-replay-dictation-transcript");
   assert.ok(descriptor);
-  assert.equal(descriptor.pattern.test("app-initial-C-fROkKo.js"), true);
+  assert.equal(descriptor.pattern.test("async/202026.24c4a1a61d.js"), true);
   assert.equal(descriptor.assetMatch(currentComposerTranscriptFixture()), true);
-  assert.equal(descriptor.pattern.test("app-initial~app-main~onboarding-page-BUwCKIcU.js"), false);
+  assert.equal(descriptor.pattern.test("app-initial-C-fROkKo.js"), false);
   assert.equal(descriptor.pattern.test("use-dictation-BUwCKIcU.js"), false);
   assert.equal(descriptor.pattern.test("use-dictation-hotkey-BUwCKIcU.js"), false);
 });
@@ -218,8 +218,8 @@ test("record-and-replay dictation descriptor tracks moved upstream composer bund
 test("record-and-replay global dictation descriptor tracks floating dictation bundles", () => {
   const descriptor = descriptors.find((patch) => patch.id === "record-replay-global-dictation-transcript");
   assert.ok(descriptor);
-  assert.equal(descriptor.pattern.test("global-dictation-orb-BTMuOubw.js"), true);
-  assert.equal(descriptor.pattern.test("global-dictation-page-C-bhTjfc.js"), true);
+  assert.equal(descriptor.pattern.test("async/69251.c9754a49fe.js"), true);
+  assert.equal(descriptor.pattern.test("global-dictation-orb-BTMuOubw.js"), false);
   assert.equal(descriptor.pattern.test("use-dictation-BUwCKIcU.js"), false);
 });
 

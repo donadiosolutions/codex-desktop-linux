@@ -8,6 +8,7 @@ const path = require("node:path");
 const { findExportedAlias, findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
 const {
   findCodexRequestWebviewAsset,
+  listWebviewAssetNames,
 } = require("../../scripts/patches/lib/assets.js");
 const SETTINGS_ASSET = "agent-workspaces-linux.js";
 const SETTINGS_SLUG = "agent-workspaces";
@@ -1603,10 +1604,7 @@ function inferRuntimeDependenciesFromSettingsSource(source) {
 }
 
 function inferRuntimeDependenciesFromSettingsAssets(assetsDir) {
-  const candidates = fs
-    .readdirSync(assetsDir)
-    .filter((name) => /^settings-page-[^.]+\.js$/.test(name))
-    .sort();
+  const candidates = listWebviewAssetNames(assetsDir, /^settings-page-[^.]+\.js$/u);
   const matches = new Map();
   for (const candidate of candidates) {
     const source = fs.readFileSync(path.join(assetsDir, candidate), "utf8");
@@ -1624,7 +1622,7 @@ function inferRuntimeDependenciesFromSettingsAssets(assetsDir) {
 
 function findWorkspaceRequestService(assetsDir) {
   const matches = [];
-  for (const assetName of fs.readdirSync(assetsDir).filter((name) => /^app-initial-[^.]+\.js$/.test(name))) {
+  for (const assetName of listWebviewAssetNames(assetsDir, /^app-initial-[^.]+\.js$/u)) {
     const source = fs.readFileSync(path.join(assetsDir, assetName), "utf8");
     for (const match of source.matchAll(/([A-Za-z_$][\w$]*)=class [A-Za-z_$][\w$]*\{/g)) {
       const open = match.index + match[0].length - 1;
@@ -1921,10 +1919,8 @@ function collectAgentWorkspaceRouteAndNavigationPatches(extractedDir) {
     throw new Error(`missing webview assets directory ${assetsDir}`);
   }
 
-  const candidates = fs
-    .readdirSync(assetsDir)
-    .filter((name) => name !== SETTINGS_ASSET && /^[A-Za-z0-9_-]+\.js$/.test(name))
-    .sort();
+  const candidates = listWebviewAssetNames(assetsDir, /^[A-Za-z0-9_-]+\.js$/u)
+    .filter((name) => name !== SETTINGS_ASSET);
   const ownerCounts = {
     metadataNavigation: 0,
     metadataSection: 0,
@@ -1988,8 +1984,127 @@ function collectAgentWorkspaceRouteAndNavigationPatches(extractedDir) {
   return patches;
 }
 
+// Rspack owns the React singleton and request API inside its module registry.
+// Pass those dependencies into a native ESM page factory from the live lazy route.
+function rspackWorkspaceModules(source) {
+  const modules=[];
+  for (const match of source.matchAll(/(?:\{|,)([\w$]+)\(([\w$]+),([\w$]+),([\w$]+)\)\{/g)) {
+    const start=match.index+match[0].length-1;
+    const end=findMatchingBrace(source,start);
+    if(end>start) modules.push({id:match[1],require:match[4],body:source.slice(start+1,end)});
+  }
+  return modules;
+}
+
+function collectRspackWorkspaceSettings(assetsDir) {
+  // Most chunks contain translations or unrelated code. Inspect one at a time,
+  // retaining only the small set that can own one of our semantic contracts.
+  const assets=[];
+  for(const name of listWebviewAssetNames(assetsDir,/\.js$/)) {
+    const source=fs.readFileSync(path.join(assetsDir,name),"utf8");
+    if((source.includes(".GeneralSettings)")&&source.includes('"general-settings":')) ||
+       source.includes("GeneralSettings:") ||
+       (source.includes("vscode://codex/${")&&source.includes(".getInstance().post(")) ||
+       source.includes('id:"settings.nav.local-environments"') ||
+       source.includes('id:"settings.section.local-environments"') ||
+       source.includes('"local-environments":{component:') ||
+       source.includes('{slug:"local-environments"}') ||
+       source.includes('"local-environments","worktrees","environments"') ||
+       source.includes('"local-environments","agent-workspaces","worktrees","environments"')) {
+      assets.push({name,source});
+    }
+  }
+  const routes=[];
+  for(const asset of assets) {
+    for(const match of asset.source.matchAll(/([\w$]+)=\(0,([\w$]+\.[\w$]+)\)\(async\(\)=>\(await (Promise\.all\(\[([\w$]+)\.e\(\d+\)[^\]]*\]\)\.then\(\4\.bind\(\4,"([^\"]+)"\)\))\)\.GeneralSettings\)/g)) {
+      if(asset.source.includes(`"general-settings":${match[1]},notifications:`)) routes.push({asset,binding:match[1],lazy:match[2],load:match[3],require:match[4],general:match[5]});
+    }
+  }
+  if(routes.length===0)return null;
+  if(routes.length!==1)throw Error("could not uniquely resolve Rspack workspace settings route");
+  const route=routes[0],general=[],requests=[];
+  for(const asset of assets) {
+    if(!asset.source.includes("GeneralSettings:")&&!asset.source.includes("vscode://codex/${"))continue;
+    for(const module of rspackWorkspaceModules(asset.source)) {
+      if(module.id===route.general&&module.body.includes("GeneralSettings:")) {
+        const aliases=[...module.body.matchAll(/\(0,([\w$]+)\.useState\)/g)].map(m=>m[1]);
+        const ids=new Set();
+        for(const alias of aliases) {
+          const m=module.body.match(new RegExp(`\\b${escapeRegExp(alias)}=${escapeRegExp(module.require)}\\("([^\"]+)"\\)`));
+          if(m)ids.add(m[1]);
+        }
+        if(ids.size===1)general.push([...ids][0]);
+      }
+      if(module.body.includes("vscode://codex/${")&&module.body.includes(".getInstance().post(")&&module.body.includes("JSON.stringify(")) {
+        const fn=module.body.match(/async function ([\w$]+)\(\.\.\.([\w$]+)\)\{let\[/)?.[1];
+        const exported=fn&&module.body.match(new RegExp(`([\\w$]+):\\(\\)=>${escapeRegExp(fn)}(?:[,}])`))?.[1];
+        const chunk=asset.source.match(/__rspack_esm_id=(\d+)/)?.[1];
+        if(exported&&chunk)requests.push({id:module.id,exported,chunk});
+      }
+    }
+  }
+  if(general.length!==1||requests.length!==1)throw Error("could not uniquely resolve Rspack workspace React and request dependencies");
+  const request=requests[0];
+  const page=buildAgentWorkspaceSettingsSource({reactAsset:"unused",codexRequestAsset:"unused"});
+  const body=page.slice(page.indexOf("var h=React.createElement;"),page.indexOf("export{AgentWorkspacesSettings,"));
+  const pageSource=`export function createAgentWorkspacesSettings(React,__post){\n${body}\nreturn AgentWorkspacesSettings;\n}\n`;
+  const patches=[];
+  const counts={route:0,nav:0,title:0,group:0,order:0,icons:0,visibility:0,policy:0,preload:0,catalog:0,enum:0};
+  const replace=(source,needle,replacement,key)=>{
+    const old=source.split(needle).length-1,done=source.split(replacement).length-1;
+    if(done){
+      if(source.split(replacement).join("").includes(needle))throw Error(`ambiguous Rspack workspace ${key} contract`);
+      counts[key]+=done;return source;
+    }
+    counts[key]+=old;
+    return source.split(needle).join(replacement);
+  };
+  for(const asset of assets) {
+    let source=asset.source;
+    if(asset===route.asset) {
+      const needle=`"general-settings":${route.binding},notifications:`;
+      const relative=path.posix.relative(path.posix.dirname(asset.name),SETTINGS_ASSET);
+      const importer=relative.startsWith(".")?relative:`./${relative}`;
+      const replacement=`"agent-workspaces":(0,${route.lazy})(async()=>{await Promise.all([${route.load},${route.require}.e(${request.chunk})]);return(await import(${JSON.stringify(importer)})).createAgentWorkspacesSettings(${route.require}(${JSON.stringify(general[0])}),${route.require}(${JSON.stringify(request.id)}).${request.exported})}),${needle}`;
+      if(source.includes('"agent-workspaces":(0,'))counts.route++;
+      else source=replace(source,needle,replacement,"route");
+    }
+    // Metadata is emitted in both the navigation and title chunks.
+    const navMatches=[...source.matchAll(/"local-environments":\{id:"settings\.nav\.local-environments",defaultMessage:"Environments",description:"[^\"]+"\},/g)];
+    if(navMatches.length) {
+      for(const match of navMatches)source=replace(source,match[0],match[0]+'"agent-workspaces":{id:"settings.nav.agent-workspaces",defaultMessage:"Agent Workspaces",description:"Title for Agent Workspaces settings section"},',"nav");
+    }
+    if(source.includes('case"local-environments":')&&source.includes('settings.section.local-environments')) {
+      const renderer=source.match(/case"local-environments":\{?[^{}]{0,300}?\(0,([\w$]+)\.jsx\)\(([\w$]+\.[\w$]+),\{id:"settings\.section\.local-environments"/);
+      if(!renderer)throw Error("could not resolve Rspack workspace section renderer");
+      const needle=renderer[0];
+      source=replace(source,needle,`case"agent-workspaces":return(0,${renderer[1]}.jsx)(${renderer[2]},{id:"settings.section.agent-workspaces",defaultMessage:"Agent Workspaces"});${needle}`,"title");
+    }
+    source=replace(source,'"local-environments","environments","worktrees"','"local-environments","agent-workspaces","environments","worktrees"',"group");
+    source=replace(source,'"local-environments","worktrees","browser-use"','"local-environments","agent-workspaces","worktrees","browser-use"',"order");
+    const icon=source.match(/"local-environments":(\{component:[\w$.]+,commandAsset:[\w$.]+,navigation:\{assets:\{16:[\w$.]+,20:[\w$.]+\},ariaHidden:!1\}\}),/);
+    if(icon)source=replace(source,icon[0],icon[0]+`"agent-workspaces":${icon[1]},`,"icons");
+    source=replace(source,'case"worktrees":case"local-environments":case"environments":','case"worktrees":case"local-environments":case"agent-workspaces":case"environments":',"visibility");
+    source=replace(source,'"local-environments":"codexLocal","mcp-settings":','"local-environments":"codexLocal","agent-workspaces":"codexLocal","mcp-settings":',"policy");
+    source=replace(source,'"hooks-settings","gateways","local-environments","worktrees","storage"','"hooks-settings","gateways","local-environments","agent-workspaces","worktrees","storage"',"preload");
+    source=replace(source,'{slug:"local-environments"},{slug:"worktrees"}','{slug:"local-environments"},{slug:"agent-workspaces"},{slug:"worktrees"}',"catalog");
+    source=replace(source,'"local-environments","worktrees","environments"','"local-environments","agent-workspaces","worktrees","environments"',"enum");
+    if(source!==asset.source)patches.push({filePath:path.join(assetsDir,asset.name),source});
+  }
+  const missing=Object.entries(counts).filter(([,n])=>n===0).map(([key])=>key);
+  if(missing.length)throw Error(`missing Rspack workspace settings contracts: ${missing.join(", ")}`);
+  for(const [key,count] of Object.entries(counts)) {
+    if(key!=="nav"&&key!=="title"&&key!=="enum"&&count!==1)throw Error(`ambiguous Rspack workspace ${key} contract (${count})`);
+  }
+  const filePath=path.join(assetsDir,SETTINGS_ASSET);
+  if(!fs.existsSync(filePath)||fs.readFileSync(filePath,"utf8")!==pageSource)patches.push({filePath,source:pageSource});
+  return patches;
+}
+
 function patchAgentWorkspaceSettingsAssets(extractedDir) {
   try {
+    const rspack=collectRspackWorkspaceSettings(webviewAssetsDir(extractedDir));
+    if(rspack){for(const patch of rspack)fs.writeFileSync(patch.filePath,patch.source,"utf8");return{matched:true,changed:rspack.length};}
     const settingsAsset = resolveAgentWorkspaceSettingsAsset(extractedDir);
     const previousSettingsSource = fs.existsSync(settingsAsset.filePath)
       ? fs.readFileSync(settingsAsset.filePath, "utf8")

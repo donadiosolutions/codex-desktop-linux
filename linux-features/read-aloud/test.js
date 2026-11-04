@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const { listWebviewAssetNames } = require("../../scripts/patches/lib/assets.js");
 const {
   applyAppMainRoutePatch,
   applyGeneralSettingsPatch,
@@ -22,13 +23,14 @@ const {
   applySettingsSharedNavPatch,
   descriptors: featurePatches,
   matchesAssistantRuntimeContract,
+  matchesReadAloudRuntimeAsset,
 } = require("./patch.js");
 const {
   applyWebviewAssetPatchDescriptors,
   normalizePatchDescriptors,
 } = require("../../scripts/patches/engine.js");
 const { createPatchReport } = require("../../scripts/lib/patch-report.js");
-const { requireName } = require("../../scripts/patches/lib/minified-js.js");
+const { findMatchingBrace, requireName } = require("../../scripts/patches/lib/minified-js.js");
 
 function currentFetchHandlerFixture() {
   return "var FetchHandler=class{handlers={\"set-remote-wsl-connections-enabled\":async({enabled:e,origin:t})=>({remoteWslConnections:[]})};handleVSCodeRequest(e,t,n,r,i){let a=t,o=this.handlers[a];if(typeof o!==`function`)throw Error(`${t} not implemented`);return o({...n,origin:e,signal:i})}};var h=new FetchHandler();";
@@ -197,6 +199,27 @@ test("main bundle patch adds a Linux read aloud handler", () => {
   assert.doesNotThrow(() => new Function("require", "process", patched));
 });
 
+test("read aloud bridge remains idempotent after agent workspace registration", () => {
+  const { applyAgentWorkspaceMainBridgePatch } = require("../agent-workspace/patch.js");
+  const source = 'var Host=class{globalState;windowManager;chunkedMessageSender;fetchWrapper;constructor(options){Object.assign(this,options)}async handleMessage(e,t){switch(t.type){case"fetch":await this.fetchWrapper.handleRequest(e,t);break;case"cancel-fetch":this.fetchWrapper.cancelRequest(e,t);break;case"other":return"untouched"}}};var Context=class{constructor(){this.messageHandler=new Host({})}async handleMessage(e,t){await this.messageHandler.handleMessage(e,t)}};electron.ipcMain.handle(channel,async(t,n)=>{if(!trusted(t))return;let a=context(t.sender);a?await a.handleMessage(t.sender,n):null});';
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(" "));
+  try {
+    const withReadAloud = applyMainBundlePatch(source);
+    const combined = applyAgentWorkspaceMainBridgePatch(withReadAloud);
+    assert.notEqual(combined, withReadAloud);
+    assert.equal(applyMainBundlePatch(combined), combined);
+    assert.deepEqual(warnings, []);
+    const damaged = combined.replace("function codexLinuxReadAloudCleanText(e){", "function codexLinuxReadAloudCleanTextDamaged(e){");
+    assert.notEqual(damaged, combined);
+    assert.equal(applyMainBundlePatch(damaged), damaged);
+    assert.match(warnings.at(-1), /Found incomplete Read Aloud main bridge patch/);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
 test("main handler does not capture a function-local child-process alias from another feature", () => {
   const source = [
     'function injectedFeature(){let __codexChild=require(`node:child_process`);return __codexChild}',
@@ -280,6 +303,17 @@ test("webview runtime appends only once", () => {
   assert.doesNotMatch(patched, /no-voices/);
   assert.doesNotMatch(patched, /completed===false/);
   assert.doesNotThrow(() => new Function("window", "localStorage", patched));
+});
+
+test("signed Rspack main and detached entry bundles receive the read aloud runtime", () => {
+  const source = 'var __rspack_esm_id__=348410;let c=window.electronBridge;c?.sendMessageFromView(e);new CustomEvent("codex-message-from-view",{detail:e});';
+  for (const assetName of ["348410.09aab3f377.js", "357055.8ef98feffe.js"]) {
+    assert.equal(matchesReadAloudRuntimeAsset(source, assetName), true);
+    assert.equal(matchesReadAloudRuntimeAsset("__rspack_esm_id__=1;", `async/${assetName}`), false);
+    const patched = applyIndexRuntimePatch(source);
+    assert.match(patched, /kokoro-explicit-v5/);
+    assert.equal(applyIndexRuntimePatch(patched), patched);
+  }
 });
 
 test("kokoro stdin runner compiles and makes a bounded first streaming chunk", (t) => {
@@ -1197,6 +1231,13 @@ test("assistant render patch atomically adds buttons to the current two-call top
   assert.equal(matchesAssistantRuntimeContract(patched), true);
 });
 
+test("assistant render patch accepts the signed Rspack component export form", () => {
+  const fixture = assistantRenderFixture({ jsxVar: "s", component: "eA.F" });
+  const patched = twice(applyAssistantRenderPatch, fixture.source);
+  assert.equal((patched.match(/codex-linux-read-aloud-button/g) ?? []).length, 2);
+  assert.equal(matchesAssistantRuntimeContract(fixture.source), true);
+});
+
 test("assistant render patch ignores normalized assistant items without render props", () => {
   const source = "case`agentMessage`:{let s=e.status===`inProgress`&&d>=0&&t===d,l=s&&Spt(i.content);a.push({type:`assistant-message`,content:m,completed:!s,renderPlaceholderWhileStreaming:l});break}";
   const { result: patched, warnings } = captureWarnings(() => applyAssistantRenderPatch(source));
@@ -1287,16 +1328,117 @@ test("assistant render patch rejects mixed patched and unpatched topology withou
 test("assistant runtime descriptor targets current shared assistant bundles", () => {
   const descriptor = featurePatches.find((patch) => patch.id === "assistant-runtime");
   assert.ok(descriptor);
-  assert.equal(descriptor.pattern.test("sites-end-resource-current.js"), true);
+  assert.equal(descriptor.pattern.test("async/366297.f0d89078fe.js"), true);
+  assert.equal(descriptor.assetMatch(assistantRenderFixture({ jsxVar: "s", component: "eA.F" }).source), true);
   assert.equal(descriptor.assetMatch(assistantRenderFixture({ jsxVar: "Q" }).source), true);
   assert.equal(descriptor.assetMatch("const unrelated=true"), false);
+});
+
+const signedExtractedApp = process.env.CODEX_SIGNED_EXTRACTED_APP;
+test("current signed assistant renderer patches once and remains valid JavaScript", { skip: !signedExtractedApp }, () => {
+  const assetsDir = path.join(signedExtractedApp, "webview", "assets");
+  const matches = listWebviewAssetNames(assetsDir, /\.js$/u).filter((assetName) =>
+    matchesAssistantRuntimeContract(fs.readFileSync(path.join(assetsDir, assetName), "utf8")));
+  assert.equal(matches.length, 1, `expected one current assistant renderer, got ${matches.join(", ")}`);
+  const original = fs.readFileSync(path.join(assetsDir, matches[0]), "utf8");
+  const patched = applyAssistantRenderPatch(original);
+  assert.notEqual(patched, original);
+  assert.equal((patched.match(/codex-linux-read-aloud-button/g) ?? []).length, 2);
+  assert.equal(applyAssistantRenderPatch(patched), patched);
+  const syntax = spawnSync(process.execPath, ["--check", "--input-type=module"], {
+    input: patched,
+    encoding: "utf8",
+  });
+  assert.equal(syntax.status, 0, syntax.stderr);
+});
+
+test("current signed Rspack GeneralSettings adds a read aloud preference row", { skip: !signedExtractedApp }, async () => {
+  const assetsDir = path.join(signedExtractedApp, "webview", "assets");
+  const names = listWebviewAssetNames(assetsDir, /\.js$/u);
+  const matches = names.filter((name) => {
+    const source = fs.readFileSync(path.join(assetsDir, name), "utf8");
+    return source.includes("GeneralSettings:") && source.includes('id:"settings.general.groupTitle"');
+  });
+  assert.equal(matches.length, 1, `expected one GeneralSettings owner: ${matches.join(", ")}`);
+  const original = fs.readFileSync(path.join(assetsDir, matches[0]), "utf8");
+  const patched = applyGeneralSettingsPatch(original);
+  assert.notEqual(patched, original);
+  assert.match(patched, /codexLinuxReadAloudRspackSettingsRow/);
+  assert.equal(applyGeneralSettingsPatch(patched), patched);
+  const syntax = spawnSync(process.execPath, ["--check", "--input-type=module"], { input: patched, encoding: "utf8" });
+  assert.equal(syntax.status, 0, syntax.stderr);
+
+  const start = patched.indexOf("function codexLinuxReadAloudRspackSettingsRow()");
+  const open = patched.indexOf("{", start);
+  const close = findMatchingBrace(patched, open);
+  const helper = patched.slice(start, close + 1);
+  const reads = [];
+  const writes = [];
+  const setups = [];
+  const state = [];
+  const jsx = { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) };
+  const react = {
+    useState(initial) {
+      const index = state.length;
+      state.push(index === 0 ? true : initial);
+      return [state[index], (value) => { state[index] = value; }];
+    },
+    useEffect(callback) { callback(); },
+  };
+  const runtime = {
+    codexLinuxReadAloudGetSetting: async (key) => (reads.push(key), { value: key.endsWith("enabled") ? true : 1.05 }),
+    codexLinuxReadAloudSetSetting: async (key, value) => (writes.push([key, value]), { success: true }),
+    codexLinuxReadAloudSetup: async (mode, button) => (setups.push([mode, button]), { ok: true }),
+  };
+  const render = new Function("n", "m", "P", "N", "globalThis", `return (${helper})();`)(jsx, react, { ic: "SettingsRow" }, { l: "Toggle" }, runtime);
+  const [toggle, setup] = render.props.control.props.children;
+  toggle.props.onChange(false);
+  const [chooseFolder, downloadVoice] = setup.props.children;
+  chooseFolder.props.onClick({ currentTarget: "choose-folder-button" });
+  downloadVoice.props.onClick({ currentTarget: "download-button" });
+  const pace = setup.props.children[2].props.children[1];
+  pace.props.onChange({ currentTarget: { value: "1.2" } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(new Set(reads), new Set(["codex-linux-read-aloud-enabled", "codex-linux-read-aloud-kokoro-speed"]));
+  assert.ok(writes.some(([key, value]) => key === "codex-linux-read-aloud-enabled" && value === false));
+  assert.ok(writes.some(([key, value]) => key === "codex-linux-read-aloud-kokoro-speed" && value === 1.2));
+  assert.deepEqual(setups.map(([mode]) => mode), ["choose-folder", "download"]);
+});
+
+test("settings asset descriptor restores the signed Rspack GeneralSettings row", { skip: !signedExtractedApp }, () => {
+  const sourceAssets = path.join(signedExtractedApp, "webview", "assets");
+  const owners = listWebviewAssetNames(sourceAssets, /\.js$/u).filter((name) => {
+    const source = fs.readFileSync(path.join(sourceAssets, name), "utf8");
+    return source.includes("GeneralSettings:") && source.includes('id:"settings.general.groupTitle"');
+  });
+  assert.equal(owners.length, 1);
+  const sourcePath = path.join(sourceAssets, owners[0]);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-read-aloud-rspack-settings-"));
+  try {
+    const target = path.join(root, "webview", "assets", "async", path.basename(sourcePath));
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(sourcePath, target);
+    const result = applySettingsAssetPatch(root);
+    assert.deepEqual(result, { matched: true, changed: 1 });
+    const patched = fs.readFileSync(target, "utf8");
+    assert.match(patched, /codexLinuxReadAloudRspackSettingsRow/);
+    const syntax = spawnSync(process.execPath, ["--check", "--input-type=module"], { input: patched, encoding: "utf8" });
+    assert.equal(syntax.status, 0, syntax.stderr);
+    assert.deepEqual(applySettingsAssetPatch(root), { matched: true, changed: 0 });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("webview runtime descriptor targets the official app bootstrap", () => {
   const descriptor = featurePatches.find((patch) => patch.id === "webview-runtime");
   assert.ok(descriptor);
-  assert.equal(descriptor.pattern.test("app-initial-Bd3Z1bES.js"), true);
-  assert.equal(descriptor.pattern.test("local-conversation-turn-BSHPwQLO.js"), false);
+  assert.equal(descriptor.pattern.test("348410.09aab3f377.js"), true);
+  assert.equal(descriptor.assetMatch(
+    'var __rspack_esm_id__=348410;let c=window.electronBridge;c?.sendMessageFromView(e);new CustomEvent("codex-message-from-view",{detail:e});',
+    "348410.09aab3f377.js",
+  ), true);
+  assert.equal(descriptor.pattern.test("async/24191.7b05d5cf83.js"), false);
 });
 
 test("assistant runtime descriptor fails soft and atomically when the current render contract drifts", () => {
@@ -1427,8 +1569,8 @@ test("official settings have the runtime before any conversation chunk loads", (
   try {
     const assets = path.join(root, "webview", "assets");
     fs.mkdirSync(assets, { recursive: true });
-    const appInitial = path.join(assets, "app-initial-Bd3Z1bES.js");
-    fs.writeFileSync(appInitial, "console.log(`official bootstrap`);");
+    const appInitial = path.join(assets, "348410.09aab3f377.js");
+    fs.writeFileSync(appInitial, 'var __rspack_esm_id__=348410;let c=window.electronBridge;c?.sendMessageFromView(e);new CustomEvent("codex-message-from-view",{detail:e});');
     const runtimeDescriptor = featurePatches.find((patch) => patch.id === "webview-runtime");
     const report = createPatchReport();
     applyWebviewAssetPatchDescriptors(
@@ -1444,7 +1586,7 @@ test("official settings have the runtime before any conversation chunk loads", (
     assert.match(patched, /codexLinuxReadAloudGetSetting/);
     assert.match(patched, /codexLinuxReadAloudSetSetting/);
     assert.equal(report.patches[0].status, "applied");
-    assert.equal(fs.existsSync(path.join(assets, "local-conversation-turn-BSHPwQLO.js")), false);
+    assert.equal(fs.existsSync(path.join(assets, "async/24191.7b05d5cf83.js")), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -113,9 +113,9 @@ What it changes:
   a usable backend is available. Encryption and pre-rename write failures leave
   the original file intact; a post-rename directory-fsync warning does not roll
   back the already committed replacement.
-- Preserves `remote_control = true` / `features.remote_control = true` in the
-  local Codex config instead of letting upstream strip it before app-server
-  startup.
+- Uses upstream's dedicated host-aware `remoteControl/enable` and
+  `remoteControl/disable` service calls; it does not add the retired
+  `remote_control` feature configuration to the local Codex config.
 - Starts the native Desktop app-server with `--remote-control`, or starts
   `codex app-server proxy` when a declarative service owns the control socket.
   Startup organization-policy queries and startup sign-out keep the upstream
@@ -153,7 +153,6 @@ feature descriptor to appear exactly once in this table.
 | `linux-remote-control-client-revocation-recovery` | `outbound-control` | Clears revoked client material before re-enrollment. |
 | `linux-remote-mobile-app-server-remote-control` | `mobile-host` | Starts a native Desktop-owned app-server or proxies Desktop RPCs to a declarative owner. |
 | `linux-remote-control-load-gate` | `outbound-control` | Allows remote-control environments to load in Connections. |
-| `linux-remote-control-feature-sync` | `shared-boundary` | Enables `remote_control` only for the local host and excludes Remote SSH hosts. |
 | `linux-remote-control-visibility` | `outbound-control` | Exposes remote-control Connections UI when the server permits it. |
 | `linux-remote-control-copy` | `shared-boundary` | Rewrites Linux copy shared by host setup and outbound Connections. |
 | `linux-remote-control-settings-ux` | `shared-boundary` | Adapts the shared Connections copy and outbound-control visibility without reviving the retired upstream SSH installer. |
@@ -205,7 +204,7 @@ The main RPC boundaries are:
   `remoteControl/status/changed`;
 - outbound Connections: the current `remoteConnections` service methods
   `setRemoteControlEnabled`, `refreshRemoteControl`, and `setAutoConnect`;
-- shared host routing: `set-experimental-feature-enablement-for-host`
+- host-aware remote-control enablement: `remoteControl/enable` and `remoteControl/disable`
   and `refresh-remote-connections`.
 
 Remote mobile daemon requirement:

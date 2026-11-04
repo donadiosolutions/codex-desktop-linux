@@ -13,6 +13,10 @@ const {
   matchesLinuxAppShellTabLayoutPerformanceContract,
   matchesLinuxMarkdownAnimationPerformanceContract,
 } = require("./implementation.js");
+const {
+  applyLinuxSidebarScrollPerformancePatch,
+  matchesLinuxSidebarScrollPerformanceContract,
+} = require("./scroll.js");
 
 function currentAppShellTabLayoutFixture() {
   return "function tabs(){let map=new Map,Qe=(e,t)=>{let{key:n}=e,r=map.get(n);return r==null?null:jsx(Tab,{...t,activateOnClick:!0,animateLayout:!r.isWorkspaceHome&&t.animateLayout,animateExit:!r.isWorkspaceHome&&t.animateExit,closeButtonTabIndex:-1,controller:C,dragActivator:`tab`,tab:r,shortcutHint:null})};return Qe}";
@@ -56,6 +60,14 @@ test("current app-shell tab workaround disables tab layout animation", () => {
   assert.equal(applyLinuxAppShellTabLayoutPerformancePatch(patched), patched);
 });
 
+test("Rspack app-shell tab contract accepts quoted drag activators", () => {
+  const source = 'const render=(e,t)=>jsx(Tab,{animateLayout:!l.isWorkspaceHome&&t.animateLayout,animateExit:!l.isWorkspaceHome&&t.animateExit,closeButtonTabIndex:-1,controller:x.It,dragActivator:"tab",tab:l});';
+  assert.equal(matchesLinuxAppShellTabLayoutPerformanceContract(source), true);
+  const patched = applyLinuxAppShellTabLayoutPerformancePatch(source);
+  assert.match(patched, /animateLayout:!1/u);
+  assert.equal(matchesLinuxAppShellTabLayoutPerformanceContract(patched), true);
+});
+
 test("app-shell tab workaround fails closed for missing, duplicate, mixed, and partial owners", () => {
   const owner = currentAppShellTabLayoutFixture();
   const patched = applyLinuxAppShellTabLayoutPerformancePatch(owner);
@@ -80,6 +92,17 @@ test("current Markdown animation workaround disables streaming fades", () => {
   assert.notEqual(patched, source);
   assert.match(patched, /FadeIn_wt3tt_659[^{}]*\{opacity:1;animation:none\}/u);
   assert.match(patched, /FadeListDecoration_wt3tt_666::marker\{animation:none\}/u);
+  assert.equal(matchesLinuxMarkdownAnimationPerformanceContract(patched), true);
+  assert.equal(applyLinuxMarkdownAnimationPerformancePatch(patched), patched);
+});
+
+test("Rspack CSS module keeps animated Markdown rules patchable", () => {
+  const source = ".MarkdownRoot-rZKhxa[data-markdown-animated] :is(.FadeIn-RqQvGR,.HorizontalRule-ByOEk_,.ListItem-ncLgmg,.TableRow-ENsaGm,.Blockquote-EqEEot){opacity:1;animation:fade-in-HYTrVJ var(--duration,var(--transition-duration-basic)) var(--fade-easing,cubic-bezier(.37,.55,.86,.88)) both;animation-delay:var(--fade-delay,0s)}.MarkdownRoot-rZKhxa[data-markdown-animated] .FadeListDecoration-F9SN5z::marker{animation:fade-in-marker-re9IOT var(--duration,var(--transition-duration-basic)) var(--fade-easing,cubic-bezier(.37,.55,.86,.88)) forwards;animation-delay:var(--fade-delay,0s)}.MarkdownRoot-rZKhxa.AdaptiveStreaming-uuYOZc .FadeIn-RqQvGR,.MarkdownRoot-rZKhxa.AdaptiveStreaming-uuYOZc .FadeListDecoration-F9SN5z::marker{--duration:var(--animation-duration-streaming-text)}";
+  assert.equal(matchesLinuxMarkdownAnimationPerformanceContract(source), true);
+  const patched = applyLinuxMarkdownAnimationPerformancePatch(source);
+  assert.match(patched, /\.FadeIn-RqQvGR[^{}]*\{opacity:1;animation:none;/u);
+  assert.match(patched, /\.FadeListDecoration-F9SN5z::marker\{animation:none;/u);
+  assert.match(patched, /AdaptiveStreaming-uuYOZc[\s\S]*?\{--duration:var\(--animation-duration-streaming-text\)\}/u);
   assert.equal(matchesLinuxMarkdownAnimationPerformanceContract(patched), true);
   assert.equal(applyLinuxMarkdownAnimationPerformancePatch(patched), patched);
 });

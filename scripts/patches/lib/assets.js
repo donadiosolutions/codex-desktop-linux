@@ -36,6 +36,46 @@ function regexpTest(filenamePattern, name) {
   return filenamePattern.test(name);
 }
 
+const rspackAssetCache = new Map();
+
+// Rspack replaces descriptive Vite filenames with numbered chunks. Keep
+// their paths intact: imports and the runtime still address assets/async.
+function listWebviewAssetNames(assetsDir, filenamePattern) {
+  const direct = readDirectoryNames(assetsDir);
+  const names = direct.filter((name) => regexpTest(filenamePattern, name) && fs.statSync(path.join(assetsDir, name)).isFile());
+  if (!filenamePattern.source.includes("js") && !filenamePattern.source.includes("css")) return names.sort();
+  const asyncDir = path.join(assetsDir, "async");
+  const stamp = [assetsDir, asyncDir].map((dir) => fs.existsSync(dir) ? fs.statSync(dir).mtimeMs : 0).join(":");
+  const kind = filenamePattern.source.includes("css") && !filenamePattern.source.includes("js") ? "css" : "js";
+  const cacheKey = `${assetsDir}:${kind}`;
+  let cached = rspackAssetCache.get(cacheKey);
+  if (cached?.stamp !== stamp) {
+    if (kind === "css") {
+      const candidates = readDirectoryNames(asyncDir)
+        .filter((name) => /^[0-9a-f]{12}\.css$/.test(name))
+        .map((name) => `async/${name}`);
+      cached = { stamp, chunks: candidates };
+      rspackAssetCache.set(cacheKey, cached);
+      return [...new Set([...names, ...cached.chunks])].sort();
+    }
+    const candidates = direct.filter((name) => /^\d+\.[0-9a-f]+\.js$/.test(name));
+    for (const name of readDirectoryNames(asyncDir)) {
+      if (/^\d+\.[0-9a-f]+\.js$/.test(name)) candidates.push(`async/${name}`);
+    }
+    const chunks = candidates.filter((name) => {
+      const fd = fs.openSync(path.join(assetsDir, name), "r");
+      try {
+        const header = Buffer.alloc(1024);
+        const length = fs.readSync(fd, header, 0, header.length, 0);
+        return /\b(?:__rspack_esm_id|__webpack_modules__)\b/.test(header.toString("utf8", 0, length));
+      } finally { fs.closeSync(fd); }
+    });
+    cached = { stamp, chunks };
+    rspackAssetCache.set(cacheKey, cached);
+  }
+  return [...new Set([...names, ...cached.chunks])].sort();
+}
+
 const JAVASCRIPT_ASSET_PATTERN = /\.(?:c|m)?js$/;
 
 function rejectsSyntaxBreak(assetName, original, patched) {
@@ -57,10 +97,7 @@ function patchAssetFiles(extractedDir, filenamePattern, patchFn, missingWarnMess
     return { matched: 0, changed: 0 };
   }
 
-  const candidates = fs
-    .readdirSync(webviewAssetsDir)
-    .filter((name) => regexpTest(filenamePattern, name))
-    .sort();
+  const candidates = listWebviewAssetNames(webviewAssetsDir, filenamePattern);
 
   if (candidates.length === 0) {
     console.warn(missingWarnMessage);
@@ -93,6 +130,7 @@ function patchUniqueAssetFile(
   patchFn,
   missingWarnMessage,
   ambiguousWarnMessage,
+  matchPolicy = "unique",
 ) {
   const webviewAssetsDir = path.join(extractedDir, "webview", "assets");
   if (!fs.existsSync(webviewAssetsDir)) {
@@ -102,10 +140,7 @@ function patchUniqueAssetFile(
     return { matched: 0, changed: 0, assetName: null };
   }
 
-  const matches = fs
-    .readdirSync(webviewAssetsDir)
-    .filter((name) => regexpTest(filenamePattern, name))
-    .sort()
+  const matches = listWebviewAssetNames(webviewAssetsDir, filenamePattern)
     .map((assetName) => ({
       assetName,
       source: fs.readFileSync(path.join(webviewAssetsDir, assetName), "utf8"),
@@ -116,18 +151,23 @@ function patchUniqueAssetFile(
     console.warn(missingWarnMessage);
     return { matched: 0, changed: 0, assetName: null };
   }
-  if (matches.length !== 1) {
+  if (matches.length !== 1 && matchPolicy !== "all") {
     console.warn(`${ambiguousWarnMessage}: ${matches.map(({ assetName }) => assetName).join(", ")}`);
     return { matched: matches.length, changed: 0, assetName: null };
   }
 
-  const [{ assetName, source }] = matches;
-  const patchedSource = patchFn(source);
-  if (patchedSource === source || rejectsSyntaxBreak(assetName, source, patchedSource)) {
-    return { matched: 1, changed: 0, assetName };
+  const pending = [];
+  for (const { assetName, source } of matches) {
+    const patchedSource = patchFn(source);
+    if (rejectsSyntaxBreak(assetName, source, patchedSource)) {
+      return { matched: matches.length, changed: 0, assetName: matches[0].assetName };
+    }
+    if (patchedSource !== source) pending.push({ assetName, patchedSource });
   }
-  fs.writeFileSync(path.join(webviewAssetsDir, assetName), patchedSource, "utf8");
-  return { matched: 1, changed: 1, assetName };
+  for (const { assetName, patchedSource } of pending) {
+    fs.writeFileSync(path.join(webviewAssetsDir, assetName), patchedSource, "utf8");
+  }
+  return { matched: matches.length, changed: pending.length, assetName: matches[0].assetName };
 }
 
 function readWebviewAsset(webviewAssetsDir, assetName) {
@@ -139,10 +179,7 @@ function findRequiredWebviewAsset(webviewAssetsDir, filenamePattern, marker, des
     throw new Error(`Missing webview assets directory ${webviewAssetsDir}`);
   }
 
-  const candidates = fs
-    .readdirSync(webviewAssetsDir)
-    .filter((name) => regexpTest(filenamePattern, name))
-    .sort();
+  const candidates = listWebviewAssetNames(webviewAssetsDir, filenamePattern);
   const matches = marker == null
     ? candidates
     : candidates.filter((name) => readWebviewAsset(webviewAssetsDir, name).includes(marker));
@@ -227,6 +264,7 @@ function findImportedAsset(webviewAssetsDir, importerAsset, description) {
 }
 
 module.exports = {
+  listWebviewAssetNames,
   findCodexRequestWebviewAsset,
   findIconAsset,
   findImportedAsset,

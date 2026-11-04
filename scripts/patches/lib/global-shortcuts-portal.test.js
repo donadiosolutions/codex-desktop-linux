@@ -32,7 +32,7 @@ test("shared backend fails closed for missing and ambiguous lifecycle anchors", 
     source.replace("beginCapture()", "renamedCapture()"), source.replace("suspendDepth+=1", "suspendDepth+=2"),
     source.replace('status:"loading"', 'status:"pending"'), source.replace("flushAndDisposeContext:r", "flushContext:r"),
     source.replace("markAppQuitting:()=>", "markQuitting:()=>"),
-    source.replace("null!=e&&clearPendingUpdate(e)", "clearPendingUpdate(e)")]) {
+    source.replace("U.dispose()", "U.destroy()")]) {
     assert.throws(() => installPortalBackend(input));
   }
   const misleading = "function unrelated(e){if(wrongCheck(e)||otherCheck(e))return;}" + source;
@@ -63,6 +63,18 @@ test("shared backend installs into the rspack module that owns the registration 
   const accessEnd = source.indexOf("async function shutdownApp(");
   const split = chunk(source.slice(0, accessStart) + source.slice(accessEnd), source.slice(accessStart, accessEnd));
   assert.throws(() => installPortalBackend(split), /application access readiness is outside the global shortcut module/);
+});
+
+test("current will-quit drain lifecycle shuts down the portal in both flush branches", () => {
+  const source = mainBundleFixture().replace(
+    /async function shutdownApp\([\s\S]*?function flushWithTimeout\(e,t\)\{return Promise\.resolve\(e\(\)\)\}/,
+    'function shutdownApp(e,t){let n=()=>{Promise.allSettled([e(),t()]).then(()=>{})};e.dispose(),t.dispose(),Promise.allSettled([e(),t()]).then(n);e.dispose(),t.dispose(),Promise.allSettled([e(),t()]).then(n)}',
+  );
+  assert.notEqual(source, mainBundleFixture(), "fixture must exercise the current drain contract");
+  const patched = installPortalBackend(source);
+  assert.equal((patched.match(/codexLinuxGlobalShortcutsPortalShutdown\(\),Promise\.allSettled\(\[/g) ?? []).length, 2);
+  assert.doesNotThrow(() => new vm.Script(patched));
+  assert.equal(installPortalBackend(patched), patched);
 });
 
 for (const features of [{dictation: true}, {shortcuts: true}, {dictation: true, shortcuts: true}]) {

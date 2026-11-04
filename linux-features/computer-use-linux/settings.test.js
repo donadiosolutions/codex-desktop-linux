@@ -32,6 +32,19 @@ test('Linux availability uses genuine disabled plugin state and never fabricates
   assert.equal(render(patched,'darwin',[]).available,false);
   assert.equal(availability(patched),patched);
 });
+test('current Rspack native settings hook exposes the enabled local Linux settings row',()=>{
+  const current = require('./fixtures/current-rspack-settings.js');
+  const patched = availability(current);
+  assert.notEqual(patched, current);
+  assert.equal(availability(patched), patched);
+  const run = (platform, hostId = 'local') => vm.runInNewContext(`${patched};s({computerUseAvailability:{available:false,isLoading:true},hostId:${JSON.stringify(hostId)}})`, {
+    r: { c: () => [] }, i: { V: () => ({ isLoading: false, platform }) }, a: { Zj: () => true },
+  });
+  assert.equal(run('Linux').available, true);
+  assert.equal(run('Linux').isLoading, false);
+  assert.equal(run('macOS').available, false);
+  assert.equal(run('Linux', 'remote').available, false);
+});
 const filter='function Esc(e,t,n){if(t.length===0&&!n)return e;let r=new Set(t);return e.filter(e=>(!n||!pqn(e.plugin.id))&&!r.has(e.plugin.id))}';
 test('Plugins presentation hides only the bundled native component',()=>{
   const plugins=[{marketplaceName:'openai-bundled',plugin:{id:'computer-use@openai-bundled',name:'computer-use',enabled:false}},{marketplaceName:'openai-bundled',plugin:{id:'browser@openai-bundled',name:'browser'}},{marketplaceName:'custom',plugin:{id:'computer-use@custom',name:'computer-use'}}];
@@ -44,6 +57,24 @@ test('Plugins presentation hides only the bundled native component',()=>{
   assert.equal(matchesNativeSettingsVisibilityContract(filter),true);
   assert.equal(matchesNativeSettingsVisibilityContract(patched),true);
   assert.equal(visibility(patched),patched);
+});
+test('current Rspack Plugins filter hides only the bundled native component',()=>{
+  const source = require('./fixtures/current-rspack-settings-visibility.js');
+  const patched = visibility(source);
+  assert.notEqual(patched, source);
+  assert.doesNotThrow(()=>new vm.Script(patched));
+  assert.equal(visibility(patched), patched);
+  const plugins=[
+    {marketplaceName:'openai-bundled',plugin:{id:'computer-use@openai-bundled',name:'computer-use'}},
+    {marketplaceName:'custom',plugin:{id:'computer-use@custom',name:'computer-use'}},
+    {marketplaceName:'custom',plugin:{id:'restricted-tool@custom',name:'restricted-tool'}},
+  ];
+  const run=restrictedMode=>vm.runInNewContext(`${patched};_(plugins,[],restrictedMode)`,{
+    plugins,restrictedMode,s:{zG:id=>id.startsWith('restricted-tool')},
+  });
+  assert.equal(Array.from(run(false)).length,2);
+  assert.equal(Array.from(run(false)).some(e=>e.marketplaceName==='custom'&&e.plugin.name==='computer-use'),true);
+  assert.equal(Array.from(run(true)).length,1);
 });
 test('unsupported and ambiguous contracts fail closed',()=>{
   assert.throws(()=>availability('function unrelated(){}'),/contract/);

@@ -2598,6 +2598,25 @@ test("26.1021 bridge uses the surviving fetch handler table with feature-owned p
   assert.ok(host.handlers["linux-agent-workspace"]);
 });
 
+test("26.1029 signed MessageHandler receives the agent workspace request bridge", () => {
+  const source = 'var Host=class{globalState;windowManager;chunkedMessageSender;fetchWrapper;constructor(options){Object.assign(this,options)}async handleMessage(e,t){switch(t.type){case"fetch":await this.fetchWrapper.handleRequest(e,t);break;case"cancel-fetch":this.fetchWrapper.cancelRequest(e,t);break;case"other":return"untouched"}}};var Context=class{constructor(){this.messageHandler=new Host({})}async handleMessage(e,t){await this.messageHandler.handleMessage(e,t)}};electron.ipcMain.handle(channel,async(t,n)=>{if(!trusted(t))return;let a=context(t.sender);a?await a.handleMessage(t.sender,n):null});';
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(" "));
+  try {
+    const patched = applyAgentWorkspaceMainBridgePatch(source);
+    assert.notEqual(patched, source);
+    assert.match(patched, /codexLinuxRequestHandlers=\{/);
+    assert.match(patched, /"linux-agent-workspace":async/);
+    assert.match(patched, /case"fetch":if\(await this\.codexLinuxHandleRequest\(e,t\)\)break;/);
+    assert.match(patched, /case"cancel-fetch":if\(this\.codexLinuxCancelRequest\(e,t\)\)break;/);
+    assert.equal(applyAgentWorkspaceMainBridgePatch(patched), patched);
+    assert.deepEqual(warnings, []);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
 test("26.1021 settings patches split title metadata, routes, and catalog atomically", () => {
   const tempApp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-agent-workspace-routing-"));
   try {
@@ -2634,4 +2653,61 @@ test("26.1021 settings request service preserves the fetch bridge envelope", asy
     assert.deepEqual(calls,[["vscode://codex/linux-agent-workspace",'{"action":"doctor"}',{"Content-Type":"application/json"}]]);
     assert.equal(patchAgentWorkspaceSettingsAssets(tempApp).changed,0);
   } finally {fs.rmSync(tempApp,{recursive:true,force:true});}
+});
+
+function writeRspackWorkspaceFixture(assetsDir) {
+  fs.mkdirSync(path.join(assetsDir,"async"),{recursive:true});
+  const write=(id,body)=>fs.writeFileSync(path.join(assetsDir,`async/${id}.abcdef.js`),`export const __rspack_esm_id=${id};export const __webpack_modules__={${body}};`);
+  write(1,'routes(e,t,n){var i=n("lazy");let l=(0,i.e)(async()=>(await Promise.all([n.e(2)]).then(n.bind(n,"General"))).GeneralSettings),c={"general-settings":l,notifications:null};t.routes=c;let items=[{slug:"local-environments"},{slug:"worktrees"}];}');
+  write(2,'General(e,t,a){a.d(t,{GeneralSettings:()=>Page});var m=a("react");function Page(){return (0,m.useState)(null)}}');
+  write(3,'Request(e,t,n){n.d(t,{Xb:()=>s});var i=n("service");async function s(...e){let[t,n]=e,{params:r}=n??{};return(await i._n.getInstance().post(`vscode://codex/${t}`,JSON.stringify(r))).body}}');
+  write(4,'nav(e,t,n){let titles={"local-environments":{id:"settings.nav.local-environments",defaultMessage:"Environments",description:"Title"},worktrees:{}},slugs=["local-environments","worktrees","browser-use"],groups=["local-environments","environments","worktrees"];function title(s){switch(s){case"local-environments":return (0,j.jsx)(a.A,{id:"settings.section.local-environments"});case"worktrees":return null}}}');
+  write(5,'visibility(e,t,n){let icons={"local-environments":{component:ey.A,commandAsset:_.x,navigation:{assets:{16:_.x,20:k.Q},ariaHidden:!1}},worktrees:{}},policy={"local-environments":"codexLocal","mcp-settings":"codexOrWorkLocal"},preload=["hooks-settings","gateways","local-environments","worktrees","storage"];function visible(s){switch(s){case"worktrees":case"local-environments":case"environments":return{visible:!0,pending:!1}}}}');
+  write(6,'catalog(e,t,n){let slugs=["local-environments","worktrees","environments"];}');
+}
+
+test("Rspack workspace page preserves native navigation and injects registry dependencies",async()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"workspace-rspack-"));
+  try {
+    const assets=path.join(dir,"webview","assets");writeRspackWorkspaceFixture(assets);
+    const result=patchAgentWorkspaceSettingsAssets(dir);
+    assert.equal(result.matched,true,result.reason);
+    const route=fs.readFileSync(path.join(assets,"async/1.abcdef.js"),"utf8");
+    assert.match(route,/createAgentWorkspacesSettings\(n\("react"\),n\("Request"\)\.Xb\)/);
+    assert.match(route,/n\.e\(3\)/);
+    const page=fs.readFileSync(path.join(assets,SETTINGS_ASSET),"utf8");
+    assert.match(page,/export function createAgentWorkspacesSettings\(React,__post\)/);
+    assert.doesNotMatch(page,/import\{/);
+    const react={createElement(){},useState(){}};
+    const request=async(method,options)=>({method,options});
+    const loads=[];
+    const registry=id=>({lazy:{e:fn=>fn},General:{GeneralSettings:()=>null},react,Request:{Xb:request}})[id];
+    registry.e=async id=>loads.push(id);
+    const context={__import:async()=>({createAgentWorkspacesSettings:(receivedReact,receivedRequest)=>{
+      assert.equal(receivedReact,react);assert.equal(receivedRequest,request);return "workspace component";
+    }})};
+    vm.runInNewContext(route.replace(/export const /g,"var ").replace(/import\("[^"]+"\)/g,"__import()")+";this.modules=__webpack_modules__;",context);
+    const exports={};context.modules.routes({},exports,registry);
+    assert.equal(await exports.routes["agent-workspaces"](),"workspace component");
+    assert.deepEqual(loads,[2,3]);
+
+    assert.equal(spawnSync(process.execPath,["--check","--input-type=module"],{input:page,encoding:"utf8"}).status,0);
+    assert.equal(patchAgentWorkspaceSettingsAssets(dir).changed,0);
+  } finally {fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+
+test("Rspack workspace settings reject missing and duplicate contracts before writing",()=>{
+  for(const duplicate of [false,true]) {
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(),"workspace-rspack-invalid-"));
+    try {
+      const assets=path.join(dir,"webview/assets");writeRspackWorkspaceFixture(assets);
+      const file=path.join(assets,"async/5.abcdef.js"),original=fs.readFileSync(file,"utf8");
+      fs.writeFileSync(file,duplicate?original+original:original.replace('"local-environments":"codexLocal"','"local-environments":"other"'));
+      const before=fs.readFileSync(path.join(assets,"async/1.abcdef.js"),"utf8");
+      assert.equal(patchAgentWorkspaceSettingsAssets(dir).matched,false);
+      assert.equal(fs.existsSync(path.join(assets,SETTINGS_ASSET)),false);
+      assert.equal(fs.readFileSync(path.join(assets,"async/1.abcdef.js"),"utf8"),before);
+    } finally {fs.rmSync(dir,{recursive:true,force:true});}
+  }
 });

@@ -56,7 +56,10 @@ module.exports = [
     phase: "webview-asset",
     order: 20_136,
     ciPolicy: "optional",
-    pattern: /^app-initial-[^.]+\.js$/,
+    pattern: /^(?:app-initial-[^.]+|(?:async\/)?\d+\.[0-9a-f]+)\.js$/,
+    assetMatch: source => source.includes("hasDesktopRuntime:!0,usesDesktopMcp:") &&
+      /readDynamicTools:e=>[\w$]+\.request\(e\),traceRequest:e=>/.test(source),
+    matchPolicy: "all",
     missingDescription: "local thread dynamic-tool request construction",
     skipDescription: "Linux Codex app thread-tools patch",
     apply: applyLinuxCodexAppThreadToolsPatch,
@@ -66,7 +69,11 @@ module.exports = [
     phase: "webview-asset",
     order: 20_140,
     ciPolicy: "optional",
-    pattern: /^computer-use-settings-[^.]+\.js$/,
+    pattern: /^(?:computer-use-settings-[^.]+|(?:async\/)?\d+\.[0-9a-f]+)\.js$/,
+    assetMatch: source => source.includes("computerUseAvailability:") &&
+      /\{computerUseAvailability:[\w$]+,hostId:[\w$]+\}=[\w$]+,\{isLoading:[\w$]+,platform:[\w$]+\}=\(0,[\w$]+\.[\w$]+\)\(\)/.test(source) &&
+      /isLoading:[\w$]+,platform:[\w$]+/.test(source) && source.includes('"macOS"===') &&
+      source.includes("available&&"),
     missingDescription: "Computer Use availability bundle",
     skipDescription: "Linux Computer Use UI availability patch",
     apply: applyNativeSettingsAvailabilityPatch,
@@ -76,7 +83,7 @@ module.exports = [
     phase: "webview-asset",
     order: 20_150,
     ciPolicy: "optional",
-    pattern: /^[A-Za-z0-9_-]+\.js$/,
+    pattern: /^(?:[A-Za-z0-9_-]+|(?:async\/)?\d+\.[0-9a-f]+)\.js$/,
     assetMatch: matchesLinuxComputerUseHostPlatformContract,
     missingDescription: "current Computer Use host-platform contract",
     skipDescription: "Linux Computer Use host-platform patch",
@@ -85,8 +92,9 @@ module.exports = [
   webviewAssetPatch({
     id: "native-settings-visibility",
     order: 20_160,
-    pattern: /^[A-Za-z0-9_-]+\.js$/,
+    pattern: /^(?:[A-Za-z0-9_-]+|(?:async\/)?\d+\.[0-9a-f]+)\.js$/,
     assetMatch: matchesNativeSettingsVisibilityContract,
+    matchPolicy: "all",
     missingDescription: "Plugins presentation filter",
     skipDescription: "Linux native Settings visibility patch",
     apply: applyNativeSettingsVisibilityPatch,

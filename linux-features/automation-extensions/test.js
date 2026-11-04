@@ -52,6 +52,38 @@ test("automation-extensions is disabled by default and owns all optional patches
   assert.equal(eager.pattern.test("app-initial-newHash.css"), false);
 });
 
+test("current signed Rspack automation catalog remains eagerly available", { skip: !process.env.CODEX_SIGNED_EXTRACTED_APP }, () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const { listWebviewAssetNames } = require("../../scripts/patches/lib/assets.js");
+  const assets = path.join(process.env.CODEX_SIGNED_EXTRACTED_APP, "webview", "assets");
+  const owners = listWebviewAssetNames(assets, /\.js$/u).filter(name => {
+    const source = fs.readFileSync(path.join(assets, name), "utf8");
+    return matchesAutomationUpdateEagerToolContract(source) && source.includes("__webpack_modules__");
+  });
+  assert.equal(owners.length, 1);
+  const source = fs.readFileSync(path.join(assets, owners[0]), "utf8");
+  assert.equal(matchesAutomationUpdateEagerToolContract(source), true);
+  const patched = applyAutomationUpdateEagerToolPatch(source);
+  assert.match(patched, /\.name!==`automation_update`&&/u);
+  assert.equal(applyAutomationUpdateEagerToolPatch(patched), patched);
+  const enableDescriptor = descriptors.find(({ id }) => id === "automation-plugin-enable");
+  assert.equal(enableDescriptor.assetMatch(patched), true);
+  assert.equal(enableDescriptor.apply(patched), patched);
+});
+
+test("automation plugin validation rejects detached tool names and marker decoys", () => {
+  const descriptor = descriptors.find(({ id }) => id === "automation-plugin-enable");
+  const linked = 'export const __webpack_modules__={dummy(e,t,n){},OGL(a,b,c){let name="automation_update";function tool(){return null==r&&(r={name:name,description:"Create automation"})}c.d(b,{tool:()=>tool})},JGl(x,y,z){function map({tools:e,eagerToolNames:t,deferredToolNames:n,supportsDynamicToolNamespaces:s}){let mapped=e.map(e=>({type:"function",...e,...e.name!==`automation_update`&&s&&(!t.has(e.name)||n.includes(e.name))?{deferLoading:!0}:{}}));return mapped}z.d(y,{mapper:()=>map})},agg(m,o,load){var automation=load("OGL"),toolsMap=load("JGl");let eager=new Set,tools=[(0,automation.tool)()];return (0,toolsMap.mapper)({tools:tools,eagerToolNames:eager,deferredToolNames:[],supportsDynamicToolNamespaces:!0})}};';
+  assert.equal(descriptor.assetMatch(linked), true);
+  const decoys = [
+    'const description="automation_update";const tools=e.map(e=>({type:"function",...e,...e.name!==`automation_update`&&s&&(!t.has(e.name)||n.includes(e.name))?{deferLoading:!0}:{}}));',
+    'let name="automation_update";function unrelated(){return null==r&&(r={name:name})}n.d(t,{tool:()=>unrelated});const tools=e.map(e=>({type:"function",...e,...e.name!==`automation_update`&&s&&(!t.has(e.name)||n.includes(e.name))?{deferLoading:!0}:{}}));',
+    linked.replace('automation=load("OGL")', 'automation=load("other")'),
+  ];
+  for (const source of decoys) assert.equal(descriptor.assetMatch(source), false);
+});
+
 test("automation_update remains eager in the current dynamic tool catalog", () => {
   const source = "const tools=[automation].map(e=>({type:`function`,...e,...E&&(!YBl.has(e.name)||BBl.includes(e.name))?{deferLoading:!0}:{}}));";
   assert.equal(matchesAutomationUpdateEagerToolContract(source), true);
@@ -485,6 +517,23 @@ test("current shared schedule contract accepts hoisted helpers and renamed parse
   assert.notEqual(patched, source);
   assert.match(patched, /timeValues:codexLinuxRruleTimes\(i\.byhour,i\.byminute,i\)/u);
   assert.match(patched, /function qvn\(e,t,n=!0\)\{if\(!e\)return null/u);
+});
+
+test("signed Rspack schedule module supports multiple RRULE times", () => {
+  const source = [
+    "function W(e){if(!e)return null;try{let p=e.options;return{freq:p.freq,isSingleRecurrence:!0,hasMultipleTimeValues:Array.isArray(p.byhour)&&p.byhour.length>1||Array.isArray(p.byminute)&&p.byminute.length>1,interval:Math.max(1,Math.round(p.interval??1)),minute:m,origOptions:c.origOptions,rruleText:e,time:(t=p.byhour,n=p.byminute,r=p,i=ee(t),a=ee(n),null!=i&&null!=a?es(i,a):r.dtstart?es(r.dtstart.getHours(),r.dtstart.getMinutes()):h),weekdays:f}}catch{return null}}",
+    "function Q(e,t){if(!e||e.hasMultipleTimeValues)return null;let n=L(e.weekdays),r=n.length===7;if(e.freq!==DAILY&&e.freq!==WEEKLY)return null;let i=(0,u.mm)(e.time,t);return i?i:null}",
+    "function Z({intervalLabel:e}){return e}",
+    "function ee(e){return Array.isArray(e)?typeof e[0]==`number`?e[0]:null:typeof e==`number`?e:null}function es(e,t){return new Date(0,0,0,e,t)}",
+  ].join("");
+  const patched = applyAutomationScheduleMultiTimePatch(source);
+  assert.notEqual(patched, source);
+  assert.match(patched, /function codexLinuxScheduleTimes\(/u);
+  assert.match(patched, /timeValues:codexLinuxScheduleTimes\(p\.byhour,p\.byminute,p\)/u);
+  assert.match(patched, /if\(!e\)return null;let n=L/u);
+  assert.match(patched, /e\.timeValues\?\.length>1/u);
+  assert.equal(applyAutomationScheduleMultiTimePatch(patched), patched);
+  assert.doesNotThrow(() => new vm.Script(patched));
 });
 
 test("generalized schedule matcher rejects duplicate, mixed, partial, and incoherent owners", () => {

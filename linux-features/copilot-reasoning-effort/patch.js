@@ -3,6 +3,7 @@
 const JS_IDENT = "[A-Za-z_$][\\w$]*";
 const BT = "`";
 const COMPILED_UI_MARKER = "codexLinuxCopilotReasoningEffortUi";
+const RSPACK_COPILOT_MODEL_LIST = /\("copilot"===([A-Za-z_$][\w$]*)\?\[[\s\S]*?\{reasoningEffort:"medium",description:"medium effort"\}\]:([A-Za-z_$][\w$]*)\)\.filter\(/g;
 
 function matchesCopilotModelAndReasoningPersistenceContract(source) {
   const exportedContract = new RegExp(
@@ -22,11 +23,11 @@ function matchesCopilotModelAndReasoningPersistenceContract(source) {
   );
   const defaultWrapperMatches = findAllMatches(
     ownerRegion,
-    new RegExp(`=>${JS_IDENT}\\(${JS_IDENT},${JS_IDENT},${BT}default${BT}\\)`),
+    new RegExp(`=>${JS_IDENT}\\(${JS_IDENT},${JS_IDENT},(?:${BT}default${BT}|"default")\\)`),
   );
   const currentWrapperMatches = findAllMatches(
     ownerRegion,
-    new RegExp(`=>${JS_IDENT}\\(${JS_IDENT},${JS_IDENT},${BT}current${BT},${JS_IDENT}\\)`),
+    new RegExp(`=>${JS_IDENT}\\(${JS_IDENT},${JS_IDENT},(?:${BT}current${BT}|"current"),${JS_IDENT}\\)`),
   );
   return defaultWriteMatches.length === 1 &&
     defaultWrapperMatches.length === 1 &&
@@ -39,7 +40,8 @@ function matchesCopilotReasoningEffortModelListContract(source) {
       `\\{reasoningEffort:${BT}medium${BT},description:${BT}medium effort${BT}\\}\\]:${JS_IDENT}\\)\\.filter\\(`,
   );
   const patched = new RegExp(`${JS_IDENT}=\\[\\.\\.\\.${JS_IDENT}\\]\\.filter\\(\\(\\{reasoningEffort:`);
-  return clean.test(source) || patched.test(source);
+  RSPACK_COPILOT_MODEL_LIST.lastIndex = 0;
+  return clean.test(source) || patched.test(source) || RSPACK_COPILOT_MODEL_LIST.test(source);
 }
 
 function matchesCopilotReasoningEffortUiContract(source) {
@@ -70,7 +72,7 @@ function findCompiledNamedFunctionOwner(source, index) {
   }
   if (ownerStart == null) return null;
 
-  const nextDeclaration = new RegExp(`\\}function ${JS_IDENT}\\(`, "g");
+  const nextDeclaration = new RegExp(`\\}(?:function ${JS_IDENT}\\(|var ${JS_IDENT}=)`, "g");
   nextDeclaration.lastIndex = index;
   const ownerEnd = nextDeclaration.exec(source);
   if (ownerEnd == null) return null;
@@ -84,7 +86,7 @@ function findCompiledNamedFunctionOwner(source, index) {
 function analyzeCompiledCopilotReasoningEffortUiContract(source) {
   if (
     !source.includes("reasoningEffortDisabled:") ||
-    (!source.includes("authMethod===`copilot`") && !source.includes(COMPILED_UI_MARKER))
+    (!source.includes("authMethod===`copilot`") && !source.includes('authMethod==="copilot"') && !source.includes(COMPILED_UI_MARKER))
   ) {
     return null;
   }
@@ -93,7 +95,7 @@ function analyzeCompiledCopilotReasoningEffortUiContract(source) {
     `${JS_IDENT}\\?\\.find\\(${JS_IDENT}=>\\{let\\{model:${JS_IDENT}\\}=${JS_IDENT};` +
     `return ${JS_IDENT}\\.model===${JS_IDENT}\\}\\)\\?\\.disabledReason!=null`;
   const cleanCombined = new RegExp(
-    `(?<disabled>${JS_IDENT})=(?<host>${JS_IDENT})\\?\\.authMethod===${BT}copilot${BT}\\|\\|` +
+    `(?<disabled>${JS_IDENT})=(?<host>${JS_IDENT})\\?\\.authMethod===(?:${BT}copilot${BT}|"copilot")\\|\\|` +
       `(?<modelExpression>${modelExpression})`,
   );
   const patchedCombined = new RegExp(
@@ -146,10 +148,38 @@ function analyzeCompiledCopilotReasoningEffortUiContract(source) {
 function analyzeCompiledCopilotReasoningSlashContract(source) {
   if (
     !source.includes("composer.reasoningSlashCommand.title") ||
-    !source.includes("authMethod===`copilot`")
+    (!source.includes("authMethod===`copilot`") && !source.includes('authMethod==="copilot"'))
   ) {
     return null;
   }
+  const rspackSlash = new RegExp(
+    `let (?<enabled>${JS_IDENT})=(?<requires>${JS_IDENT})&&(?<ready>${JS_IDENT})` +
+      `(?<authGate>&&!(?<copilot>${JS_IDENT}))?&&!0(?:/\\*${COMPILED_UI_MARKER}\\*/)?;`,
+  );
+  const rspackMatches = findAllMatches(source, rspackSlash);
+  if (rspackMatches.length > 0) {
+    if (rspackMatches.length !== 1) {
+      return { state: "invalid", warning: "Found duplicate current Rspack reasoning slash command gates" };
+    }
+    const slashMatch = rspackMatches[0];
+    const owner = findCompiledNamedFunctionOwner(source, slashMatch.index);
+    if (owner == null) {
+      return { state: "invalid", warning: "Could not find current Rspack reasoning slash command owner" };
+    }
+    const ownerSource = source.slice(owner.start, owner.end);
+    const copilotGate = slashMatch.groups.copilot == null || new RegExp(
+      `\\b${slashMatch.groups.copilot}=${JS_IDENT}\\?\\.authMethod==="copilot"`,
+    ).test(ownerSource);
+    const command = new RegExp(
+      `id:"composer\\.reasoningSlashCommand\\.title"[\\s\\S]{0,1200}?id:"reasoning"[\\s\\S]{0,200}?enabled:${slashMatch.groups.enabled}`,
+    );
+    if (!copilotGate || !command.test(ownerSource)) {
+      return { state: "invalid", warning: "Could not bind current Rspack reasoning slash gate to its Copilot auth and command registration" };
+    }
+    const patched = slashMatch[0].includes(COMPILED_UI_MARKER);
+    return { state: patched ? "patched" : "pristine", contract: "slash", slashMatch, currentRspack: true };
+  }
+
   const cleanSlash = new RegExp(
     `(?<enabled>${JS_IDENT})=(?<requires>${JS_IDENT})&&(?<ready>${JS_IDENT})&&!` +
       `(?<copilot>${JS_IDENT})&&!0,(?<dependencies>${JS_IDENT});`,
@@ -211,6 +241,11 @@ function applyCopilotReasoningEffortModelListPatch(currentSource) {
     /([A-Za-z_$][\w$]*)=\(([A-Za-z_$][\w$]*)===`copilot`\?\[([A-Za-z_$][\w$]*)\.find\([^)]*\)\?\?\{reasoningEffort:`medium`,description:`medium effort`\}\]:\3\)\.filter\(/g;
   const patchedCurrentCopilotReasoningFilterRegex =
     /[A-Za-z_$][\w$]*=\[\.\.\.[A-Za-z_$][\w$]*\]\.filter\(\(\{reasoningEffort:/;
+  RSPACK_COPILOT_MODEL_LIST.lastIndex = 0;
+  if (RSPACK_COPILOT_MODEL_LIST.test(currentSource)) {
+    RSPACK_COPILOT_MODEL_LIST.lastIndex = 0;
+    return currentSource.replace(RSPACK_COPILOT_MODEL_LIST, (_match, _authMethod, efforts) => `${efforts}.filter(`);
+  }
 
   if (currentCopilotReasoningFilterRegex.test(currentSource)) {
     return currentSource.replace(
@@ -247,10 +282,17 @@ function applyCopilotReasoningEffortUiPatch(currentSource) {
       contract.combinedMatch[0],
       `${combined.disabled}=/*${COMPILED_UI_MARKER}*/${combined.modelExpression}`,
     )
-    : currentSource.replace(
+    : contract.currentRspack
+      ? currentSource.replace(
+        contract.slashMatch[0],
+        `${contract.slashMatch.groups.enabled}=${contract.slashMatch.groups.requires}&&` +
+          `${contract.slashMatch.groups.ready}&&!0/*${COMPILED_UI_MARKER}*/;`,
+      )
+      : currentSource.replace(
       contract.slashMatch[0],
       `${slash.enabled}=${slash.requires}&&${slash.ready}&&!0/*${COMPILED_UI_MARKER}*/,${slash.dependencies};`,
     );
+  if (contract.currentRspack && patchedSource.includes(COMPILED_UI_MARKER)) return patchedSource;
   if (analyzeCopilotReasoningEffortUiContract(patchedSource).state === "patched") {
     return patchedSource;
   }
@@ -266,7 +308,8 @@ module.exports = {
       id: "persistence-contract",
       name: "copilot-reasoning-effort-persistence-contract",
       phase: "webview-asset",
-      pattern: /^(?!locale-)[A-Za-z0-9_-]+\.js$/,
+      pattern: /\.js$/,
+      matchPolicy: "all",
       assetMatch: matchesCopilotModelAndReasoningPersistenceContract,
       missingDescription: "current model-and-reasoning persistence owner",
       skipDescription: "Copilot reasoning effort persistence validation",
@@ -276,7 +319,7 @@ module.exports = {
       id: "model-list",
       name: "copilot-reasoning-effort-model-list",
       phase: "webview-asset",
-      pattern: /^app-initial-[^.]+\.js$/,
+      pattern: /\.js$/,
       assetMatch: matchesCopilotReasoningEffortModelListContract,
       missingDescription: "model list bundle",
       skipDescription: "Copilot reasoning effort model list patch",
@@ -286,7 +329,7 @@ module.exports = {
       id: "ui-dropdown",
       name: "copilot-reasoning-effort-ui-dropdown",
       phase: "webview-asset",
-      pattern: /^(?!locale-)[A-Za-z0-9_-]+\.js$/,
+      pattern: /\.js$/,
       assetMatch: matchesCopilotReasoningEffortDropdownContract,
       missingDescription: "current reasoning effort dropdown owner",
       skipDescription: "Copilot reasoning effort dropdown patch",
@@ -296,7 +339,7 @@ module.exports = {
       id: "ui-slash-command",
       name: "copilot-reasoning-effort-ui-slash-command",
       phase: "webview-asset",
-      pattern: /^(?!locale-)[A-Za-z0-9_-]+\.js$/,
+      pattern: /\.js$/,
       assetMatch: matchesCopilotReasoningSlashContract,
       missingDescription: "current reasoning slash command owner",
       skipDescription: "Copilot reasoning slash command patch",

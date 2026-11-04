@@ -20,6 +20,7 @@ const {
   THEME_CSS_ENV,
   applyOmarchyThemeLoader,
   omarchyThemeRuntimeSource,
+  patchOmarchyThemeEntry,
 } = require("./patch.js");
 
 const FEATURE_DIR = __dirname;
@@ -72,7 +73,8 @@ test("omarchy-theme exposes optional patches, resources, and hooks when enabled"
     assert.equal(descriptors.length, 1);
     assert.equal(descriptors[0].id, "feature:omarchy-theme:omarchy-theme-css-loader");
     assert.equal(descriptors[0].ciPolicy, "optional");
-    assert.match("index-main.js", descriptors[0].pattern);
+    assert.equal(descriptors[0].phase, "extracted-app:post-webview");
+    assert.equal(typeof descriptors[0].apply, "function");
 
     const plan = enabledLinuxFeatureInstallPlan({ featuresRoot });
     assert.deepEqual(
@@ -101,6 +103,29 @@ test("omarchy-theme exposes optional patches, resources, and hooks when enabled"
       ],
     );
   });
+});
+
+test("Omarchy loader patches only the final script referenced by index.html", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-omarchy-entry-"));
+  try {
+    const assets = path.join(tempDir, "webview", "assets");
+    fs.mkdirSync(assets, { recursive: true });
+    fs.writeFileSync(path.join(tempDir, "webview", "index.html"),
+      '<script type="module" src="/assets/782259.a.js"></script><script type="module" src="/assets/348410.b.js"></script>');
+    fs.writeFileSync(path.join(assets, "782259.a.js"), "export const vendor=1;");
+    fs.writeFileSync(path.join(assets, "348410.b.js"), "export const app=1;");
+    assert.deepEqual(patchOmarchyThemeEntry(tempDir), { changed: true, assetName: "348410.b.js" });
+    assert.doesNotMatch(fs.readFileSync(path.join(assets, "782259.a.js"), "utf8"), /codexLinuxOmarchyThemeVersion/u);
+    assert.match(fs.readFileSync(path.join(assets, "348410.b.js"), "utf8"), /codexLinuxOmarchyThemeVersion/u);
+    assert.deepEqual(patchOmarchyThemeEntry(tempDir), { changed: false, assetName: "348410.b.js" });
+    fs.writeFileSync(path.join(tempDir, "webview", "index.html"),
+      '<script type="module" src="/assets/../escape.js"></script>');
+    fs.writeFileSync(path.join(tempDir, "webview", "escape.js"), "export const escape=1;");
+    assert.deepEqual(patchOmarchyThemeEntry(tempDir), { changed: false });
+    assert.doesNotMatch(fs.readFileSync(path.join(tempDir, "webview", "escape.js"), "utf8"), /codexLinuxOmarchyThemeVersion/u);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("renderer patch is idempotent and installs one guarded runtime", () => {

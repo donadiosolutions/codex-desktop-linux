@@ -1292,6 +1292,42 @@ async function codexPetOverlayConfirmRendererDrag(gesture, api, altKey, sample) 
   }
 }
 
+function insertRspackModuleLocal(source, helper, anchor) {
+  const table = source.indexOf("__webpack_modules__={");
+  if (table === -1) return `${helper}\n${source}`;
+  const modulePattern = /(?:\{|,)\s*[A-Za-z_$][\w$]*\(e,t,a\)\{/gu;
+  modulePattern.lastIndex = table;
+  let match, containing = null;
+  while ((match = modulePattern.exec(source)) != null && match.index < anchor) containing = match;
+  if (containing != null) {
+    const open = source.indexOf("{", containing.index + containing[0].length - 1);
+    return source.slice(0, open + 1) + helper + "\n" + source.slice(open + 1);
+  }
+  throw new Error("Pet overlay renderer Rspack module was not found");
+}
+
+function findStatementSemicolon(source, start) {
+  let round = 0, square = 0, curly = 0, quote = null, escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote != null) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === "`") quote = char;
+    else if (char === "(") round += 1;
+    else if (char === ")") round -= 1;
+    else if (char === "[") square += 1;
+    else if (char === "]") square -= 1;
+    else if (char === "{") curly += 1;
+    else if (char === "}") curly -= 1;
+    else if (char === ";" && round === 0 && square === 0 && curly === 0) return index;
+  }
+  return -1;
+}
+
 function applyPetOverlayGestureRendererPatch(source) {
   if (source.includes("function codexPetOverlayConfirmRendererDrag(")) return source;
   const ident = "[A-Za-z_$][\\w$]*";
@@ -1300,31 +1336,40 @@ function applyPetOverlayGestureRendererPatch(source) {
     if (matches.length !== 1) throw Error(`Pet overlay ${label} was not found uniquely`);
     return matches[0];
   };
-  const prefix = new RegExp(`(?<fn>${ident})=\\((?<event>${ident}),(?<released>${ident})\\)=>\\{let (?<gesture>${ident})=(?<ref>${ident})\\.current;`, "gu");
+  const prefix = new RegExp(`(?<fn>${ident})=\\((?<event>${ident}),(?<released>${ident})\\)=>\\{`, "gu");
   const finals = [...source.matchAll(prefix)].map(match => {
     const open = source.indexOf("{", match.index), end = findMatchingBrace(source, open);
-    return { match, body: source.slice(match.index, end + 1) };
-  }).filter(entry => entry.body.includes("`avatar-overlay-drag-end`") && entry.body.includes("beganOnQuickChatBar"));
+    const body = source.slice(match.index, end + 1);
+    const state = body.match(new RegExp(`let\\s*(?:[^;{}]*,)?(?<gesture>${ident})=(?<ref>${ident})\\.current;`));
+    return { match, body, state };
+  }).filter(entry => entry.state && entry.body.includes("avatar-overlay-drag-end") && entry.body.includes("beganOnQuickChatBar"));
   if (finals.length !== 1) throw Error("Pet overlay gesture finalizer was not found uniquely");
-  const { match, body } = finals[0], { event, released, gesture, ref } = match.groups;
+  const { match, body, state } = finals[0], { event, released } = match.groups;
+  const { gesture, ref } = state.groups;
   const service = one(new RegExp(`(?<api>${ident})\\.avatarOverlay\\?\\.setQuickChatStashed\\(null\\)`, "gu"), "gesture service").groups.api;
   const layout = one(new RegExp(`let\\{isGlobalRealtimeVoicePresentation:${ident},isVisible:${ident},layout:${ident},[^{};]+\\}=(?<message>${ident});`, "gu"), "gesture layout");
   const start = one(new RegExp(`${ref.replace(/[$]/g, "\\$")}\\.current=\\{beganOnQuickChatBar:`, "gu"), "gesture start");
-  const dispatch = one(new RegExp(`(?<dispatcher>${ident})\\.dispatchMessage\\(\`avatar-overlay-drag-start\`,\\{`, "gu"), "gesture dispatch");
-  const finish = one(new RegExp(`let\\{hasMoved:(?<moved>${ident}),releaseSample:(?<sample>${ident}),velocity:${ident}\\}=[^;]+;`, "gu"), "gesture result", body);
+  const dispatcher = `(?:${ident}\\.)?${ident}`;
+  const dispatch = one(new RegExp("(?<dispatcher>" + dispatcher + ")\\.dispatchMessage\\([\"`]avatar-overlay-drag-start[\"`],\\{", "gu"), "gesture dispatch");
+  const finishHead = one(new RegExp(`let\\{hasMoved:(?<moved>${ident}),releaseSample:(?<sample>${ident}),velocity:${ident}\\}=`, "gu"), "gesture result", body);
+  const finishEnd = findStatementSemicolon(body, finishHead.index + finishHead[0].length);
+  if (finishEnd === -1) throw Error("Pet overlay gesture result statement was incomplete");
+  const finish = { ...finishHead, 0: body.slice(finishHead.index, finishEnd + 1) };
   let finalizer = body.replace(match[0], match[0].replace("=(", "=async("));
   const pointer = `{pointerScreenX:codexPetOverlayReleaseSample.screenX,pointerScreenY:codexPetOverlayReleaseSample.screenY,shouldMove:${finish.groups.moved}&&!${gesture}.hasMoved&&${finish.groups.sample}!=null,...(${released}?{pointerWindowX:${event}.clientX,pointerWindowY:${event}.clientY}:{})}`;
   finalizer = finalizer.replace(finish[0],
     `${finish[0]}if(${gesture}.codexPetOverlayGestureId!=null){const codexPetOverlayReleaseSample=${finish.groups.sample}??${gesture}.samples.at(-1)??${gesture};await codexPetOverlayConfirmRendererDrag(${gesture},${service}.avatarOverlay,${released}&&!${gesture}.usesOrbPhysics&&${event}.altKey===!0,${pointer});${finish.groups.moved}||=${gesture}.hasMoved;}`);
   for (const kind of ["move", "end", "release"]) {
-    const call = one(new RegExp(`${dispatch.groups.dispatcher.replace(/[$]/g, "\\$")}\\.dispatchMessage\\(\`avatar-overlay-drag-${kind}\`,`, "gu"), `gesture ${kind}`, body)[0];
+    const call = one(new RegExp(dispatch.groups.dispatcher.replace(/[$]/g, "\\$") + "\\.dispatchMessage\\([\"`]avatar-overlay-drag-" + kind + "[\"`],", "gu"), `gesture ${kind}`, body)[0];
     finalizer = finalizer.replace(call, `${gesture}.codexPetOverlayGestureId==null&&${call}`);
   }
   let patched = source.replace(body, finalizer)
     .replace(layout[0], `${layout[0]}codexPetOverlayNativeDrag=${layout.groups.message}.layout?.codexPetOverlayNativeDrag===!0;`)
     .replace(start[0], `${ref}.current={codexPetOverlayGestureId:codexPetOverlayNativeDrag?crypto.randomUUID():null,beganOnQuickChatBar:`)
     .replace(dispatch[0], `${dispatch[0]}codexPetOverlayGestureId:${ref}.current.codexPetOverlayGestureId,`);
-  return `let codexPetOverlayNativeDrag=false;\n${codexPetOverlayConfirmRendererDrag}\n${patched}`;
+  const anchor = patched.indexOf("avatar-overlay-drag-end");
+  return insertRspackModuleLocal(patched,
+    `let codexPetOverlayNativeDrag=false;\n${codexPetOverlayConfirmRendererDrag}`, anchor);
 }
 
 function applyPetOverlayRendererPatch(source) {
@@ -1343,11 +1388,15 @@ function applyPetOverlayRendererPatch(source) {
   const actions = [...source.matchAll(new RegExp(`let (?<id>${ident})=(?<action>${ident})\\.requestId;`, "gu"))]
     .map(match => ({ ...containingBlock(match.index), ...match.groups }))
     .filter(block => block.body.includes(`{requestId:${block.id},layoutRevision:null}`));
-  if (actions.length !== 1) throw new Error("Pet overlay Quick Chat focus action was not found uniquely");
-  const action = actions[0], needle = `{requestId:${action.id},layoutRevision:null}`;
-  if (action.body.split(needle).length !== 2) throw new Error("Pet overlay Quick Chat preparation was not found uniquely");
-  let patched = source.slice(0, action.start) + action.body.replace(needle,
-    `{requestId:${action.id},layoutRevision:null,codexPetOverlayHiddenFocus:${action.action}.codexPetOverlayHiddenFocus===!0}`) + source.slice(action.end + 1);
+  let patched = source;
+  if (actions.length === 1) {
+    const action = actions[0], needle = `{requestId:${action.id},layoutRevision:null}`;
+    if (action.body.split(needle).length !== 2) throw new Error("Pet overlay Quick Chat preparation was not found uniquely");
+    patched = source.slice(0, action.start) + action.body.replace(needle,
+      `{requestId:${action.id},layoutRevision:null,codexPetOverlayHiddenFocus:${action.action}.codexPetOverlayHiddenFocus===!0}`) + source.slice(action.end + 1);
+  } else if (actions.length !== 0 || !source.includes("quickChatFocusPreparation")) {
+    throw new Error("Pet overlay Quick Chat focus action was not found uniquely");
+  }
   const pattern = new RegExp(
     `let\\{requestId:(?<request>${ident}),layoutRevision:(?<revision>${ident})\\}=(?<preparation>${ident}),(?<timer>${ident})=window\\.requestAnimationFrame\\(\\(\\)=>\\{\\k<timer>=window\\.requestAnimationFrame\\(\\(\\)=>\\{(?<complete>[\\s\\S]{0,500}?\\.completeQuickChatFocus\\([\\s\\S]{0,500}?\\.catch\\(${ident}\\))\\}\\)\\}\\);return\\(\\)=>\\{window\\.cancelAnimationFrame\\(\\k<timer>\\)\\}`,
     "gu",
@@ -1359,7 +1408,8 @@ function applyPetOverlayRendererPatch(source) {
     const { request, revision, preparation, timer, complete } = args.at(-1);
     return `let{requestId:${request},layoutRevision:${revision}}=${preparation},${timer}=codexPetOverlayScheduleQuickChatFocus(()=>{${complete}},${preparation}.codexPetOverlayHiddenFocus===!0);return ${timer}`;
   });
-  return `${codexPetOverlayScheduleQuickChatFocus}\n${patched}`;
+  const anchor = patched.indexOf("completeQuickChatFocus");
+  return insertRspackModuleLocal(patched, codexPetOverlayScheduleQuickChatFocus, anchor);
 }
 
 const descriptors = [
@@ -1368,7 +1418,9 @@ const descriptors = [
     phase: "webview-asset",
     order: 20_830,
     ciPolicy: "optional",
-    pattern: /^avatar-overlay-native-page-[^.]+\.js$/,
+    pattern: /\.(?:c|m)?js$/,
+    assetMatch: source => source.includes("avatar-overlay-drag-end") &&
+      source.includes("avatar-overlay-drag-start") && source.includes("usesOrbPhysics"),
     apply: applyPetOverlayGestureRendererPatch,
   },
   {
@@ -1383,7 +1435,9 @@ const descriptors = [
     phase: "webview-asset",
     order: 20_820,
     ciPolicy: "optional",
-    pattern: /^avatar-overlay-native-page-[^.]+\.js$/,
+    pattern: /\.(?:c|m)?js$/,
+    assetMatch: source => source.includes("completeQuickChatFocus") &&
+      source.includes("layoutRevision") && source.includes("requestAnimationFrame"),
     apply: applyPetOverlayRendererPatch,
   },
 ];

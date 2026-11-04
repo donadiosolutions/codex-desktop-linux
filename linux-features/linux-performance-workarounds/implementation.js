@@ -39,8 +39,28 @@ function markdownRules(source) {
   return candidates;
 }
 
+function rspackMarkdownRules(source) {
+  const root = String.raw`\.MarkdownRoot-([\w-]+)\[data-markdown-animated\]`;
+  const content = new RegExp(
+    String.raw`${root} :is\(\.FadeIn-[\w-]+,\.HorizontalRule-[\w-]+,\.ListItem-[\w-]+,\.TableRow-[\w-]+,\.Blockquote-[^)]+\)\{opacity:1;animation:(?<animation>[^;{}]+);animation-delay:var\(--fade-delay,0s\)\}`,
+    "gu",
+  );
+  const marker = new RegExp(
+    String.raw`${root} \.FadeListDecoration-[\w-]+::marker\{animation:(?<animation>[^;{}]+);animation-delay:var\(--fade-delay,0s\)\}`,
+    "gu",
+  );
+  const contentRules = [...source.matchAll(content)];
+  const markerRules = [...source.matchAll(marker)];
+  if (contentRules.length !== 1 || markerRules.length !== 1 || contentRules[0][1] !== markerRules[0][1]) return [];
+  const ranges = [contentRules[0], markerRules[0]].map((match) => {
+    const valueStart = match.index + match[0].indexOf(match.groups.animation);
+    return { start: valueStart, end: valueStart + match.groups.animation.length, patched: match.groups.animation === "none" };
+  });
+  return ranges.every(({ patched }) => patched) || ranges.every(({ patched }) => !patched) ? ranges : [];
+}
+
 function matchesLinuxMarkdownAnimationPerformanceContract(source) {
-  return markdownRules(source).length === 1;
+  return markdownRules(source).length === 1 || rspackMarkdownRules(source).length === 2;
 }
 
 function applyLinuxMarkdownAnimationPerformancePatch(source) {
@@ -50,6 +70,14 @@ function applyLinuxMarkdownAnimationPerformancePatch(source) {
     return candidate.patched
       ? source
       : source.slice(0, candidate.start) + candidate.replacement + source.slice(candidate.end);
+  }
+  const rspackCandidates = rspackMarkdownRules(source);
+  if (rspackCandidates.length === 2) {
+    let patched = source;
+    for (const candidate of rspackCandidates.sort((a, b) => b.start - a.start)) {
+      if (!candidate.patched) patched = patched.slice(0, candidate.start) + "none" + patched.slice(candidate.end);
+    }
+    return patched;
   }
   if (source.includes("data-markdown-animated") && source.includes("_FadeListDecoration_")) {
     console.warn(MARKDOWN_WARNING);
@@ -61,12 +89,12 @@ function layoutAnimationFlags(source) {
   const currentPattern = new RegExp(
     `animateLayout:(?<expression>!(${JS_IDENT})\\.isWorkspaceHome&&(${JS_IDENT})\\.animateLayout),` +
       `animateExit:!\\2\\.isWorkspaceHome&&\\3\\.animateExit,closeButtonTabIndex:-1,` +
-      "controller:" + JS_IDENT + ",dragActivator:`tab`,tab:\\2",
+      "controller:" + JS_IDENT + "(?:\\." + JS_IDENT + ")*,dragActivator:(?:`tab`|\"tab\"),tab:\\2",
     "gu",
   );
   const patchedPattern = new RegExp(
     `animateLayout:(?<expression>!1),animateExit:!(${JS_IDENT})\\.isWorkspaceHome&&(${JS_IDENT})\\.animateExit,` +
-      "closeButtonTabIndex:-1,controller:" + JS_IDENT + ",dragActivator:`tab`,tab:\\2",
+      "closeButtonTabIndex:-1,controller:" + JS_IDENT + "(?:\\." + JS_IDENT + ")*,dragActivator:(?:`tab`|\"tab\"),tab:\\2",
     "gu",
   );
   return [...source.matchAll(currentPattern), ...source.matchAll(patchedPattern)].map((match) => ({

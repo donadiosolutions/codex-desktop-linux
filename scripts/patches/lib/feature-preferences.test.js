@@ -61,3 +61,22 @@ test("Read Aloud and Agent Workspace preferences coexist in either feature order
     }
   }
 });
+
+test("current signed MessageHandler preference bridge shares live global state", async () => {
+  const input='var Host=class{globalState;windowManager;chunkedMessageSender;fetchWrapper;constructor(options){Object.assign(this,options)}async handleMessage(e,t){switch(t.type){case"fetch":await this.fetchWrapper.handleRequest(e,t);break;case"cancel-fetch":this.fetchWrapper.cancelRequest(e,t);break;}}};var Context=class{constructor(){this.messageHandler=new Host({})}async handleMessage(e,t){await this.messageHandler.handleMessage(e,t)}};electron.ipcMain.handle(channel,async(t,n)=>{if(!trusted(t))return;let a=context(t.sender);a?await a.handleMessage(t.sender,n):null});';
+  const patched=registerFeaturePreferences(registerFeaturePreferences(input,["workspace-command"]),["read-aloud"]);
+  assert.equal(registerFeaturePreferences(patched,["read-aloud"]),patched);
+  const context={process:{platform:"linux"},AbortController,electron:{ipcMain:{handle(){}}},channel:"test"};
+  vm.runInNewContext(patched+';globalThis.Host=Host',context);
+  const values=new Map,replies=[];
+  const host=new context.Host({globalState:{get:key=>values.get(key),set:(key,value)=>values.set(key,value)},chunkedMessageSender:{sendInlineMessageForView:(_,response)=>replies.push(response)}});
+  const origin={id:1};
+  const invoke=(method,params)=>host.handleMessage(origin,{type:"fetch",hostId:"local",requestId:"prefs",method:"POST",url:"vscode://codex/"+method,body:JSON.stringify(params)});
+  await invoke("set-global-state",{key:"workspace-command",value:"helper"});
+  assert.equal(values.get("workspace-command"),"helper");
+  await invoke("get-global-state",{key:"workspace-command"});
+  assert.equal(JSON.parse(replies.at(-1).bodyJsonString).value,"helper");
+  await invoke("set-global-state",{key:"unregistered",value:"forbidden"});
+  assert.equal(replies.at(-1).responseType,"error");
+  assert.equal(values.has("unregistered"),false);
+});
