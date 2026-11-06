@@ -120,3 +120,11 @@ test("chunks without the metadata owner are left unchanged with a diagnostic", (
   assert.equal(patch(chunk), chunk);
   assert.match(warnings.join("\n"), /native Applications metadata owner/);
 });
+
+
+test("current desktop services owns the metadata factory and public exposure",()=>{
+ const source='function services(){let apps=function(){if("darwin"===process.platform||"win32"===process.platform)return{getByBundleId:async e=>await cachedApp(e)??await (0,catalog.findById)(e),list:catalog.list,getIcon:async({appPath:e,size:t})=>"medium"===t?{iconSmall:null,iconMedium:await mediumIcon(e)}:{iconSmall:await smallIcon(e)}}}();return{nativeApplications:apps}}function expose(){return{nativeApplications:this.desktopServices.nativeApplications}}';
+ const result=patch(source);assert.notEqual(result,source);assert.equal(patch(result),result);
+ assert.doesNotThrow(()=>new vm.Script(result));
+ assert.throws(()=>patch(source.replace('nativeApplications:apps','nativeApplications:other')),/contract drift/);
+});

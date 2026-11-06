@@ -42,7 +42,7 @@ test("current pristine main chunk accepts the pipe patch without changing truste
   const dir = path.join(process.env.CODEX_SIGNED_EXTRACTED_APP, ".vite/build");
   const owners = fs.readdirSync(dir).filter(name => name.startsWith("early-bootstrap"))
     .map(name => ({ file: path.join(dir, name), source: fs.readFileSync(path.join(dir, name), "utf8") }))
-    .filter(({ source }) => source.includes(fixture.pipe));
+    .filter(({ source }) => source.includes("pluginMcpConfigOverrides") && source.includes("CODEX_APP_TOOLS_DEFERRED"));
   assert.equal(owners.length, 1);
   const [{ file, source }] = owners;
   const patch = descriptors.find(({ id }) => id === "automation-plugin-pipe").apply;
@@ -51,4 +51,20 @@ test("current pristine main chunk accepts the pipe patch without changing truste
   assert.equal(patch(patched), patched);
   assert.doesNotThrow(() => new vm.Script(patched));
   assert.equal(fs.readFileSync(file, "utf8"), source);
+});
+
+
+test("inline plugin synchronization is named without changing the original call", () => {
+  const inline = fixture.sync.replace("async function s9(", "async function(");
+  const source = [fixture.pipeDeclaration, fixture.prepare, fixture.pipe,
+    `async function reconcile(options){await ${inline}(options)}`, ...fixture.callers].join(";");
+  const patch = descriptors.find(({id}) => id === "automation-plugin-pipe").apply;
+  const patched = patch(source);
+  assert.notEqual(patched, source);
+  assert.equal(patch(patched), patched);
+  assert.match(patched, /await codexLinuxSyncInstalledAutomationPlugin\(options\)/);
+  assert.match(patched, /codexLinuxSyncAutomationPluginBeforeResume/);
+  assert.match(patched, /CODEX_APP_TOOLS_PIPE_PATH:process\.env\[rP\]/);
+  assert.doesNotThrow(() => new vm.Script(patched));
+  assert.throws(() => patch(source + `;async function another(options){await ${inline}(options)}`), /did not match/);
 });

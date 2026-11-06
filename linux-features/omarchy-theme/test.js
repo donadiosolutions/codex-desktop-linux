@@ -18,10 +18,23 @@ const {
   RUNTIME_VERSION,
   STYLE_LINK_ID,
   THEME_CSS_ENV,
+  INDEX_ENTRY_NEEDLES,
   applyOmarchyThemeLoader,
+  isWebviewIndexEntry,
   omarchyThemeRuntimeSource,
-  patchOmarchyThemeEntry,
 } = require("./patch.js");
+
+// Shape of the rspack runtime entry chunks referenced by webview/index.html
+// and webview/detached-window.html in the signed 26.1029.61003 package.
+const INDEX_ENTRY_FIXTURE =
+  'var e,a,c,p={Gav4(e,a,c){let f="codex-host-chunked-message-v1"},' +
+  'R2r9(e,a,c){c.a(e,async function(e,a){try{c("TL6G"),a()}catch(e){a(e)}},1)}};' +
+  'var O=p.O(void 0,["782259","727403","158624"],()=>p("R2r9"));p.O(O);export{v as __webpack_require__};\n' +
+  "//# sourceMappingURL=348410.09aab3f377.js.map";
+const DETACHED_ENTRY_FIXTURE = INDEX_ENTRY_FIXTURE.replace(
+  'c("TL6G"),a()',
+  'let{initializeDetachedWindow:e}=await c.e(770265).then(c.bind(c,"b9YD"));await e(),a()',
+);
 
 const FEATURE_DIR = __dirname;
 
@@ -73,8 +86,11 @@ test("omarchy-theme exposes optional patches, resources, and hooks when enabled"
     assert.equal(descriptors.length, 1);
     assert.equal(descriptors[0].id, "feature:omarchy-theme:omarchy-theme-css-loader");
     assert.equal(descriptors[0].ciPolicy, "optional");
-    assert.equal(descriptors[0].phase, "extracted-app:post-webview");
-    assert.equal(typeof descriptors[0].apply, "function");
+    assert.equal(descriptors[0].pattern, undefined);
+    assert.deepEqual(descriptors[0].assetNeedles, INDEX_ENTRY_NEEDLES);
+    assert.equal(descriptors[0].assetMatch(INDEX_ENTRY_FIXTURE, "348410.09aab3f377.js"), true);
+    assert.equal(descriptors[0].assetMatch(DETACHED_ENTRY_FIXTURE, "357055.8ef98feffe.js"), false);
+    assert.equal(descriptors[0].assetMatch(INDEX_ENTRY_FIXTURE, "async/202543.e3d6d1466d.js"), false);
 
     const plan = enabledLinuxFeatureInstallPlan({ featuresRoot });
     assert.deepEqual(
@@ -105,31 +121,23 @@ test("omarchy-theme exposes optional patches, resources, and hooks when enabled"
   });
 });
 
-test("Omarchy loader patches only the final script referenced by index.html", () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-omarchy-entry-"));
+test("renderer patch targets only the index entry chunk", () => {
+  assert.equal(isWebviewIndexEntry(INDEX_ENTRY_FIXTURE), true);
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (message) => warnings.push(message);
   try {
-    const assets = path.join(tempDir, "webview", "assets");
-    fs.mkdirSync(assets, { recursive: true });
-    fs.writeFileSync(path.join(tempDir, "webview", "index.html"),
-      '<script type="module" src="/assets/782259.a.js"></script><script type="module" src="/assets/348410.b.js"></script>');
-    fs.writeFileSync(path.join(assets, "782259.a.js"), "export const vendor=1;");
-    fs.writeFileSync(path.join(assets, "348410.b.js"), "export const app=1;");
-    assert.deepEqual(patchOmarchyThemeEntry(tempDir), { changed: true, assetName: "348410.b.js" });
-    assert.doesNotMatch(fs.readFileSync(path.join(assets, "782259.a.js"), "utf8"), /codexLinuxOmarchyThemeVersion/u);
-    assert.match(fs.readFileSync(path.join(assets, "348410.b.js"), "utf8"), /codexLinuxOmarchyThemeVersion/u);
-    assert.deepEqual(patchOmarchyThemeEntry(tempDir), { changed: false, assetName: "348410.b.js" });
-    fs.writeFileSync(path.join(tempDir, "webview", "index.html"),
-      '<script type="module" src="/assets/../escape.js"></script>');
-    fs.writeFileSync(path.join(tempDir, "webview", "escape.js"), "export const escape=1;");
-    assert.deepEqual(patchOmarchyThemeEntry(tempDir), { changed: false });
-    assert.doesNotMatch(fs.readFileSync(path.join(tempDir, "webview", "escape.js"), "utf8"), /codexLinuxOmarchyThemeVersion/u);
+    for (const source of [DETACHED_ENTRY_FIXTURE, "console.log('codex');"]) {
+      assert.equal(applyOmarchyThemeLoader(source), source);
+    }
   } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    console.warn = originalWarn;
   }
+  assert.equal(warnings.length, 2);
 });
 
 test("renderer patch is idempotent and installs one guarded runtime", () => {
-  const source = "console.log('codex');";
+  const source = INDEX_ENTRY_FIXTURE;
   const patched = applyOmarchyThemeLoader(source);
   assert.notEqual(patched, source);
   assert.equal(applyOmarchyThemeLoader(patched), patched);

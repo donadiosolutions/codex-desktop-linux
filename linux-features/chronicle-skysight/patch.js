@@ -1,7 +1,6 @@
 "use strict";
 
 const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
-const { findRequestHandlerMap, registerRequestHandlers, hasRegisteredRequestHandlers } = require("../../scripts/patches/lib/request-handlers.js");
 
 const CHRONICLE_MODULE_EXPRESSIONS = Object.freeze({
   childProcessVar: 'require("node:child_process")',
@@ -9,6 +8,46 @@ const CHRONICLE_MODULE_EXPRESSIONS = Object.freeze({
   pathVar: 'require("node:path")',
 });
 const IDENTIFIER = "[A-Za-z_$][\\w$]*";
+// Since 26.1029 the desktop main process no longer serves `vscode://codex/<method>`
+// webview fetches from a handler map: the fetch wrapper's `handleRequest` keeps
+// only the dictation route and throws for everything else. The Linux bridge
+// handlers live in one module-scope object and are routed from that request
+// entry point; replies use the same inline view-message sender as dictation.
+// Other Linux routes (read-aloud) may already sit in front of the dictation
+// route, so the entry tolerates `/*codex-linux-<id>-route*/` prefixes.
+const FETCH_ROUTE_MARKER = "/*codex-linux-chronicle-skysight-route*/";
+const BRIDGE_HANDLERS_NAME = "codexLinuxChronicleBridgeHandlers";
+const BRIDGE_HANDLERS_END_MARKER = "/*codex-linux-chronicle-bridge-handlers-end*/";
+const VIEW_RESPONSE_SENDER = "this.options.chunkedMessageSender.sendInlineMessageForView(";
+const FETCH_REQUEST_ENTRY = new RegExp(
+  `async handleRequest\\((${IDENTIFIER}),(${IDENTIFIER})\\)\\{(?=((?:\\/\\*codex-linux-[a-z-]+-route\\*\\/[^\\n]{0,4000}?)?)if\\("\\/codex\\/dictation-stream-connect-info"===\\2\\.url\\)return void await this\\.handleDictationStreamConnectInfoRequest\\(\\1,\\2\\);throw Error\\("HTTP requests must use the HTTP fetch service\\."\\)\\})`,
+  "g",
+);
+const DICTATION_RESPONSE_METHOD = new RegExp(
+  `async handleDictationStreamConnectInfoRequest\\((${IDENTIFIER}),${IDENTIFIER}\\)\\{`,
+  "g",
+);
+
+// Returns the unique desktop fetch request entry, or null when it drifted.
+function findFetchRequestEntry(source) {
+  const entries = matchAll(source, FETCH_REQUEST_ENTRY);
+  const responders = matchAll(source, DICTATION_RESPONSE_METHOD);
+  if (entries.length !== 1 || responders.length !== 1) return null;
+  const responderBody = source.slice(responders[0].index, responders[0].index + 1500);
+  if (!responderBody.includes(`${VIEW_RESPONSE_SENDER}${responders[0][1]},{type:"fetch-response"`)) return null;
+  const [text, webContentsVar, requestVar, routePrefix] = entries[0];
+  return {
+    insertAt: entries[0].index + text.length,
+    webContentsVar,
+    requestVar,
+    routePrefix,
+  };
+}
+
+function fetchRouteSource(webContentsVar, requestVar) {
+  return `${FETCH_ROUTE_MARKER}if(codexLinuxChronicleFetchHandler(${requestVar}?.url))return void await codexLinuxChronicleFetch(${requestVar},codexLinuxChronicleMessage=>${VIEW_RESPONSE_SENDER}${webContentsVar},codexLinuxChronicleMessage));`;
+}
+
 function warn(message, patchName) {
   console.warn(`WARN: ${message} - skipping ${patchName}`);
 }
@@ -31,6 +70,17 @@ function chronicleSkysightBridgeSource() {
     `"linux-record-replay-skysight-list-exclusions":async()=>codexLinuxRecordReplayRun(["skysight","list-exclusions"],5000)`,
     `"linux-record-replay-skysight-update-exclusion":async({kind:e,value:t,reason:n,remove:r}={})=>{let a=codexLinuxRecordReplayString(e),o=codexLinuxRecordReplayString(t);if(!a||!o)return{ok:!1,action:"skysight.update-exclusion",message:"kind and value are required"};let s=["skysight","update-exclusion","--kind",a,"--value",o];n&&s.push("--reason",String(n));r&&s.push("--remove");return codexLinuxRecordReplayRun(s,10000)}`,
   ].join(",");
+}
+
+// Module-scope handler registry. record-and-replay registers its own handlers
+// directly after BRIDGE_HANDLERS_END_MARKER, so keep the marker last.
+function chronicleSkysightBridgeHandlersSource() {
+  return `const ${BRIDGE_HANDLERS_NAME}={${chronicleSkysightBridgeSource()}};${BRIDGE_HANDLERS_END_MARKER}`;
+}
+
+function chronicleSkysightFetchHelperSource() {
+  return `function codexLinuxChronicleFetchHandler(e){if(typeof e!=="string"||!e.startsWith("vscode://codex/"))return null;let t=e.slice(15);return Object.prototype.hasOwnProperty.call(${BRIDGE_HANDLERS_NAME},t)&&typeof ${BRIDGE_HANDLERS_NAME}[t]==="function"?${BRIDGE_HANDLERS_NAME}[t]:null}
+async function codexLinuxChronicleFetch(e,t){let n=e?.requestId;try{let r=codexLinuxChronicleFetchHandler(e?.url);if(!r)throw Error("Unsupported Linux bridge method");let a;try{a=typeof e?.body==="string"&&e.body.length>0?JSON.parse(e.body):e?.body??{}}catch{throw Error("Invalid Linux bridge request")}let o=await r(a&&typeof a==="object"&&!Array.isArray(a)?a:{});t({type:"fetch-response",responseType:"success",requestId:n,status:200,headers:{"content-type":"application/json"},bodyJsonString:JSON.stringify(o??null)})}catch(r){t({type:"fetch-response",responseType:"error",requestId:n,status:500,error:r instanceof Error?r.message:String(r)})}}`;
 }
 
 function recordReplayRuntimeHelperSource({ childProcessVar, fsVar, pathVar }) {
@@ -136,7 +186,7 @@ function chronicleServiceClassMatches(source) {
 
 const LINUX_PLATFORM_CHECK = "\"linux\"===process.platform";
 const LINUX_PLATFORM_PATTERN = '"linux"===process\\.platform';
-const GATE_REASON_LOOKAHEAD = `(?=async\\(\\)=>\\{[\\s\\S]{0,300}?reason:${literal("skysight_gate_enabled")})`;
+const GATE_REASON = new RegExp(`reason:${literal("skysight_gate_enabled")}`);
 
 function chronicleControllerInitMatches(source, patched) {
   const pattern = patched
@@ -149,7 +199,13 @@ function chronicleArchiveDependencyMatches(source, patched) {
   const prefix = patched
     ? `archiveLegacyChronicleSkill:${LINUX_PLATFORM_PATTERN}\\?async\\(\\)=>\\{\\}:`
     : "archiveLegacyChronicleSkill:";
-  return matchAll(source, new RegExp(`${prefix}${GATE_REASON_LOOKAHEAD}`, "g"));
+  return matchAll(source, new RegExp(`${prefix}(?=async\\(\\)=>\\{)`, "g")).filter((match) => {
+    // The signed bundle may inline the complete archiver before its reason
+    // argument. Bound the semantic anchor by the dependency body, not length.
+    const open = source.indexOf("{", match.index + match[0].length);
+    const close = findMatchingBrace(source, open);
+    return close !== -1 && GATE_REASON.test(source.slice(open, close + 1));
+  });
 }
 
 function chronicleControllerGetterMatches(source, patched) {
@@ -169,61 +225,6 @@ function chronicleServiceGateMatches(source) {
       "g",
     ),
   );
-}
-
-function chronicleHandlerMap(source) {
-  try {
-    return { kind: "fetch-handler", map: findRequestHandlerMap(source) };
-  } catch {}
-
-  const candidates = [];
-  if (source.includes('"get-global-state":async')) {
-    throw Error("Found a retired Chronicle bridge handler map");
-  }
-  for (const match of source.matchAll(/(?<![\w$.])handlers=\{/g)) {
-    const start = match.index + match[0].length - 1;
-    const end = findMatchingBrace(source, start);
-    if (end < 0) continue;
-    const text = source.slice(start + 1, end);
-    const tail = source.slice(end + 1, end + 160);
-    if (
-      text.split('"set-remote-wsl-connections-enabled":').length === 2
-      && /(?:var|let|const)\s+[A-Za-z_$][\w$]*=new\s+[A-Za-z_$][\w$]*\(\)\.handlers/.test(tail)
-    ) {
-      candidates.push({ start, end, text });
-    }
-  }
-  if (candidates.length !== 1) throw Error("Expected one current bridge handler map");
-  return { kind: "bridge-handlers", map: candidates[0] };
-}
-
-function chronicleBridgeRegistered(source, payload) {
-  try {
-    const { kind, map } = chronicleHandlerMap(source);
-    if (kind === "fetch-handler") return hasRegisteredRequestHandlers(source, payload);
-    return source.split(payload).length === 2
-      && map.text.includes(payload)
-      && chronicleBridgeKeys(payload).every(key => map.text.split(`${JSON.stringify(key)}:`).length === 2);
-  } catch {
-    return false;
-  }
-}
-
-function registerChronicleBridge(source, payload) {
-  if (chronicleBridgeRegistered(source, payload)) return source;
-  const { kind, map } = chronicleHandlerMap(source);
-  if (kind === "fetch-handler") return registerRequestHandlers(source, payload);
-  const keys = chronicleBridgeKeys(payload);
-  if (keys.some(key => source.includes(`${JSON.stringify(key)}:`))) {
-    throw Error("Found incomplete or misplaced request handlers");
-  }
-  return source.slice(0, map.start + 1) + payload + "," + source.slice(map.start + 1);
-}
-
-function chronicleBridgeKeys(payload) {
-  const keys = [...payload.matchAll(/"([^"\\]+)":async/g)].map(match => match[1]);
-  if (!keys.length || new Set(keys).size !== keys.length) throw Error("Invalid request handler payload");
-  return keys;
 }
 
 function coherentContract(matches) {
@@ -280,15 +281,16 @@ function chronicleControllerContract(source) {
     controllerGetters: chronicleControllerGetterMatches(source, true),
     serviceGates: chronicleServiceGateMatches(source),
   };
-  const helper = recordReplayRuntimeHelperSource(CHRONICLE_MODULE_EXPRESSIONS);
-  const bridge = chronicleSkysightBridgeSource();
-  try { chronicleHandlerMap(source); } catch { return "drifted"; }
+  const helperParts = chronicleMainHelperParts();
+  const entry = findFetchRequestEntry(source);
+  const routeMarkerCount = countOccurrences(source, FETCH_ROUTE_MARKER);
+  const routeInEntry = entry != null
+    && entry.routePrefix.includes(fetchRouteSource(entry.webContentsVar, entry.requestVar));
   const currentCoherent = coherentContract(current);
   const patchedCoherent = coherentContract(patched);
-  const helperCount = countOccurrences(source, helper);
+  const helperCounts = helperParts.map((part) => countOccurrences(source, part));
   const helperMarkerCount = countOccurrences(source, "function codexLinuxChronicleRequest(");
-  const bridgeCount = countOccurrences(source, bridge);
-  const bridgeRegistered = chronicleBridgeRegistered(source, bridge);
+  const handlersCount = countOccurrences(source, `const ${BRIDGE_HANDLERS_NAME}=`);
 
   if (
     currentCoherent
@@ -296,10 +298,11 @@ function chronicleControllerContract(source) {
     && patched.archiveDependencies.length === 0
     && patched.controllerInits.length === 0
     && patched.controllerGetters.length === 0
-    && helperCount === 0
+    && helperCounts.every((value) => value === 0)
     && helperMarkerCount === 0
-    && bridgeCount === 0
-    && !bridgeRegistered
+    && handlersCount === 0
+    && routeMarkerCount === 0
+    && entry != null
   ) return "current";
   if (
     patchedCoherent
@@ -307,12 +310,31 @@ function chronicleControllerContract(source) {
     && current.archiveDependencies.length === 0
     && current.controllerInits.length === 0
     && current.controllerGetters.length === 0
-    && helperCount === 1
+    && helperCounts.every((value) => value === 1)
     && helperMarkerCount === 1
-    && bridgeCount === 1
-    && bridgeRegistered
+    && handlersCount === 1
+    && routeMarkerCount === 1
+    && routeInEntry
   ) return "patched";
   return "drifted";
+}
+
+function chronicleMainHelperParts() {
+  return [
+    recordReplayRuntimeHelperSource(CHRONICLE_MODULE_EXPRESSIONS),
+    chronicleSkysightBridgeHandlersSource(),
+    chronicleSkysightFetchHelperSource(),
+  ];
+}
+
+function chronicleMainHelperSource() {
+  return `${chronicleMainHelperParts().join("\n")}\n`;
+}
+
+function insertModuleHelper(source, helper) {
+  const prologue = ['"use strict";', "'use strict';"].find((value) => source.startsWith(value));
+  const at = prologue == null ? 0 : prologue.length;
+  return `${source.slice(0, at)}${helper}${source.slice(at)}`;
 }
 
 function applyChronicleSkysightMainBridgePatch(currentSource) {
@@ -324,8 +346,7 @@ function applyChronicleSkysightMainBridgePatch(currentSource) {
     return currentSource;
   }
 
-  const helper = recordReplayRuntimeHelperSource(CHRONICLE_MODULE_EXPRESSIONS);
-  const bridge = chronicleSkysightBridgeSource();
+  const entry = findFetchRequestEntry(currentSource);
   const init = chronicleControllerInitMatches(currentSource, false)[0];
   const archiveDependency = chronicleArchiveDependencyMatches(currentSource, false)[0];
   const getter = chronicleControllerGetterMatches(currentSource, false)[0];
@@ -333,15 +354,12 @@ function applyChronicleSkysightMainBridgePatch(currentSource) {
   const initReplacement = `(${init[1]}||${linux})&&(${init[2]}=new ${init[3]}({request:${linux}?codexLinuxChronicleRequest:${init[4]}.requestComputerUseWorker,reconcileComputerHistoryPluginInstallation:${linux}?()=>{}:`;
   const archiveDependencyReplacement = `archiveLegacyChronicleSkill:${linux}?async()=>{}:`;
   const getterReplacement = `getSkysightRecorderController:()=>${linux}||${getter[1]}().skysight?${getter[2]}:null,artifactSessionHostLifecycle:`;
-  let patched = currentSource
+  const routed = `${currentSource.slice(0, entry.insertAt)}${fetchRouteSource(entry.webContentsVar, entry.requestVar)}${currentSource.slice(entry.insertAt)}`;
+  let patched = routed
     .replace(init[0], () => initReplacement)
     .replace(archiveDependency[0], () => archiveDependencyReplacement)
     .replace(getter[0], () => getterReplacement);
-  try { patched = registerChronicleBridge(patched, bridge); } catch (error) {
-    warn(error.message, patchName);
-    return currentSource;
-  }
-  patched = `${helper}\n${patched}`;
+  patched = insertModuleHelper(patched, chronicleMainHelperSource());
   if (chronicleControllerContract(patched) !== "patched") {
     warn("Chronicle controller contract changed while patching", patchName);
     return currentSource;
@@ -359,11 +377,13 @@ const descriptors = [
 ];
 
 module.exports = {
+  BRIDGE_HANDLERS_END_MARKER,
+  BRIDGE_HANDLERS_NAME,
   applyChronicleSkysightMainBridgePatch,
   chronicleControllerContract,
-  registerChronicleBridge,
-  chronicleBridgeRegistered,
+  chronicleSkysightBridgeHandlersSource,
   chronicleSkysightBridgeSource,
+  chronicleSkysightFetchHelperSource,
   chronicleSkysightHelperSource,
   descriptors,
   recordReplayRuntimeHelperSource,

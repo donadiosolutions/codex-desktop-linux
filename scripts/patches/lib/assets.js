@@ -2,7 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { findExportedAlias } = require("./minified-js.js");
+const { findMatchingBrace } = require("./minified-js.js");
 const { patchBreaksJavaScriptSyntax } = require("./javascript-syntax.js");
 
 function readDirectoryNames(dir) {
@@ -32,6 +32,13 @@ function findIconAsset(extractedDir) {
 }
 
 function regexpTest(filenamePattern, name) {
+  if (filenamePattern == null) return true;
+  filenamePattern.lastIndex = 0;
+  return filenamePattern.test(name);
+}
+
+function regexpTest(filenamePattern, name) {
+  if (filenamePattern == null) return true;
   filenamePattern.lastIndex = 0;
   return filenamePattern.test(name);
 }
@@ -43,6 +50,7 @@ const rspackAssetCache = new Map();
 function listWebviewAssetNames(assetsDir, filenamePattern) {
   const direct = readDirectoryNames(assetsDir);
   const names = direct.filter((name) => regexpTest(filenamePattern, name) && fs.statSync(path.join(assetsDir, name)).isFile());
+  if (filenamePattern == null) return names.sort();
   if (!filenamePattern.source.includes("js") && !filenamePattern.source.includes("css")) return names.sort();
   const asyncDir = path.join(assetsDir, "async");
   const stamp = [assetsDir, asyncDir].map((dir) => fs.existsSync(dir) ? fs.statSync(dir).mtimeMs : 0).join(":");
@@ -88,39 +96,92 @@ function rejectsSyntaxBreak(assetName, original, patched) {
   return true;
 }
 
-function patchAssetFiles(extractedDir, filenamePattern, patchFn, missingWarnMessage) {
+// The official webview is an rspack build: entry chunks live in
+// webview/assets and lazily loaded chunks in webview/assets/async, all with
+// numeric content-hashed names. Asset names below are relative to
+// webview/assets (for example "async/24191.7b05d5cf83.js").
+const WEBVIEW_SCRIPT_DIRECTORIES = ["", "async"];
+
+function listWebviewAssets(extractedDir) {
+  const webviewAssetsDir = path.join(extractedDir, "webview", "assets");
+  const names = [];
+  for (const directory of WEBVIEW_SCRIPT_DIRECTORIES) {
+    for (const entry of readDirectoryEntries(path.join(webviewAssetsDir, directory))) {
+      if (entry.isFile()) {
+        names.push(directory === "" ? entry.name : `${directory}/${entry.name}`);
+      }
+    }
+  }
+  return names.sort();
+}
+
+function listWebviewScriptAssets(extractedDir) {
+  return listWebviewAssets(extractedDir).filter((name) => /\.js$/.test(name));
+}
+
+function readDirectoryEntries(dir) {
+  if (!fs.existsSync(dir)) {
+    return [];
+  }
+  return fs.readdirSync(dir, { withFileTypes: true });
+}
+
+// Returns the webview script assets whose source contains every needle.
+function findWebviewAssetsContaining(extractedDir, needles) {
+  const webviewAssetsDir = path.join(extractedDir, "webview", "assets");
+  return listWebviewScriptAssets(extractedDir).filter((assetName) => {
+    const source = fs.readFileSync(path.join(webviewAssetsDir, assetName), "utf8");
+    return needles.every((needle) => source.includes(needle));
+  });
+}
+
+function assetBaseName(assetName) {
+  return assetName.slice(assetName.lastIndexOf("/") + 1);
+}
+
+function selectAssetCandidates(extractedDir, filenamePattern, candidates) {
+  if (candidates != null) {
+    return [...candidates].sort();
+  }
+  return listWebviewAssetNames(path.join(extractedDir, "webview", "assets"), filenamePattern);
+}
+
+function patchAssetFiles(extractedDir, filenamePattern, patchFn, missingWarnMessage, candidates = null) {
   const webviewAssetsDir = path.join(extractedDir, "webview", "assets");
   if (!fs.existsSync(webviewAssetsDir)) {
     console.warn(
       `WARN: Could not find webview assets directory in ${webviewAssetsDir} — skipping asset patch`,
     );
-    return { matched: 0, changed: 0 };
+    return { matched: 0, changed: 0, changedAssets: [] };
   }
 
-  const candidates = listWebviewAssetNames(webviewAssetsDir, filenamePattern);
-
-  if (candidates.length === 0) {
+  const selected = selectAssetCandidates(extractedDir, filenamePattern, candidates);
+  if (selected.length === 0) {
     console.warn(missingWarnMessage);
-    return { matched: 0, changed: 0 };
+    return { matched: 0, changed: 0, changedAssets: [] };
   }
 
   const pendingWrites = [];
-  for (const candidate of candidates) {
+  for (const candidate of selected) {
     const filePath = path.join(webviewAssetsDir, candidate);
     const currentSource = fs.readFileSync(filePath, "utf8");
     const patchedSource = patchFn(currentSource);
     if (patchedSource !== currentSource) {
       if (rejectsSyntaxBreak(candidate, currentSource, patchedSource)) {
-        return { matched: candidates.length, changed: 0 };
+        return { matched: selected.length, changed: 0, changedAssets: [] };
       }
-      pendingWrites.push({ filePath, patchedSource });
+      pendingWrites.push({ candidate, filePath, patchedSource });
     }
   }
   for (const { filePath, patchedSource } of pendingWrites) {
     fs.writeFileSync(filePath, patchedSource, "utf8");
   }
 
-  return { matched: candidates.length, changed: pendingWrites.length };
+  return {
+    matched: selected.length,
+    changed: pendingWrites.length,
+    changedAssets: pendingWrites.map(({ candidate }) => candidate),
+  };
 }
 
 function patchUniqueAssetFile(
@@ -131,16 +192,17 @@ function patchUniqueAssetFile(
   missingWarnMessage,
   ambiguousWarnMessage,
   matchPolicy = "unique",
+  candidates = null,
 ) {
   const webviewAssetsDir = path.join(extractedDir, "webview", "assets");
   if (!fs.existsSync(webviewAssetsDir)) {
     console.warn(
       `WARN: Could not find webview assets directory in ${webviewAssetsDir} — skipping asset patch`,
     );
-    return { matched: 0, changed: 0, assetName: null };
+    return { matched: 0, changed: 0, assetName: null, changedAssets: [] };
   }
 
-  const matches = listWebviewAssetNames(webviewAssetsDir, filenamePattern)
+  const matches = selectAssetCandidates(extractedDir, filenamePattern, candidates)
     .map((assetName) => ({
       assetName,
       source: fs.readFileSync(path.join(webviewAssetsDir, assetName), "utf8"),
@@ -149,25 +211,30 @@ function patchUniqueAssetFile(
 
   if (matches.length === 0) {
     console.warn(missingWarnMessage);
-    return { matched: 0, changed: 0, assetName: null };
+    return { matched: 0, changed: 0, assetName: null, changedAssets: [] };
   }
   if (matches.length !== 1 && matchPolicy !== "all") {
     console.warn(`${ambiguousWarnMessage}: ${matches.map(({ assetName }) => assetName).join(", ")}`);
-    return { matched: matches.length, changed: 0, assetName: null };
+    return { matched: matches.length, changed: 0, assetName: null, changedAssets: [] };
   }
 
   const pending = [];
   for (const { assetName, source } of matches) {
     const patchedSource = patchFn(source);
     if (rejectsSyntaxBreak(assetName, source, patchedSource)) {
-      return { matched: matches.length, changed: 0, assetName: matches[0].assetName };
+      return { matched: matches.length, changed: 0, assetName: matches[0].assetName, changedAssets: [] };
     }
     if (patchedSource !== source) pending.push({ assetName, patchedSource });
   }
   for (const { assetName, patchedSource } of pending) {
     fs.writeFileSync(path.join(webviewAssetsDir, assetName), patchedSource, "utf8");
   }
-  return { matched: matches.length, changed: pending.length, assetName: matches[0].assetName };
+  return {
+    matched: matches.length,
+    changed: pending.length,
+    assetName: matches[0].assetName,
+    changedAssets: pending.map(({ assetName }) => assetName),
+  };
 }
 
 function readWebviewAsset(webviewAssetsDir, assetName) {
@@ -179,7 +246,8 @@ function findRequiredWebviewAsset(webviewAssetsDir, filenamePattern, marker, des
     throw new Error(`Missing webview assets directory ${webviewAssetsDir}`);
   }
 
-  const candidates = listWebviewAssetNames(webviewAssetsDir, filenamePattern);
+  const candidates = listWebviewScriptAssets(path.dirname(path.dirname(webviewAssetsDir)))
+    .filter((name) => regexpTest(filenamePattern, assetBaseName(name)));
   const matches = marker == null
     ? candidates
     : candidates.filter((name) => readWebviewAsset(webviewAssetsDir, name).includes(marker));
@@ -191,28 +259,69 @@ function findRequiredWebviewAsset(webviewAssetsDir, filenamePattern, marker, des
   return matches[0];
 }
 
+// The rspack webview wraps `vscode://codex/<method>` requests in a module such as
+//   M8aW(e,t,n){n.d(t,{vF:()=>"vscode",Xb:()=>s,IF:()=>a});...
+//     async function s(...e){let[t,n]=e,{params:r,select:i,signal:a,source:l,responsePriority:u}=n??{};
+//       return o(t,r,i,a,l,u)}
+//     async function o(e,t,n,a,s,o){let l=(await i._n.getInstance().post(`vscode://codex/${e}`,...
+// There are no ESM exports between app chunks any more: injected code reaches
+// the wrapper through the webpack require of a module factory, as
+// `require(moduleId)[exportName]`, after loading `chunkId` when needed.
+function findInlineRequestWrappers(body) {
+  const id = "[A-Za-z_$][\\w$]*";
+  const pattern = new RegExp(
+    `async function (${id})\\(\\.\\.\\.(${id})\\)\\{let\\[(${id}),(${id})\\]=\\2,` +
+    `\\{params:(${id}),select:(${id}),signal:(${id}),source:(${id}),responsePriority:(${id})\\}=\\4\\?\\?\\{\\};` +
+    `return async function\\((${id}),(${id}),(${id}),(${id}),(${id}),(${id})\\)\\{`, "gu");
+  return [...body.matchAll(pattern)].filter(match => {
+    const open = match.index + match[0].length - 1;
+    const close = findMatchingBrace(body, open);
+    if (close < 0) return false;
+    const inner = body.slice(open, close + 1);
+    const args = [3, 5, 6, 7, 8, 9].map(index => match[index]).join(",");
+    const request = new RegExp(`\\.getInstance\\(\\)\\.post\\(\`vscode://codex/\\$\\{${match[10]}\\}\`,JSON\\.stringify\\(${match[11]}\\),`, "u");
+    return request.test(inner) && body.slice(close + 1).startsWith(`(${args})}`);
+  });
+}
+
 function findCodexRequestExportName(source) {
-  let match = source.match(
-    /async function\s+([A-Za-z_$][\w$]*)\(\.\.\.[^)]+\)\{let\[[^\]]+\]=[^;]+,\{params:[^}]+source:[^}]+\}=[^;]+;return\s+[A-Za-z_$][\w$]*\([^)]*\)\}/,
-  );
-  if (match != null) {
-    return findExportedAlias(source, match[1]);
+  const ID = "[A-Za-z_$][\\w$]*";
+  const modulesStart = source.indexOf("__webpack_modules__={");
+  if (modulesStart < 0) return null;
+  const header = new RegExp(`^,?("[^"]+"|${ID}|\\d+)\\(((?:${ID}(?:,${ID}){0,2})?)\\)\\{`, "u");
+  const escape = (value) => value.replace(/\$/g, "\\$");
+  const matches = [];
+  let index = modulesStart + "__webpack_modules__={".length;
+  while (index < source.length) {
+    const moduleHeader = header.exec(source.slice(index, index + 200));
+    if (moduleHeader == null) break;
+    const open = index + moduleHeader[0].length - 1;
+    const close = findMatchingBrace(source, open);
+    if (close < 0) break;
+    index = close + 1;
+    const body = source.slice(open, close + 1);
+    const [, exportsParam, requireParam] = moduleHeader[2].split(",");
+    if (requireParam == null || !body.includes("vscode://codex/${")) continue;
+    const raw = [...body.matchAll(new RegExp(
+      `async function (${ID})\\(${ID}(?:,${ID})*\\)\\{let ${ID}=\\(await ${ID}(?:\\.${ID})*\\.getInstance\\(\\)\\.post\\(\`vscode://codex/\\$\\{`,
+      "gu",
+    ))];
+    const wrappers = raw.length === 0 ? findInlineRequestWrappers(body) : raw.length !== 1 ? [] : [...body.matchAll(new RegExp(
+      `async function (${ID})\\(\\.\\.\\.(${ID})\\)\\{let\\[(${ID}),(${ID})\\]=\\2,` +
+        `\\{params:(${ID}),select:(${ID}),signal:(${ID}),source:(${ID})(?:,responsePriority:(${ID}))?\\}=\\4\\?\\?\\{\\};` +
+        `return ${escape(raw[0][1])}\\(\\3,\\5,\\6,\\7,\\8(?:,\\9)?\\)\\}`,
+      "gu",
+    ))];
+    if (wrappers.length !== 1) continue;
+    const exportNames = [...body.matchAll(new RegExp(
+      `(?<![\\w$.])${escape(requireParam)}\\.d\\(${escape(exportsParam)},\\{(?:[^{}]*?,)?(${ID}):\\(\\)=>${escape(wrappers[0][1])}(?=[,}])`,
+      "gu",
+    ))];
+    if (exportNames.length !== 1) continue;
+    const moduleId = moduleHeader[1].startsWith("\"") ? JSON.parse(moduleHeader[1]) : moduleHeader[1];
+    matches.push({ moduleId, exportName: exportNames[0][1] });
   }
-
-  match = source.match(
-    /function\s+([A-Za-z_$][\w$]*)\(\.\.\.[^)]+\)\{let\[[^\]]+\]=[^;]+,\{params:[^}]+select:[^}]+signal:[^}]+source:[^}]+\}=[^;]+;return\s+([A-Za-z_$][\w$]*)\([^)]*\)\}/,
-  );
-  if (match != null) {
-    const [, wrapperName, rawRequestName] = match;
-    const rawRequestPattern = new RegExp(
-      `async function\\s+${rawRequestName}\\([^)]*\\)\\{[\\s\\S]{0,600}?vscode://codex/`,
-    );
-    if (rawRequestPattern.test(source)) {
-      return findExportedAlias(source, wrapperName);
-    }
-  }
-
-  return null;
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function findCodexRequestWebviewAsset(webviewAssetsDir) {
@@ -220,25 +329,18 @@ function findCodexRequestWebviewAsset(webviewAssetsDir) {
     throw new Error(`Missing webview assets directory ${webviewAssetsDir}`);
   }
 
-  const settingStorageCandidates = fs
-    .readdirSync(webviewAssetsDir)
-    .filter((name) => regexpTest(/^setting-storage-.*\.js$/, name))
-    .sort();
-  const allRequestCandidates = fs
-    .readdirSync(webviewAssetsDir)
-    .filter((name) => regexpTest(/\.js$/, name))
-    .sort()
-    .filter((name) => !settingStorageCandidates.includes(name));
-  const modernCandidates = [...settingStorageCandidates, ...allRequestCandidates];
+  const candidates = listWebviewScriptAssets(path.dirname(path.dirname(webviewAssetsDir)));
   const matches = [];
-  for (const candidate of modernCandidates) {
+  for (const candidate of candidates) {
     const source = readWebviewAsset(webviewAssetsDir, candidate);
-    if (!source.includes("vscode://codex/")) {
+    if (!source.includes("vscode://codex/${")) {
       continue;
     }
-    const exportName = findCodexRequestExportName(source);
-    if (exportName != null) {
-      matches.push({ assetName: candidate, exportName });
+    const requestModule = findCodexRequestExportName(source);
+    const chunkId = source.match(/(?:^|[;\n])export const __rspack_esm_id=(\d+);/)?.[1] ??
+      source.match(/(?:^|[;\n])export const __rspack_esm_ids=\[(\d+)\];/)?.[1];
+    if (requestModule != null && chunkId != null) {
+      matches.push({ assetName: candidate, chunkId: Number(chunkId), ...requestModule });
     }
   }
 
@@ -265,6 +367,9 @@ function findImportedAsset(webviewAssetsDir, importerAsset, description) {
 
 module.exports = {
   listWebviewAssetNames,
+  findWebviewAssetsContaining,
+  listWebviewAssets,
+  listWebviewScriptAssets,
   findCodexRequestWebviewAsset,
   findIconAsset,
   findImportedAsset,

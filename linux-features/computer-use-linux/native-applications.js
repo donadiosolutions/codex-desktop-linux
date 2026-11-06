@@ -4,6 +4,9 @@ const MARKER = "/* linux-native-applications */";
 // The rspack main process initializes the fetch handler's metadata service with
 // an inline factory expression in a class field.
 const FACTORY = /nativeApplications=\(function\(\)\{(?<patched>\/\* linux-native-applications \*\/if\("linux"===process\.platform\)return codexLinuxNativeApplications\(\);)?(?<original>if\("darwin"===process\.platform\|\|"win32"===process\.platform\)return\{getByBundleId:async (?<id>[\w$]+)=>await [\w$]+\(\k<id>\)\?\?await (?:\(0,[\w$.]+\)|[\w$.]+)\(\k<id>\),list:[\w$.]+,getIcon:async\(\{appPath:(?<app>[\w$]+),size:(?<size>[\w$]+)\}\)=>"medium"===\k<size>\?\{iconSmall:null,iconMedium:await [\w$]+\(\k<app>\)\}:\{iconSmall:await [\w$]+\(\k<app>\)\}\})\}\)\(\)/g;
+const CURRENT_FACTORY = new RegExp(FACTORY.source
+  .replace("nativeApplications=\\(function", "(?<binding>[\\w$]+)=function")
+  .replace("\\}\\)\\(\\)", "\\}\\(\\)"), "g");
 // Chunk files are CommonJS modules, so the injected runtime uses Node's require.
 const DEPENDENCIES = {
   childProcessVar: "codexLinuxNativeApplicationsChildProcess",
@@ -54,14 +57,15 @@ function runtimeSource() {
 
 function applyNativeApplicationsPatch(source) {
   const fail = () => { throw new Error("Linux native Applications contract drift: missing, duplicate, or partial native metadata owner"); };
-  const exposures = [...source.matchAll(/nativeApplications:this\.fetchHandler\.nativeApplications/g)];
-  const assignments = [...source.matchAll(/(?<![\w$.])nativeApplications=/g)];
+  const exposures = [...source.matchAll(/nativeApplications:this\.(?:fetchHandler|desktopServices)\.nativeApplications/g)];
+  const currentOwners = [...source.matchAll(CURRENT_FACTORY)];
+  const assignments = [...source.matchAll(/(?<![\w$.])nativeApplications=/g), ...currentOwners];
   if (exposures.length === 0 && assignments.length === 0) {
     // Only the chunk holding the fetch handler owns this metadata service.
     console.warn("WARN: Could not find the native Applications metadata owner - skipping Linux native Applications patch");
     return source;
   }
-  const owners = [...source.matchAll(FACTORY)];
+  const owners = [...source.matchAll(FACTORY), ...currentOwners];
   if (owners.length !== 1 || exposures.length !== 1 || assignments.length !== 1) fail();
   const owner = owners[0];
   const runtime = runtimeSource();
@@ -72,7 +76,8 @@ function applyNativeApplicationsPatch(source) {
     return source;
   }
   if (markerCount !== 0 || runtimeCount !== 0 || source.includes("codexLinuxNativeApplications") || source.includes("codexLinuxNativeDesktopApps(")) fail();
-  const insertAt = owner.index + "nativeApplications=(function(){".length;
+  if (owner.groups.binding != null && !new RegExp(`nativeApplications:${owner.groups.binding}(?=[,}])`).test(source)) fail();
+  const insertAt = owner.index + owner[0].indexOf("{") + 1;
   const patched = source.slice(0, insertAt) +
     `${MARKER}if("linux"===process.platform)return codexLinuxNativeApplications();` +
     source.slice(insertAt);

@@ -12,9 +12,9 @@ const {
 } = require("../../scripts/patches/impl/computer-use.js");
 
 const {
+  NATIVE_SETTINGS_VISIBILITY_NEEDLES,
   applyNativeSettingsAvailabilityPatch,
   applyNativeSettingsVisibilityPatch,
-  matchesNativeSettingsVisibilityContract,
 } = require("./settings.js");
 const { applyUnifiedComputerUsePatch } = require("./unified.js");
 const { applyNativeApplicationsPatch } = require("./native-applications.js");
@@ -56,7 +56,7 @@ module.exports = [
     phase: "webview-asset",
     order: 20_136,
     ciPolicy: "optional",
-    pattern: /^(?:app-initial-[^.]+|(?:async\/)?\d+\.[0-9a-f]+)\.js$/,
+    assetNeedles: ["hasDesktopRuntime:!0,usesDesktopMcp:", "readDynamicTools:e=>"],
     assetMatch: source => source.includes("hasDesktopRuntime:!0,usesDesktopMcp:") &&
       /readDynamicTools:e=>[\w$]+\.request\(e\),traceRequest:e=>/.test(source),
     matchPolicy: "all",
@@ -69,11 +69,8 @@ module.exports = [
     phase: "webview-asset",
     order: 20_140,
     ciPolicy: "optional",
-    pattern: /^(?:computer-use-settings-[^.]+|(?:async\/)?\d+\.[0-9a-f]+)\.js$/,
-    assetMatch: source => source.includes("computerUseAvailability:") &&
-      /\{computerUseAvailability:[\w$]+,hostId:[\w$]+\}=[\w$]+,\{isLoading:[\w$]+,platform:[\w$]+\}=\(0,[\w$]+\.[\w$]+\)\(\)/.test(source) &&
-      /isLoading:[\w$]+,platform:[\w$]+/.test(source) && source.includes('"macOS"===') &&
-      source.includes("available&&"),
+    // The Settings → Computer use page owner.
+    assetNeedles: ["settings.computerUse.subtitle", "computerUseAvailability:"],
     missingDescription: "Computer Use availability bundle",
     skipDescription: "Linux Computer Use UI availability patch",
     apply: applyNativeSettingsAvailabilityPatch,
@@ -83,7 +80,7 @@ module.exports = [
     phase: "webview-asset",
     order: 20_150,
     ciPolicy: "optional",
-    pattern: /^(?:[A-Za-z0-9_-]+|(?:async\/)?\d+\.[0-9a-f]+)\.js$/,
+    assetNeedles: ['featureName:"computer_use"', "isHostCompatiblePlatform:"],
     assetMatch: matchesLinuxComputerUseHostPlatformContract,
     missingDescription: "current Computer Use host-platform contract",
     skipDescription: "Linux Computer Use host-platform patch",
@@ -92,9 +89,9 @@ module.exports = [
   webviewAssetPatch({
     id: "native-settings-visibility",
     order: 20_160,
-    pattern: /^(?:[A-Za-z0-9_-]+|(?:async\/)?\d+\.[0-9a-f]+)\.js$/,
-    assetMatch: matchesNativeSettingsVisibilityContract,
-    matchPolicy: "all",
+    // rspack duplicates the Plugins presentation module into several lazy
+    // chunks; every copy must hide the native component, so no assetMatch.
+    assetNeedles: NATIVE_SETTINGS_VISIBILITY_NEEDLES,
     missingDescription: "Plugins presentation filter",
     skipDescription: "Linux native Settings visibility patch",
     apply: applyNativeSettingsVisibilityPatch,

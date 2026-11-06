@@ -225,52 +225,37 @@ function applyLinuxComputerUseFeaturePatch(currentSource) {
   return currentSource;
 }
 
+// The rspack/SWC renderer inlines the computer_use availability reducer as an
+// IIFE whose argument object carries an inline host platform expression:
+// `isHostCompatiblePlatform:"macOS"===S||"windows"===S`.
+const COMPUTER_USE_HOST_PLATFORM_LOOKBACK = 4000;
+
 function applyCurrentComputerUseHostPlatformContract(currentSource) {
-  const currentRspackPatterns = [
-    /isHostCompatiblePlatform:(?<host>"macOS"===(?<platform>[A-Za-z_$][\w$]*)\|\|"windows"===\k<platform>),isPlatformLoading:[A-Za-z_$][\w$]*,windowType:"electron"/g,
-    /isHostCompatiblePlatform:(?<host>"Linux"===(?<platform>[A-Za-z_$][\w$]*)\|\|"macOS"===\k<platform>\|\|"windows"===\k<platform>),isPlatformLoading:[A-Za-z_$][\w$]*,windowType:"electron"/g,
-  ];
-  const currentRspackMatches = currentRspackPatterns.flatMap(pattern => [...currentSource.matchAll(pattern)]).filter(match => {
-    const context = currentSource.slice(Math.max(0, match.index - 1600), match.index + match[0].length);
-    return context.includes("areRequirementsPending:") &&
-      context.includes("areRequiredFeaturesEnabled:") &&
-      context.includes("isComputerUseGateEnabled:") &&
-      context.includes("isBrowserAndComputerUseAllowed:");
-  });
-  if (currentRspackMatches.length > 0) {
-    if (currentRspackMatches.length !== 1) return null;
-    const match = currentRspackMatches[0];
-    if (match.groups.host.startsWith('"Linux"===')) return currentSource;
-    const start = match.index + match[0].indexOf(match.groups.host);
-    return currentSource.slice(0, start) + `"Linux"===${match.groups.platform}||${match.groups.host}` +
-      currentSource.slice(start + match.groups.host.length);
-  }
   const contractPattern =
-    /([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\(\{areRequirementsPending:([A-Za-z_$][\w$]*),areRequiredFeaturesEnabled:([A-Za-z_$][\w$]*),enabled:([A-Za-z_$][\w$]*),isBrowserAndComputerUseAllowed:([A-Za-z_$][\w$]*),isAnyFeatureLoading:([A-Za-z_$][\w$]*),isComputerUseGateEnabled:([A-Za-z_$][\w$]*),isHostCompatiblePlatform:([^,{}]+),isPlatformLoading:([A-Za-z_$][\w$]*),windowType:`electron`\}\)/g;
+    /\(\{areRequirementsPending:[A-Za-z_$][\w$]*,areRequiredFeaturesEnabled:[A-Za-z_$][\w$]*,enabled:[A-Za-z_$][\w$]*,isBrowserAndComputerUseAllowed:[A-Za-z_$][\w$]*,isAnyFeatureLoading:[A-Za-z_$][\w$]*,isComputerUseGateEnabled:[A-Za-z_$][\w$]*,isHostCompatiblePlatform:([^,{}]+),isPlatformLoading:[A-Za-z_$][\w$]*,windowType:"electron"\}\)/g;
   const candidates = [];
-  let match;
-  while ((match = contractPattern.exec(currentSource)) != null) {
-    const context = currentSource.slice(Math.max(0, match.index - 1200), match.index + match[0].length);
-    const currentRspack = context.includes('windowType:"electron"') &&
-      context.includes("isComputerUseGateEnabled:") && context.includes("isBrowserAndComputerUseAllowed:");
-    const priorContract = context.includes("featureName:`computer_use`");
-    if (!currentRspack && !priorContract) {
+  for (const match of currentSource.matchAll(contractPattern)) {
+    const context = currentSource.slice(
+      Math.max(0, match.index - COMPUTER_USE_HOST_PLATFORM_LOOKBACK),
+      match.index,
+    );
+    if (!context.includes('featureName:"computer_use"')) {
       continue;
     }
 
-    const hostExpression = match[9];
+    const hostExpression = match[1];
     const pristine = hostExpression.match(
-      /^([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*)\)$/,
+      /^"macOS"===([A-Za-z_$][\w$]*)\|\|"windows"===\1$/,
     );
     const patched = hostExpression.match(
-      /^([A-Za-z_$][\w$]*)===`linux`\|\|([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*)\)$/,
+      /^"linux"===([A-Za-z_$][\w$]*)\|\|"macOS"===\1\|\|"windows"===\1$/,
     );
     let kind = "malformed";
     let platformVar = null;
     if (pristine != null) {
       kind = "pristine";
-      platformVar = pristine[2];
-    } else if (patched != null && patched[1] === patched[3]) {
+      platformVar = pristine[1];
+    } else if (patched != null) {
       kind = "patched";
       platformVar = patched[1];
     }
@@ -290,7 +275,7 @@ function applyCurrentComputerUseHostPlatformContract(currentSource) {
     candidate.match[0].indexOf(candidate.hostExpression);
   const hostExpressionEnd = hostExpressionStart + candidate.hostExpression.length;
   return currentSource.slice(0, hostExpressionStart) +
-    `${candidate.platformVar}===\`linux\`||${candidate.hostExpression}` +
+    `"linux"===${candidate.platformVar}||${candidate.hostExpression}` +
     currentSource.slice(hostExpressionEnd);
 }
 

@@ -41,7 +41,9 @@ const INPUT_TIMEOUT: Duration = Duration::from_secs(3);
 const DEVICE_KEYBOARD: u32 = 1;
 const DEVICE_POINTER: u32 = 2;
 const SOURCE_MONITOR: u32 = 1;
-const CURSOR_MODE_HIDDEN: u32 = 1;
+/// The ScreenCast `cursor_mode` that pointer sessions request; doctor
+/// checks the portal offers it.
+pub(crate) const CURSOR_MODE_HIDDEN: u32 = 1;
 
 const KEY_RELEASED: u32 = 0;
 const KEY_PRESSED: u32 = 1;
@@ -82,7 +84,10 @@ pub struct PortalKeyboardSession {
     valid: Arc<AtomicBool>,
 }
 
-#[derive(Clone)]
+/// The server's cross-backend input lock, held by a portal release guard so
+/// no other backend sends input until a cancelled portal action's release
+/// cleanup has finished. Clones share the one lock.
+#[derive(Clone, Debug)]
 pub(crate) struct InputOperationGuard {
     _guard: Arc<OwnedMutexGuard<()>>,
 }
@@ -339,6 +344,15 @@ pub(crate) async fn kwin_desktop_layout() -> Option<Vec<LogicalMonitor>> {
 }
 
 pub(crate) async fn logical_desktop_layout() -> Option<Vec<LogicalMonitor>> {
+    match compositor_desktop_layout().await {
+        Some(layout) => Some(layout),
+        None => xrandr_desktop_layout().await,
+    }
+}
+
+/// The layout from the desktop's own interfaces, without RandR. On Wayland
+/// an X client such as xrandr can make the compositor start Xwayland.
+pub(crate) async fn compositor_desktop_layout() -> Option<Vec<LogicalMonitor>> {
     if env_token_contains("XDG_CURRENT_DESKTOP", "gnome") {
         if let Some(layout) = crate::windowing::backends::gnome::extension_monitor_layout()
             .await
@@ -430,16 +444,9 @@ pub(crate) async fn logical_desktop_layout() -> Option<Vec<LogicalMonitor>> {
             }
         }
     }
-
     if env_token_contains("XDG_CURRENT_DESKTOP", "niri") {
-        let mut command = Command::new("niri");
-        command.args(["msg", "--json", "outputs"]);
-        if let Ok(output) = command_runner::output(command, "query Niri output layout").await {
-            if output.status.success() {
-                if let Some(layout) = parse_niri_monitor_layout(&output.stdout) {
-                    return Some(layout);
-                }
-            }
+        if let Some(layout) = crate::windowing::backends::niri::monitor_layout().await {
+            return Some(layout);
         }
     }
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
@@ -447,7 +454,10 @@ pub(crate) async fn logical_desktop_layout() -> Option<Vec<LogicalMonitor>> {
             return Some(layout);
         }
     }
+    None
+}
 
+async fn xrandr_desktop_layout() -> Option<Vec<LogicalMonitor>> {
     let mut command = Command::new("xrandr");
     command.arg("--listactivemonitors");
     let output = command_runner::output(command, "query XRandR monitor layout")
@@ -560,11 +570,18 @@ fn parse_kscreen_monitor_layout(json: &[u8]) -> Option<Vec<LogicalMonitor>> {
     (!layout.is_empty()).then_some(layout)
 }
 
+/// One `get_outputs` entry. Sway sends disabled outputs with `"scale": null`
+/// and a zero rect, and non-desktop outputs (VR headsets) without `active`,
+/// `rect` or `scale`, so every field is optional and only active desktop
+/// outputs are read.
 #[derive(serde::Deserialize)]
 struct SwayOutput {
+    #[serde(default)]
     active: bool,
-    rect: SwayRect,
-    scale: f64,
+    #[serde(default)]
+    non_desktop: bool,
+    rect: Option<SwayRect>,
+    scale: Option<f64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -575,59 +592,23 @@ struct SwayRect {
     height: i32,
 }
 
-fn parse_sway_monitor_layout(json: &[u8]) -> Option<Vec<LogicalMonitor>> {
+pub(crate) fn parse_sway_monitor_layout(json: &[u8]) -> Option<Vec<LogicalMonitor>> {
     let outputs: Vec<SwayOutput> = serde_json::from_slice(json).ok()?;
     let layout = outputs
         .into_iter()
-        .filter(|output| output.active)
+        .filter(|output| output.active && !output.non_desktop)
         .map(|output| {
-            (output.scale.is_finite()
-                && output.scale > 0.0
-                && output.rect.width > 0
-                && output.rect.height > 0)
-                .then_some(LogicalMonitor {
-                    x: output.rect.x,
-                    y: output.rect.y,
-                    width: output.rect.width,
-                    height: output.rect.height,
-                    scale: output.scale,
-                })
-        })
-        .collect::<Option<Vec<_>>>()?;
-    (!layout.is_empty()).then_some(layout)
-}
-
-#[derive(serde::Deserialize)]
-struct NiriMonitorLayout {
-    logical: Option<NiriLogicalMonitor>,
-}
-
-#[derive(serde::Deserialize)]
-struct NiriLogicalMonitor {
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    scale: f64,
-}
-
-fn parse_niri_monitor_layout(json: &[u8]) -> Option<Vec<LogicalMonitor>> {
-    let outputs: HashMap<String, NiriMonitorLayout> = serde_json::from_slice(json).ok()?;
-    let layout = outputs
-        .into_values()
-        .filter_map(|output| output.logical)
-        .map(|monitor| {
-            (monitor.scale.is_finite()
-                && monitor.scale > 0.0
-                && monitor.width > 0
-                && monitor.height > 0)
-                .then_some(LogicalMonitor {
-                    x: monitor.x,
-                    y: monitor.y,
-                    width: monitor.width,
-                    height: monitor.height,
-                    scale: monitor.scale,
-                })
+            let rect = output.rect?;
+            let scale = output.scale?;
+            (scale.is_finite() && scale > 0.0 && rect.width > 0 && rect.height > 0).then_some(
+                LogicalMonitor {
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                    scale,
+                },
+            )
         })
         .collect::<Option<Vec<_>>>()?;
     (!layout.is_empty()).then_some(layout)
@@ -806,6 +787,7 @@ fn env_token_contains(key: &str, needle: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Map a semantic scroll direction to `(axis, signed_steps)` for the portal.
 pub(crate) fn portal_scroll_axis_steps(
     direction: ScrollDirection,
     steps: i32,
@@ -889,7 +871,7 @@ pub(crate) async fn drag(
 pub(crate) async fn type_text_with_keysyms(
     session: &PortalKeyboardSession,
     keysyms: &[i32],
-    operation_guard: Option<InputOperationGuard>,
+    operation_guard: InputOperationGuard,
 ) -> Result<()> {
     let input_guard = Arc::clone(&session.input_lock).lock_owned().await;
     session.ensure_valid()?;
@@ -910,7 +892,7 @@ pub(crate) async fn press_keycode_chord(
     session: &PortalKeyboardSession,
     modifiers: &[i32],
     keycode: i32,
-    operation_guard: Option<InputOperationGuard>,
+    operation_guard: InputOperationGuard,
 ) -> Result<()> {
     let modifiers: Vec<PortalKey> = modifiers.iter().copied().map(PortalKey::Keycode).collect();
     press_key_chord(
@@ -929,7 +911,7 @@ pub(crate) async fn press_key_chord(
     session: &PortalKeyboardSession,
     modifiers: &[PortalKey],
     key: PortalKey,
-    operation_guard: Option<InputOperationGuard>,
+    operation_guard: InputOperationGuard,
 ) -> Result<()> {
     let input_guard = Arc::clone(&session.input_lock).lock_owned().await;
     session.ensure_valid()?;
@@ -1014,7 +996,7 @@ impl KeyboardReleaseGuard {
     fn new(
         session: &PortalKeyboardSession,
         input_guard: OwnedMutexGuard<()>,
-        operation_guard: Option<InputOperationGuard>,
+        operation_guard: InputOperationGuard,
     ) -> Self {
         Self {
             ei: session.ei.clone(),
@@ -1022,7 +1004,7 @@ impl KeyboardReleaseGuard {
             session_handle: session.session_handle.clone(),
             pressed: Vec::new(),
             input_guard: Some(input_guard),
-            operation_guard,
+            operation_guard: Some(operation_guard),
             valid: Arc::clone(&session.valid),
         }
     }
@@ -1153,6 +1135,11 @@ impl PortalPointerSession {
             bail!("desktop monitor layout changed after the remote desktop portal session started");
         }
         Ok(())
+    }
+
+    /// The monitor layout the session checks every point against.
+    pub(crate) fn monitor_layout(&self) -> Option<&[LogicalMonitor]> {
+        self.desktop_layout.as_deref()
     }
 
     pub(crate) fn logical_point_from_capture(
@@ -1605,6 +1592,60 @@ async fn remote_desktop_interface_version(connection: &Connection) -> Result<u32
         .context("RemoteDesktop version property failed")
 }
 
+/// Whether the session bus positively has no RemoteDesktop portal.
+pub(crate) async fn remote_desktop_portal_missing() -> bool {
+    hydrate_session_bus_env();
+    let Ok(address) = zbus::Address::session() else {
+        return false;
+    };
+    remote_desktop_portal_missing_at(address).await
+}
+
+/// Only an answer from a running bus proves absence: the bus reports that no
+/// portal service is installed, or the portal object does not export the
+/// interface (xdg-desktop-portal-wlr implements only Screenshot and
+/// ScreenCast). A bus socket that is missing or refuses connections may
+/// belong to a bus that has not started yet or is restarting, and a timeout
+/// may be a slow portal. Those keep the portal path, which reports its own
+/// error.
+async fn remote_desktop_portal_missing_at(address: zbus::Address) -> bool {
+    let connect = async { zbus::connection::Builder::address(address)?.build().await };
+    let Ok(Ok(connection)) = tokio::time::timeout(PORTAL_CALL_TIMEOUT, connect).await else {
+        return false;
+    };
+    let reply = tokio::time::timeout(
+        PORTAL_CALL_TIMEOUT,
+        connection.call_method(
+            Some(PORTAL_DESKTOP_SERVICE),
+            PORTAL_DESKTOP_PATH,
+            Some("org.freedesktop.DBus.Introspectable"),
+            "Introspect",
+            &(),
+        ),
+    )
+    .await;
+    match reply {
+        Ok(Ok(message)) => message
+            .body()
+            .deserialize::<String>()
+            .is_ok_and(|xml| lacks_interface(&xml, PORTAL_REMOTE_DESKTOP_INTERFACE)),
+        Ok(Err(zbus::Error::MethodError(name, _, _))) => {
+            name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown"
+        }
+        _ => false,
+    }
+}
+
+/// True only for introspection that parses and does not list `interface`.
+fn lacks_interface(introspection: &str, interface: &str) -> bool {
+    zbus_xml::Node::try_from(introspection).is_ok_and(|node| {
+        !node
+            .interfaces()
+            .iter()
+            .any(|item| item.name().as_str() == interface)
+    })
+}
+
 async fn claim_restore_permit(
     persistence: &RemoteDesktopPersistence,
     kind: PortalDeviceKind,
@@ -1639,7 +1680,7 @@ async fn commit_restore_permit(permit: Option<RestorePermit>, parsed: ParsedRest
 fn warn_persist_disabled_once(reason: &str) {
     static ONCE: OnceLock<()> = OnceLock::new();
     if ONCE.set(()).is_ok() {
-        eprintln!("[computer-use-linux] remote desktop persistence disabled: {reason}");
+        eprintln!("[codex-computer-use] remote desktop persistence disabled: {reason}");
     }
 }
 
@@ -1647,7 +1688,7 @@ fn warn_persist_store_once(error: &io::Error) {
     static ONCE: OnceLock<()> = OnceLock::new();
     if ONCE.set(()).is_ok() {
         eprintln!(
-            "[computer-use-linux] remote desktop persistence disabled: could not open the restore-token store ({error})"
+            "[codex-computer-use] remote desktop persistence disabled: could not open the restore-token store ({error})"
         );
     }
 }
@@ -1655,7 +1696,7 @@ fn warn_persist_store_once(error: &io::Error) {
 fn warn_persist_commit_once(error: &io::Error) {
     static ONCE: OnceLock<()> = OnceLock::new();
     if ONCE.set(()).is_ok() {
-        eprintln!("[computer-use-linux] could not store the remote desktop restore token: {error}");
+        eprintln!("[codex-computer-use] could not store the remote desktop restore token: {error}");
     }
 }
 
@@ -1663,7 +1704,7 @@ fn warn_rejected_restore_token_once() {
     static ONCE: OnceLock<()> = OnceLock::new();
     if ONCE.set(()).is_ok() {
         eprintln!(
-            "[computer-use-linux] RemoteDesktop returned a restore token this process will not store (empty, too long, or it contains whitespace or control characters). The next portal session will prompt again."
+            "[codex-computer-use] RemoteDesktop returned a restore token this process will not store (empty, too long, or it contains whitespace or control characters). The next portal session will prompt again."
         );
     }
 }
@@ -2704,6 +2745,26 @@ mod tests {
     }
 
     #[test]
+    fn sway_layout_skips_disabled_and_non_desktop_outputs() {
+        // HEADLESS-2 is from Sway 1.11 `get_outputs` after `output HEADLESS-2
+        // disable`, trimmed; DP-3 is the non-desktop shape Sway sends.
+        let layout = parse_sway_monitor_layout(
+            br#"[
+                {"name":"HEADLESS-1","type":"output","active":true,"non_desktop":false,
+                 "scale":1.5,"rect":{"x":0,"y":0,"width":1280,"height":720}},
+                {"name":"HEADLESS-2","type":"output","active":false,"non_desktop":false,
+                 "power":false,"primary":false,"scale":null,
+                 "rect":{"x":0,"y":0,"width":0,"height":0}},
+                {"name":"DP-3","type":"output","make":"Valve","model":"Index",
+                 "serial":"0","non_desktop":true}
+            ]"#,
+        )
+        .expect("disabled and non-desktop outputs are skipped");
+        assert_eq!(layout.len(), 1);
+        assert_eq!((layout[0].width, layout[0].scale), (1280, 1.5));
+    }
+
+    #[test]
     fn parses_sway_logical_output_rectangles() {
         let layout = parse_sway_monitor_layout(
             br#"[
@@ -2754,13 +2815,6 @@ mod tests {
             br#"[{"rect":{"x":0,"y":0,"width":1920,"height":1080},"scale":1.0}]"#,
         )
         .is_none());
-        assert!(parse_niri_monitor_layout(
-            br#"{
-                "eDP-1":{"logical":{"x":0,"y":0,"width":1920,"height":1080,"scale":1.0}},
-                "DP-1":{"logical":{"x":1920,"y":0,"width":1920,"height":1080,"scale":0.0}}
-            }"#,
-        )
-        .is_none());
         assert!(parse_xrandr_monitor_layout(
             "Monitors: 2\n 0: +*eDP-1 1920/344x1080/194+0+0 eDP-1\n"
         )
@@ -2783,37 +2837,6 @@ mod tests {
         changed[0].width = 1600;
         assert!(!same_monitor_layout(&original, &changed));
         assert!(same_monitor_layout(&original, &original));
-    }
-
-    #[test]
-    fn parses_niri_logical_output_layout() {
-        let layout = parse_niri_monitor_layout(
-            br#"{
-                "eDP-1":{"logical":{"x":0,"y":0,"width":1920,"height":1080,"scale":2.0}},
-                "DP-1":{"logical":{"x":1920,"y":0,"width":2560,"height":1440,"scale":1.0}}
-            }"#,
-        )
-        .expect("Niri layout should parse");
-
-        assert_eq!(layout.len(), 2);
-        assert!(layout.iter().any(|monitor| {
-            (
-                monitor.x,
-                monitor.y,
-                monitor.width,
-                monitor.height,
-                monitor.scale,
-            ) == (0, 0, 1920, 1080, 2.0)
-        }));
-        assert!(layout.iter().any(|monitor| {
-            (
-                monitor.x,
-                monitor.y,
-                monitor.width,
-                monitor.height,
-                monitor.scale,
-            ) == (1920, 0, 2560, 1440, 1.0)
-        }));
     }
 
     #[test]
@@ -3255,6 +3278,79 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn only_a_running_bus_can_report_the_remote_desktop_portal_missing() {
+        struct ScreenCastOnly;
+        #[zbus::interface(name = "org.freedesktop.portal.ScreenCast")]
+        impl ScreenCastOnly {}
+        struct RemoteDesktop;
+        #[zbus::interface(name = "org.freedesktop.portal.RemoteDesktop")]
+        impl RemoteDesktop {}
+
+        let dir = TempState::with_bus();
+        let socket = dir.path.join("bus");
+        let address = format!("unix:path={}", socket.display());
+        let probe = || remote_desktop_portal_missing_at(address.parse().unwrap());
+        // No service directories, so the bus cannot activate an installed portal.
+        let config = dir.path.join("bus.conf");
+        std::fs::write(
+            &config,
+            format!(
+                "<busconfig><type>session</type><listen>{address}</listen>\
+                 <policy context=\"default\"><allow send_destination=\"*\"/>\
+                 <allow receive_sender=\"*\"/><allow own=\"*\"/></policy></busconfig>"
+            ),
+        )
+        .unwrap();
+
+        assert!(!probe().await, "a bus that has not started yet");
+
+        struct Bus(std::process::Child);
+        impl Drop for Bus {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut bus = Bus(std::process::Command::new("dbus-daemon")
+            .arg(format!("--config-file={}", config.display()))
+            .args(["--nofork", "--nopidfile", "--print-address=1"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("start private dbus-daemon"));
+        let mut printed = String::new();
+        io::BufRead::read_line(
+            &mut io::BufReader::new(bus.0.stdout.take().unwrap()),
+            &mut printed,
+        )
+        .unwrap();
+        assert!(probe().await, "no portal service on a running bus");
+
+        let portal = zbus::connection::Builder::address(address.as_str())
+            .unwrap()
+            .name(PORTAL_DESKTOP_SERVICE)
+            .unwrap()
+            .serve_at(PORTAL_DESKTOP_PATH, ScreenCastOnly)
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        assert!(probe().await, "a portal without RemoteDesktop");
+
+        portal
+            .object_server()
+            .at(PORTAL_DESKTOP_PATH, RemoteDesktop)
+            .await
+            .unwrap();
+        assert!(!probe().await, "a portal with RemoteDesktop");
+
+        drop(bus);
+        assert!(socket.exists());
+        assert!(!probe().await, "a bus socket that refuses connections");
+
+        assert!(!lacks_interface("not xml", PORTAL_REMOTE_DESKTOP_INTERFACE));
+    }
+
     #[test]
     fn remote_desktop_screencast_options_omit_persistence() {
         let mut options = HashMap::new();
@@ -3486,9 +3582,18 @@ mod tests {
 
     impl TempState {
         fn new() -> Self {
+            Self::create(|name| std::env::temp_dir().join(name))
+        }
+
+        /// A state dir that also holds a private bus's `bus` socket.
+        fn with_bus() -> Self {
+            Self::create(|name| crate::test_sockets::bus_fixture(name, "bus"))
+        }
+
+        fn create(place: impl FnOnce(&str) -> PathBuf) -> Self {
             static NEXT: AtomicU64 = AtomicU64::new(1);
             let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
+            let path = place(&format!(
                 "cul-rd-persist-{}-{}-{nonce}",
                 std::process::id(),
                 std::time::SystemTime::now()

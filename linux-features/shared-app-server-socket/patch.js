@@ -213,10 +213,16 @@ function applySharedAppServerSocketPatch(source) {
     return source;
   }
   const configOverridesPattern = new RegExp(
-    `return new ${MEMBER}\\(${optionFields},getConfigOverrides:(async\\(\\)=>\\[[^\\]]{1,1000}\\])\\}\\)`,
+    `return new ${MEMBER}\\((${optionFields},getConfigOverrides:)(?=async\\(\\)=>\\[)`,
     "g",
   );
-  const configOverridesMatches = [...factorySource.matchAll(configOverridesPattern)];
+  const configOverridesMatches = [...factorySource.matchAll(configOverridesPattern)].flatMap(match => {
+    const objectStart = match.index + match[0].indexOf("{");
+    const objectEnd = findMatchingBrace(factorySource, objectStart);
+    const callback = factorySource.slice(match.index + match[0].length, objectEnd);
+    return objectEnd > objectStart && callback.endsWith("]") && factorySource[objectEnd + 1] === ")"
+      ? [{ callback }] : [];
+  });
   if (configOverridesMatches.length !== 1) {
     console.warn(
       `WARN: Expected one local transport config override callback for shared app-server socket patch, found ${configOverridesMatches.length}`,
@@ -224,7 +230,7 @@ function applySharedAppServerSocketPatch(source) {
     return source;
   }
   const [insertionMatch] = insertionMatches;
-  const getConfigOverrides = configOverridesMatches[0][1];
+  const getConfigOverrides = configOverridesMatches[0].callback;
 
   const classSource = sharedTransportClassSource(symbols);
 

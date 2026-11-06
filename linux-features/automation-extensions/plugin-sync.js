@@ -45,6 +45,24 @@ function prepareCallers(source, name, patched) {
     `await ${name}({hostConfig:${host},appServerVersion:${client}.appServerVersion,appServerConnection:${client}})`);
 }
 
+function nameInlineSynchronization(source, builder, before) {
+  const pattern = new RegExp(`async function\\((${IDENT})\\)\\{let\\{appServerConnection:(${IDENT})\\}=\\1;if\\("local"!==\\2\\.hostConfig\\.kind\\)return;`, "gu");
+  const owners = [...source.matchAll(pattern)].flatMap(match => {
+    const open = source.indexOf("{", match.index), close = findMatchingBrace(source, open);
+    if (close < 0) return [];
+    const body = source.slice(open, close + 1);
+    return body.includes(`${builder}({useWsl:`) && body.includes("JSON.stringify({mcpServers:{codex_app:") &&
+      body.includes('".mcp.json"') && body.includes(`${match[2]}.sendAppServerRequest("config/batchWrite",{edits:[]`)
+      ? [{ start: match.index, end: close + 1, text: source.slice(match.index, close + 1) }] : [];
+  });
+  if (owners.length !== 1 || source.includes("codexLinuxSyncInstalledAutomationPlugin")) return source;
+  const owner = owners[0], name = "codexLinuxSyncInstalledAutomationPlugin";
+  const definition = owner.text.replace("async function(", `async function ${name}(`);
+  const edits = [{ start: owner.start, end: owner.end, text: name }, { start: before, end: before, text: definition }];
+  for (const edit of edits.sort((a,b) => b.start-a.start)) source = source.slice(0, edit.start)+edit.text+source.slice(edit.end);
+  return source;
+}
+
 function applyAutomationPluginSyncPatch(source) {
   if (!source.includes("pluginMcpConfigOverrides") && !source.includes(MARKER)) return source;
   const fail = () => { throw new Error("Automation plugin synchronization patch did not match the current bundle exactly once"); };
@@ -54,8 +72,10 @@ function applyAutomationPluginSyncPatch(source) {
         synchronizationOwner(source, matches[0][6]) !== matches[0][3]) fail();
     return prepareCallers(source, matches[0][1], true);
   }
-  const matches = [...source.matchAll(PREPARE)];
+  let matches = [...source.matchAll(PREPARE)];
   if (matches.length !== 1) fail();
+  source = nameInlineSynchronization(source, matches[0][5], matches[0].index);
+  matches = [...source.matchAll(PREPARE)];
   const [match] = matches;
   const [, name, argument, versionCheck, config, builder] = match;
   const sync = synchronizationOwner(source, builder);

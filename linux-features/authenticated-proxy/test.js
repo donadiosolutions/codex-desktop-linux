@@ -206,6 +206,13 @@ function chunk(body) {
 
 const CURRENT = chunk(READY + FETCH + REQUEST);
 
+test("authenticated-proxy preserves the current signed fetch cache option", () => {
+  const source = CURRENT.replace("{method:n,headers:o,body:C()", "{method:n,cache:s,headers:o,body:C()");
+  const patched = applyPatchTwiceWithoutWarnings(applyAuthenticatedProxyPatch, source);
+  assert.match(patched, /if\(null==i&&!codexLinuxProxyAuthEntry\(\)\)\{let t=\{method:n,cache:s,headers:o,body:C\(\)/);
+  assert.doesNotThrow(() => new vm.Script(patched));
+});
+
 function withWarnings(callback) {
   const warnings = [];
   const originalWarn = console.warn;

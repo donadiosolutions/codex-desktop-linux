@@ -1,15 +1,23 @@
 "use strict";
 
+// The dynamic Codex app tool catalog marks deferred tools with
+// `deferLoading:!0`. Keep automation_update eager so the model can update an
+// automation without first discovering the tool.
 const { escapeRegExp, findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
 
 const IDENT = "[A-Za-z_$][\\w$]*";
-const EAGER = new RegExp(`${IDENT}\\.name!==\\\`automation_update\\\`&&${IDENT}&&\\(!${IDENT}\\.has\\(${IDENT}\\.name\\)\\|\\|${IDENT}\\.includes\\(${IDENT}\\.name\\)\\)`);
+const AUTOMATION_UPDATE_EAGER_TOOL_ASSET_NEEDLES = ["deferLoading:!0", "eagerToolNames:", "deferredToolNames:"];
+const EAGER = new RegExp(
+  `${IDENT}\\.name!=="automation_update"&&${IDENT}&&\\(!${IDENT}\\.has\\(${IDENT}\\.name\\)\\|\\|${IDENT}\\.includes\\(${IDENT}\\.name\\)\\)`,
+  "gu",
+);
 const DYNAMIC = new RegExp(
-  `\\.map\\((${IDENT})=>\\(\\{type:(['\"\\x60])function\\2,\\.\\.\\.\\1,\\.\\.\\.(` +
+  `\\.map\\((${IDENT})=>\\(\\{type:"function",\\.\\.\\.\\1,\\.\\.\\.(` +
     `${IDENT}&&\\(!${IDENT}\\.has\\(\\1\\.name\\)\\|\\|${IDENT}\\.includes\\(\\1\\.name\\)\\)` +
     `)\\?\\{deferLoading:!0\\}:\\{\\}\\}\\)\\)`,
-  "u",
+  "gu",
 );
+
 const AUTOMATION_PLUGIN_ENABLE_MARKER = "codexLinuxEnableAutomationPluginTransport";
 const AUTOMATION_PLUGIN_ENABLED_TOOL_KEYS = [
   "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled_tools",
@@ -20,22 +28,26 @@ const DESKTOP_MCP_CONFIG_PREFIX = new RegExp(
   "gu",
 );
 
+function count(source, pattern) {
+  return [...source.matchAll(pattern)].length;
+}
+
 function matchesAutomationUpdateEagerToolContract(source) {
-  return EAGER.test(source) || DYNAMIC.test(source);
+  return count(source, EAGER) + count(source, DYNAMIC) === 1;
 }
 
 function applyAutomationUpdateEagerToolPatch(source) {
-  if (EAGER.test(source)) return source;
-  if (!DYNAMIC.test(source)) {
-    if (source.includes("automation_update") && source.includes("deferLoading:!0")) {
-      console.warn("WARN: Could not find dynamic tools construction point — skipping automation_update eager tool patch");
-    }
+  const eager = count(source, EAGER);
+  const dynamic = count(source, DYNAMIC);
+  if (eager === 1 && dynamic === 0) return source;
+  if (eager !== 0 || dynamic !== 1) {
+    console.warn("WARN: Could not find unique dynamic tools construction point — skipping automation_update eager tool patch");
     return source;
   }
   return source.replace(
     DYNAMIC,
-    (_match, tool, quote, deferCondition) =>
-      `.map(${tool}=>({type:${quote}function${quote},...${tool},...${tool}.name!==\`automation_update\`&&${deferCondition}?{deferLoading:!0}:{}}))`,
+    (_match, tool, deferCondition) =>
+      `.map(${tool}=>({type:"function",...${tool},...${tool}.name!=="automation_update"&&${deferCondition}?{deferLoading:!0}:{}}))`,
   );
 }
 
@@ -111,23 +123,42 @@ function matchesAutomationPluginEnableContract(source) {
 }
 
 function matchesCurrentAutomationToolOwner(source) {
-  if (!source.includes("__webpack_modules__") || !source.includes("automation_update") || !EAGER.test(source)) return false;
+  if (!source.includes("__webpack_modules__") || !source.includes("automation_update") || count(source, EAGER) !== 1) return false;
   const factories = rspackFactories(source);
   const owners = factories.flatMap(factory => {
-    const definitions = [...factory.body.matchAll(new RegExp(
+    if (factory.require == null) return [];
+    const namedDefinitions = [...factory.body.matchAll(new RegExp(
       `(${IDENT})="automation_update";function (${IDENT})\\(\\)\\{return null==(${IDENT})&&\\(\\3=\\{name:\\1,`, "gu"))];
-    if (definitions.length !== 1) return [];
-    const [, nameVariable, toolFunction] = definitions[0];
     const exportMatches = [...factory.body.matchAll(new RegExp(
       `${escapeRegExp(factory.require)}\\.d\\(${escapeRegExp(factory.exports)},\\{([^}]*)\\}`, "gu"))];
-    const exported = exportMatches.flatMap(([, entries]) => [...entries.matchAll(new RegExp(
-      `(${IDENT}):\\(\\)=>${escapeRegExp(toolFunction)}(?:,|$)`, "gu"))]);
-    return exported.length === 1 ? [{ ...factory, nameVariable, toolFunction, exportName: exported[0][1] }] : [];
+    const named = namedDefinitions.flatMap(([, nameVariable, toolFunction]) => {
+      const exported = exportMatches.flatMap(([, entries]) => [...entries.matchAll(new RegExp(
+        `(${IDENT}):\\(\\)=>${escapeRegExp(toolFunction)}(?:,|$)`, "gu"))]);
+      return exported.length === 1 ? [{ ...factory, nameVariable, toolFunction, exportName: exported[0][1] }] : [];
+    });
+    // Current SWC emits the cached tool factory directly into the value export
+    // map. Follow that export, its cache return, and the declared tool name.
+    const inlinePattern = new RegExp(
+      `${escapeRegExp(factory.require)}\\.d\\(${escapeRegExp(factory.exports)},\\{\\},\\{` +
+      `(?:${IDENT}:${IDENT},)*(${IDENT}):function\\(\\)\\{return null==(${IDENT})&&\\(\\2=\\{name:(${IDENT}),`, "gu");
+    const inline = [...factory.body.matchAll(inlinePattern)].flatMap(match => {
+      const [, exportName, cache, nameVariable] = match;
+      const names = [...factory.body.matchAll(new RegExp(
+        `(?:let |var |const |,)${escapeRegExp(nameVariable)}="automation_update"(?=[,;])`, "gu"))];
+      const open = match.index + match[0].lastIndexOf("function(){") + "function()".length;
+      const close = findMatchingBrace(factory.body, open);
+      const functionBody = factory.body.slice(open, close + 1);
+      if (names.length !== 1 || close < open ||
+          !functionBody.endsWith(`}),${cache}}`) || !functionBody.includes("description:") ||
+          !functionBody.includes("inputSchema:")) return [];
+      return [{ ...factory, nameVariable, exportName }];
+    });
+    return [...named, ...inline];
   });
   if (owners.length !== 1) return false;
   const owner = owners[0];
   const mapperFactories = factories.filter(({ body }) =>
-    body.includes("eagerToolNames") && body.includes(".name!==`automation_update`&&") &&
+    body.includes("eagerToolNames") && body.includes('.name!=="automation_update"&&') &&
       body.includes("deferLoading:!0") && /\.map\([^)]*=>\(\{type:["']function["'],/u.test(body));
   if (mapperFactories.length !== 1) return false;
   const ownerId = owner.moduleId;
@@ -152,7 +183,7 @@ function matchesCurrentAutomationToolOwner(source) {
     const listStart = toolListBinding == null ? -1 : body.lastIndexOf(`${toolListBinding}=`, mapperPosition);
     const listPassed = mapperCall != null && listStart >= 0 && toolPosition > listStart &&
       mapperPosition - listStart < 30_000 && body.slice(listStart, mapperPosition).includes(`(0,${toolAlias}.${owner.exportName})()`);
-    return hasToolReference && hasMappedCatalog && listPassed && EAGER.test(mapperFactories[0].body);
+    return hasToolReference && hasMappedCatalog && listPassed && count(mapperFactories[0].body, EAGER) === 1;
   });
 }
 
@@ -221,8 +252,9 @@ function applyAutomationPluginEnablePatch(source) {
 }
 
 module.exports = {
+  AUTOMATION_UPDATE_EAGER_TOOL_ASSET_NEEDLES,
   applyAutomationPluginEnablePatch,
-  applyAutomationUpdateEagerToolPatch,
   matchesAutomationPluginEnableContract,
+  applyAutomationUpdateEagerToolPatch,
   matchesAutomationUpdateEagerToolContract,
 };

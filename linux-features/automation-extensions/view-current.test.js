@@ -39,7 +39,7 @@ test("current signed observable view patch stays idempotent and parses", {
   skip: !process.env.CODEX_SIGNED_EXTRACTED_APP,
 }, () => {
   const dir = path.join(process.env.CODEX_SIGNED_EXTRACTED_APP, ".vite/build");
-  const owners = fs.readdirSync(dir).filter(name => name.startsWith("early-bootstrap")).map(name => fs.readFileSync(path.join(dir, name), "utf8")).filter(text => text.includes(fixture.output));
+  const owners = fs.readdirSync(dir).filter(name => name.startsWith("early-bootstrap")).map(name => fs.readFileSync(path.join(dir, name), "utf8")).filter(text => text.includes("Rendered automation card in the app.") && text.includes("Local automation changes must use the Automations app after migration consent."));
   assert.equal(owners.length, 1);
   const patched = applyObservableAutomationViewPatch(owners[0]);
   assert.notEqual(patched, owners[0]);
@@ -54,4 +54,26 @@ test("current view rejects broken migration guards and incomplete native delegat
   assert.notEqual(incomplete, patched);
   assert.equal(matchesObservableAutomationViewContract(incomplete), false);
   assert.throws(() => applyObservableAutomationViewPatch(incomplete), /did not match/);
+});
+
+
+test("inline update handlers preserve the native and migration guards", async () => {
+  const inline = fixture.handler.replace("async function Lw(", "async function(");
+  const source = fixture.output + fixture.host.replace("Lw(t,e,", inline+"(t,e,");
+  const patched = applyObservableAutomationViewPatch(source);
+  assert.notEqual(patched, source);
+  assert.equal(applyObservableAutomationViewPatch(patched), patched);
+  assert.match(patched, /function codexLinuxInlineAutomationUpdate/);
+  const item = {kind:"heartbeat",name:"A",prompt:"P",rrule:"FREQ=DAILY",status:"PAUSED"};
+  const context=vm.createContext({eo:{TF:class{}},em:{$Cz:()=>({}),OeD:()=>item},ar:{n:"local"},Lp:{safeParse:data=>({success:true,data})}});
+  vm.runInContext(patched+";globalThis.Host=Lb",context);
+  const host=new context.Host();
+  const request={hostId:"local",argumentsValue:{mode:"view",id:"existing"}};
+  const result=await host.executeUpdateTool(request);
+  assert.equal(JSON.parse(result.response.contentItems[1].text).viewStatus,"found");
+  const native=await host.executeNativeUpdateTool(request,{assertCurrent(){}});
+  assert.equal(JSON.parse(native.response.contentItems[1].text).viewStatus,"found");
+  host.habitatAutomationsService={isLocalMigrationActive:()=>true};
+  assert.equal((await host.executeUpdateTool(request)).response.success,false);
+  assert.throws(()=>applyObservableAutomationViewPatch(source.replace("isLocalMigrationActive()","unknownMigrationState()")),/did not match/);
 });

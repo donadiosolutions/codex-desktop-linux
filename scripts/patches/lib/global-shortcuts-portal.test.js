@@ -30,9 +30,12 @@ test("shared backend fails closed for missing and ambiguous lifecycle anchors", 
   const source = mainBundleFixture();
   for (const input of [source.replace("generation:0", "generation:1"), source + source,
     source.replace("beginCapture()", "renamedCapture()"), source.replace("suspendDepth+=1", "suspendDepth+=2"),
-    source.replace('status:"loading"', 'status:"pending"'), source.replace("flushAndDisposeContext:r", "flushContext:r"),
+    source.replace('status:"loading"', 'status:"pending"'), source.replace("flushAndDisposeContext:p", "flushContext:p"),
     source.replace("markAppQuitting:()=>", "markQuitting:()=>"),
-    source.replace("U.dispose()", "U.destroy()")]) {
+    source.replace("savePendingUpdate(e),D.markAppQuitting()", "savePendingUpdate(other),D.markAppQuitting()"),
+    source.replace("let e=readPendingUpdate();null!=e&&savePendingUpdate(e),", ""),
+    source.replace('c.app.on("will-quit",', 'c.app.on("before-quit",'),
+    source.replaceAll("a.dispose(),o.dispose(),Promise.allSettled([", "o.dispose(),a.dispose(),Promise.allSettled([")]) {
     assert.throws(() => installPortalBackend(input));
   }
   const misleading = "function unrelated(e){if(wrongCheck(e)||otherCheck(e))return;}" + source;
@@ -45,6 +48,20 @@ test("shared backend fails closed for missing and ambiguous lifecycle anchors", 
   const retiredMinifier = source.replaceAll('"win32"===process.platform', "process.platform===`win32`")
     .replace("o=null==i?t:", "o=i==null?t:").replace("(e,t,r){var n;let i=r?.ownership", "(e,t,n){var q;let i=n?.ownership");
   assert.throws(() => registrationContract(retiredMinifier), /registration function matched 0 times/);
+});
+
+test("shared backend preserves pending update state before window cleanup", () => {
+  const ctx = context([]);
+  const pending = { version: "26.1103.31037" };
+  ctx.pendingUpdate = pending;
+  let marked = false;
+  const windows = ctx.createWindowServices({ markAppQuitting() {
+    assert.equal(ctx.savedUpdate, pending);
+    assert.equal(ctx.codexLinuxGlobalShortcutsShuttingDown, true);
+    marked = true;
+  } }, { markAppQuitting() {} }, { dispose() {} });
+  windows.markAppQuitting();
+  assert.equal(marked, true);
 });
 
 test("shared backend installs into the rspack module that owns the registration function", () => {
@@ -60,21 +77,9 @@ test("shared backend installs into the rspack module that owns the registration 
   assert.equal(installPortalBackend(patched), patched);
 
   const accessStart = source.indexOf("var accessState=");
-  const accessEnd = source.indexOf("async function shutdownApp(");
+  const accessEnd = source.indexOf("function flushWithTimeout(");
   const split = chunk(source.slice(0, accessStart) + source.slice(accessEnd), source.slice(accessStart, accessEnd));
   assert.throws(() => installPortalBackend(split), /application access readiness is outside the global shortcut module/);
-});
-
-test("current will-quit drain lifecycle shuts down the portal in both flush branches", () => {
-  const source = mainBundleFixture().replace(
-    /async function shutdownApp\([\s\S]*?function flushWithTimeout\(e,t\)\{return Promise\.resolve\(e\(\)\)\}/,
-    'function shutdownApp(e,t){let n=()=>{Promise.allSettled([e(),t()]).then(()=>{})};e.dispose(),t.dispose(),Promise.allSettled([e(),t()]).then(n);e.dispose(),t.dispose(),Promise.allSettled([e(),t()]).then(n)}',
-  );
-  assert.notEqual(source, mainBundleFixture(), "fixture must exercise the current drain contract");
-  const patched = installPortalBackend(source);
-  assert.equal((patched.match(/codexLinuxGlobalShortcutsPortalShutdown\(\),Promise\.allSettled\(\[/g) ?? []).length, 2);
-  assert.doesNotThrow(() => new vm.Script(patched));
-  assert.equal(installPortalBackend(patched), patched);
 });
 
 for (const features of [{dictation: true}, {shortcuts: true}, {dictation: true, shortcuts: true}]) {

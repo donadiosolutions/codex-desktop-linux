@@ -156,9 +156,11 @@ const CURRENT_GIT_ROUTE_PREFIX_PATTERN =
   `(?<ignoreSource>${IDENTIFIER_PATTERN})=${IDENTIFIER_PATTERN}\\(\\),` +
   `(?<localHost>${IDENTIFIER_PATTERN})=new ` +
   `(?<localHostClass>${IDENTIFIER_PATTERN})\\(\\k<ignoreSource>,[\\s\\S]{0,600}?\\);` +
+  // The current package exposes the ignore sources lazily and opts the repo
+  // watcher into ignored-directory pruning; the Git ignore environment reader
+  // is inlined by the current minifier.
   "return\\{git:\\{getWatchIgnoreSources:\\k<ignoreSource>\\?void 0:\\(\\)=>\\(\\{" +
-  // Current rspack packages expose ignore settings through a lazy getter.
-  `getEnvironment:async\\(\\)=>[\\s\\S]{1,4000}?,getWatchTargets:${IDENTIFIER_PATTERN},` +
+  `getEnvironment:async\\(\\)=>[\\s\\S]{1,2000}?,getWatchTargets:${IDENTIFIER_PATTERN},` +
   "pruneIgnoredDirectories:!0\\}\\)," +
   `createExecutionHost:(?<executionConfig>${IDENTIFIER_PATTERN})=>\\{` +
   `if\\(\\k<executionConfig>\\.id===\\k<localHost>\\.id&&!${IDENTIFIER_PATTERN}\\(\\k<executionConfig>\\)\\)` +

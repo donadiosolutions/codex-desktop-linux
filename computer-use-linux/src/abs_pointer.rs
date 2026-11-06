@@ -29,6 +29,14 @@ pub(crate) struct PointerLanding {
     pub(crate) emitted: (i32, i32),
 }
 
+/// Where a drag pressed and where it released, after edge clamping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use = "drag endpoints may be clamped; inspect requested and emitted coordinates"]
+pub(crate) struct DragLanding {
+    pub(crate) start: PointerLanding,
+    pub(crate) end: PointerLanding,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct AbsPointerGeometry {
     max_x: i32,
@@ -63,8 +71,32 @@ impl AbsPointerGeometry {
     }
 }
 
+/// Where the pointer's events go: the uinput device, or a recorder in tests.
+pub(crate) trait PointerEvents: Send {
+    fn emit(&mut self, events: &[InputEvent]) -> std::io::Result<()>;
+
+    fn device_node_path(&mut self) -> Result<PathBuf> {
+        anyhow::bail!("event sink has no uinput device node")
+    }
+}
+
+impl PointerEvents for VirtualDevice {
+    fn emit(&mut self, events: &[InputEvent]) -> std::io::Result<()> {
+        VirtualDevice::emit(self, events)
+    }
+
+    fn device_node_path(&mut self) -> Result<PathBuf> {
+        self.enumerate_dev_nodes_blocking()
+            .context("failed to enumerate the uinput device node")?
+            .next()
+            .transpose()
+            .context("failed to read the uinput device node")?
+            .ok_or_else(|| anyhow!("uinput device has no event node"))
+    }
+}
+
 pub struct AbsPointer {
-    device: VirtualDevice,
+    device: Box<dyn PointerEvents>,
     geometry: AbsPointerGeometry,
 }
 
@@ -82,6 +114,11 @@ impl AbsPointer {
     }
 
     fn create_with_settle(width: i32, height: i32, settle: bool) -> Result<Self> {
+        // uinput devices are kernel-wide: a unit test's cleared environment
+        // would not keep this one off the developer's desktop.
+        if cfg!(test) {
+            anyhow::bail!("unit tests do not create real uinput devices");
+        }
         let geometry = AbsPointerGeometry::from_dimensions(width, height);
         let (max_x, max_y) = geometry.axis_maxima();
         // value, min, max, fuzz, flat, resolution. resolution=1 unit/px.
@@ -114,7 +151,23 @@ impl AbsPointer {
             sleep(Duration::from_millis(500));
         }
 
-        Ok(Self { device, geometry })
+        Ok(Self {
+            device: Box::new(device),
+            geometry,
+        })
+    }
+
+    /// A pointer sized to `width`×`height` that sends its events to `device`.
+    #[cfg(test)]
+    pub(crate) fn with_events(
+        device: impl PointerEvents + 'static,
+        width: i32,
+        height: i32,
+    ) -> Self {
+        Self {
+            device: Box::new(device),
+            geometry: AbsPointerGeometry::from_dimensions(width, height),
+        }
     }
 
     pub fn matches_dimensions(&self, width: i32, height: i32) -> bool {
@@ -148,7 +201,12 @@ impl AbsPointer {
 
     /// Optionally move to a target, then emit native Linux wheel deltas.
     /// `dx`/`dy` use REL_HWHEEL/REL_WHEEL units and signs, respectively.
-    pub fn scroll(&mut self, target: Option<(i32, i32)>, dx: i32, dy: i32) -> Result<()> {
+    pub(crate) fn scroll(
+        &mut self,
+        target: Option<(i32, i32)>,
+        dx: i32,
+        dy: i32,
+    ) -> Result<Option<PointerLanding>> {
         let plan = scroll_plan(target, dx, dy, self.geometry.max_x, self.geometry.max_y);
         if let Some(frames) = plan.motion {
             self.emit_motion_frames(frames)?;
@@ -158,19 +216,13 @@ impl AbsPointer {
                 .emit(&plan.wheel)
                 .context("failed to emit absolute pointer wheel motion")?;
         }
-        Ok(())
+        Ok(target.map(|(x, y)| self.geometry.landing_for(x, y)))
     }
 
     /// Return the `/dev/input/eventN` node used by Mutter to recognize this
     /// virtual device.
     pub fn device_node_path(&mut self) -> Result<PathBuf> {
-        self.device
-            .enumerate_dev_nodes_blocking()
-            .context("failed to enumerate the uinput device node")?
-            .next()
-            .transpose()
-            .context("failed to read the uinput device node")?
-            .ok_or_else(|| anyhow!("uinput device has no event node"))
+        self.device.device_node_path()
     }
 
     /// Move to `(x, y)` then press+release `button` `count` times.
@@ -185,11 +237,8 @@ impl AbsPointer {
         sleep(Duration::from_millis(30));
         let code = button.key_code();
         for _ in 0..count.max(1) {
-            if let Err(error) = self
-                .device
-                .emit(&[InputEvent::new_now(EventType::KEY.0, code, 1)])
-            {
-                return Err(self.release_after_error(code, error.into()));
+            if let Err(error) = self.press_button(code) {
+                return Err(self.release_after_error(code, error));
             }
             sleep(Duration::from_millis(30));
             if let Err(error) = self.release_button(code) {
@@ -200,23 +249,19 @@ impl AbsPointer {
         Ok(landing)
     }
 
-    /// Press at `(start)`, move to `(end)`, release — a drag with `button`.
-    pub fn drag(
+    /// Press at `(start)`, move to `(end)`, release: a drag with `button`.
+    /// Reports where the press and the release were emitted after clamping.
+    pub(crate) fn drag(
         &mut self,
         start: (i32, i32),
         end: (i32, i32),
         button: PointerButton,
-    ) -> Result<()> {
+    ) -> Result<DragLanding> {
         let code = button.key_code();
-        // Drag currently reports backend success only; retain the landing
-        // values explicitly so their intentional omission stays visible.
-        let _start_landing = self.move_to(start.0, start.1)?;
+        let start_landing = self.move_to(start.0, start.1)?;
         sleep(Duration::from_millis(30));
-        if let Err(error) = self
-            .device
-            .emit(&[InputEvent::new_now(EventType::KEY.0, code, 1)])
-        {
-            return Err(self.release_after_error(code, error.into()));
+        if let Err(error) = self.press_button(code) {
+            return Err(self.release_after_error(code, error));
         }
         sleep(Duration::from_millis(40));
         for (x, y) in crate::pointer_path::drag_points(start, end) {
@@ -228,7 +273,17 @@ impl AbsPointer {
         if let Err(error) = self.release_button(code) {
             return Err(self.release_after_error(code, error));
         }
-        Ok(())
+        // The path's last motion is `end`, so the release goes there.
+        Ok(DragLanding {
+            start: start_landing,
+            end: self.geometry.landing_for(end.0, end.1),
+        })
+    }
+
+    fn press_button(&mut self, code: u16) -> Result<()> {
+        self.device
+            .emit(&[InputEvent::new_now(EventType::KEY.0, code, 1)])
+            .context("failed to emit absolute pointer button press")
     }
 
     fn release_button(&mut self, code: u16) -> Result<()> {
@@ -237,6 +292,9 @@ impl AbsPointer {
             .context("failed to emit absolute pointer button release")
     }
 
+    /// A failed write may still have reached the device, so a button that
+    /// was pressed, or whose press failed, could be held down. Send one more
+    /// release and say whether it went through.
     fn release_after_error(&mut self, code: u16, error: anyhow::Error) -> anyhow::Error {
         match self.release_button(code) {
             Ok(()) => anyhow!("{error:#}; sent a best-effort button release"),
@@ -333,7 +391,7 @@ impl PointerButton {
 }
 
 #[cfg(test)]
-mod tests {
+mod local_motion_tests {
     use super::{motion_frames, scroll_plan, wheel_events};
     use evdev::{EventType, RelativeAxisCode};
 
@@ -397,8 +455,11 @@ mod tests {
 }
 
 #[cfg(test)]
-mod upstream_geometry_tests {
-    use super::{AbsPointerGeometry, PointerButton};
+pub(crate) mod tests {
+    use super::{
+        AbsPointer, AbsPointerGeometry, EventType, InputEvent, KeyCode, PointerButton,
+        PointerEvents, PointerLanding,
+    };
 
     #[test]
     fn axis_range_ends_at_last_desktop_pixel() {
@@ -453,5 +514,185 @@ mod upstream_geometry_tests {
                 "{button} must fall through instead of becoming a left click"
             );
         }
+    }
+
+    /// Records every event and fails the emit calls whose 0-based index is in
+    /// `fail_calls`, the way a uinput write can fail midway through a click.
+    #[derive(Clone, Default)]
+    pub(crate) struct RecordedEvents {
+        events: std::sync::Arc<std::sync::Mutex<Vec<(u16, u16, i32)>>>,
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        fail_calls: Vec<usize>,
+    }
+
+    impl RecordedEvents {
+        pub(crate) fn failing_on(fail_calls: &[usize]) -> Self {
+            Self {
+                fail_calls: fail_calls.to_vec(),
+                ..Self::default()
+            }
+        }
+
+        /// The button events (`EV_KEY`) seen so far, as `(code, value)`.
+        fn button_events(&self) -> Vec<(u16, i32)> {
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(kind, _, _)| *kind == EventType::KEY.0)
+                .map(|(_, code, value)| (*code, *value))
+                .collect()
+        }
+    }
+
+    impl PointerEvents for RecordedEvents {
+        fn emit(&mut self, events: &[InputEvent]) -> std::io::Result<()> {
+            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.events.lock().unwrap().extend(
+                events
+                    .iter()
+                    .map(|event| (event.event_type().0, event.code(), event.value())),
+            );
+            if self.fail_calls.contains(&call) {
+                return Err(std::io::Error::other("uinput write failed"));
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn constructors_never_create_real_devices_in_unit_tests() {
+        assert!(AbsPointer::create(100, 100).is_err());
+        assert!(AbsPointer::create_without_settle(100, 100).is_err());
+    }
+
+    #[test]
+    fn native_scroll_reports_clamping_and_preserves_untargeted_position() {
+        let events = RecordedEvents::default();
+        let mut pointer = AbsPointer::with_events(events.clone(), 100, 100);
+        assert_eq!(pointer.scroll(None, 0, 5).unwrap(), None);
+        {
+            let recorded = events.events.lock().unwrap();
+            assert_eq!(
+                *recorded,
+                [(
+                    EventType::RELATIVE.0,
+                    super::RelativeAxisCode::REL_WHEEL.0,
+                    5
+                )]
+            );
+        }
+        events.events.lock().unwrap().clear();
+        assert_eq!(
+            pointer.scroll(Some((150, -5)), -2, 0).unwrap(),
+            Some(PointerLanding {
+                requested: (150, -5),
+                emitted: (99, 0),
+            })
+        );
+        let recorded = events.events.lock().unwrap();
+        assert_eq!(recorded.len(), 5);
+        assert_eq!(recorded[2].2, 99);
+        assert_eq!(recorded[3].2, 0);
+        assert_eq!(
+            recorded[4],
+            (
+                EventType::RELATIVE.0,
+                super::RelativeAxisCode::REL_HWHEEL.0,
+                -2
+            )
+        );
+    }
+
+    #[test]
+    fn click_releases_the_button_after_a_failed_press() {
+        // Calls 0–1 are motion frames; call 2 is the press. A failed write may still
+        // have reached the device, so the button must not stay down.
+        let events = RecordedEvents::failing_on(&[2]);
+        let mut pointer = AbsPointer::with_events(events.clone(), 100, 100);
+
+        let error = pointer.click(10, 10, PointerButton::Left, 1).unwrap_err();
+        let error = format!("{error:#}");
+
+        let left = KeyCode::BTN_LEFT.0;
+        assert_eq!(events.button_events(), [(left, 1), (left, 0)]);
+        assert!(error.contains("uinput write failed"), "{error}");
+        assert!(
+            error.contains("sent a best-effort button release"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn click_retries_a_failed_release() {
+        // Call 3 is the release. Try it once more and say whether it worked.
+        let events = RecordedEvents::failing_on(&[3, 4]);
+        let mut pointer = AbsPointer::with_events(events.clone(), 100, 100);
+
+        let error = pointer.click(10, 10, PointerButton::Left, 2).unwrap_err();
+        let error = format!("{error:#}");
+
+        let left = KeyCode::BTN_LEFT.0;
+        assert_eq!(events.button_events(), [(left, 1), (left, 0), (left, 0)]);
+        assert!(
+            error.contains("best-effort button release also failed"),
+            "{error}"
+        );
+    }
+
+    /// A drag reports both endpoints after the clamp, and its last motion,
+    /// where the release goes, is the clamped end (#398).
+    #[test]
+    fn drag_reports_where_both_endpoints_landed() {
+        let events = RecordedEvents::default();
+        let mut pointer = AbsPointer::with_events(events.clone(), 100, 100);
+
+        let landing = pointer
+            .drag((-5, 10), (150, 60), PointerButton::Left)
+            .unwrap();
+
+        assert_eq!(
+            landing.start,
+            PointerLanding {
+                requested: (-5, 10),
+                emitted: (0, 10),
+            }
+        );
+        assert_eq!(
+            landing.end,
+            PointerLanding {
+                requested: (150, 60),
+                emitted: (99, 60),
+            }
+        );
+        let motion: Vec<i32> = events
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(kind, _, _)| *kind == EventType::ABSOLUTE.0)
+            .map(|(_, _, value)| *value)
+            .collect();
+        assert_eq!(motion[..4], [1, 11, 0, 10]);
+        assert_eq!(motion[motion.len() - 2..], [99, 60]);
+    }
+
+    #[test]
+    fn drag_releases_the_button_after_failed_motion_and_reports_it() {
+        // Calls 0–1 move to the start, call 2 presses, call 3 starts the first step.
+        let events = RecordedEvents::failing_on(&[3]);
+        let mut pointer = AbsPointer::with_events(events.clone(), 100, 100);
+
+        let error = pointer
+            .drag((10, 10), (50, 50), PointerButton::Left)
+            .unwrap_err();
+        let error = format!("{error:#}");
+
+        let left = KeyCode::BTN_LEFT.0;
+        assert_eq!(events.button_events(), [(left, 1), (left, 0)]);
+        assert!(
+            error.contains("sent a best-effort button release"),
+            "{error}"
+        );
     }
 }

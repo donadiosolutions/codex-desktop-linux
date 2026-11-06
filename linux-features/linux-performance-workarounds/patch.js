@@ -4,15 +4,14 @@ const { extractedAppPatch, mainBundlePatch, webviewAssetPatch } = require("../..
 const { patchPluginCliHash } = require("./plugin-cli-hash.js");
 const { applyFeatureEnablementDedupPatch } = require("./feature-enablement.js");
 const {
+  SIDEBAR_ASSET_NEEDLES,
+  TAB_ASSET_NEEDLES,
   applyLinuxAppShellTabLayoutPerformancePatch,
-  applyLinuxMarkdownAnimationPerformancePatch,
-  matchesLinuxAppShellTabLayoutPerformanceContract,
-  matchesLinuxMarkdownAnimationPerformanceContract,
-} = require("./implementation.js");
-const {
+  applyLinuxMarkdownAnimationStylesheetPatch,
   applyLinuxSidebarScrollPerformancePatch,
+  matchesLinuxAppShellTabLayoutPerformanceContract,
   matchesLinuxSidebarScrollPerformanceContract,
-} = require("./scroll.js");
+} = require("./implementation.js");
 
 module.exports = [
   extractedAppPatch({
@@ -33,7 +32,7 @@ module.exports = [
     phase: "webview-asset",
     order: 20_100,
     ciPolicy: "optional",
-    pattern: /^[A-Za-z0-9_-]+\.js$/,
+    assetNeedles: SIDEBAR_ASSET_NEEDLES,
     assetMatch: matchesLinuxSidebarScrollPerformanceContract,
     missingDescription: "main sidebar scroll bundle",
     skipDescription: "sidebar scroll performance workaround",
@@ -44,22 +43,19 @@ module.exports = [
     phase: "webview-asset",
     order: 20_110,
     ciPolicy: "optional",
-    pattern: /^[A-Za-z0-9_-]+\.js$/,
+    assetNeedles: TAB_ASSET_NEEDLES,
     assetMatch: matchesLinuxAppShellTabLayoutPerformanceContract,
     missingDescription: "app-shell tab layout bundle",
     skipDescription: "app-shell tab layout performance workaround",
     apply: applyLinuxAppShellTabLayoutPerformancePatch,
   }),
-  webviewAssetPatch({
+  // The rspack stylesheet lives in webview/assets/async/*.css, which the
+  // script-only webview-asset index does not cover.
+  extractedAppPatch({
     id: "markdown-animation",
-    phase: "webview-asset",
+    phase: "extracted-app:post-webview",
     order: 20_120,
     ciPolicy: "optional",
-    pattern: /^[A-Za-z0-9_-]+\.css$/,
-    assetMatch: matchesLinuxMarkdownAnimationPerformanceContract,
-    matchPolicy: "all",
-    missingDescription: "streaming Markdown animation stylesheet",
-    skipDescription: "Markdown animation performance workaround",
-    apply: applyLinuxMarkdownAnimationPerformancePatch,
+    apply: applyLinuxMarkdownAnimationStylesheetPatch,
   }),
 ];

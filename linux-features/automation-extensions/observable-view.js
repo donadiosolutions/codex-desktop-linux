@@ -239,11 +239,39 @@ function patchedAutomationViewContract(source) {
   return { output, handler, linkedStore };
 }
 
+function nameInlineViewHandler(source) {
+  if (source.includes(OBSERVABLE_AUTOMATION_VIEW_MARKER)) return source;
+  const handlers = [...source.matchAll(new RegExp(CURRENT_DELETE_HANDLER.source, "gu"))];
+  if (handlers.length !== 1) return source;
+  const owner = enclosingClass(source, handlers[0].index);
+  if (owner == null) return source;
+  const candidates = [...source.slice(owner.open, handlers[0].index).matchAll(/async function\(/gu)].filter(match => {
+    const parameters = owner.open + match.index + "async function".length;
+    const close = findMatchingParenthesis(source, parameters);
+    return close >= 0 && findMatchingBrace(source, close + 1) > handlers[0].index;
+  });
+  if (candidates.length !== 1 || source.includes("codexLinuxInlineAutomationUpdate")) return source;
+  const start = owner.open + candidates[0].index;
+  const parameters = source.indexOf("(", start), closeParameters = findMatchingParenthesis(source, parameters);
+  const open = closeParameters + 1, end = findMatchingBrace(source, open);
+  if (closeParameters < 0 || end < handlers[0].index || end >= owner.close || source[open] !== "{") return source;
+  const text = source.slice(start, end + 1), name = "codexLinuxInlineAutomationUpdate";
+  // Extract only the handler behind the unchanged local-host and migration guards.
+  const prefix = source.slice(owner.open, start);
+  if (!prefix.endsWith(":") || !prefix.includes("isLocalMigrationActive()?") ||
+      !prefix.includes("Local automation changes must use the Automations app after migration consent.")) return source;
+  const declaration = text.replace("async function(", `async function ${name}(`);
+  const classStart = source.lastIndexOf(`class ${owner.name}`, owner.open);
+  return source.slice(0, classStart) + declaration + source.slice(classStart, start) + name + source.slice(end + 1);
+}
+
 function matchesObservableAutomationViewContract(source) {
+  source = nameInlineViewHandler(source);
   return patchedAutomationViewContract(source) != null || currentAutomationViewContract(source) != null;
 }
 
 function applyObservableAutomationViewPatch(source) {
+  source = nameInlineViewHandler(source);
   if (patchedAutomationViewContract(source) != null) return source;
   const contract = currentAutomationViewContract(source);
   if (contract == null) {

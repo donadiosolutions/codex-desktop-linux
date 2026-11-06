@@ -7,7 +7,6 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const { execFileSync } = require("node:child_process");
-const { findRequestHandlerMap } = require("../../scripts/patches/lib/request-handlers.js");
 
 const {
   applyChronicleSkysightMainBridgePatch,
@@ -33,6 +32,9 @@ function captureWarns(fn) {
   }
 }
 
+// Current desktop fetch wrapper: only the dictation route remains upstream.
+const FETCH_WRAPPER_FIXTURE = "class FetchWrapper{constructor(){this.options={chunkedMessageSender:{sendInlineMessageForView:(e,t)=>{(globalThis.viewMessages??=[]).push({view:e,message:t})}}}}async handleRequest(e,t){if(\"/codex/dictation-stream-connect-info\"===t.url)return void await this.handleDictationStreamConnectInfoRequest(e,t);throw Error(\"HTTP requests must use the HTTP fetch service.\")}async handleDictationStreamConnectInfoRequest(e,t){try{this.options.chunkedMessageSender.sendInlineMessageForView(e,{type:\"fetch-response\",responseType:\"success\",requestId:t.requestId,status:200,headers:{\"content-type\":\"application/json\"},bodyJsonString:\"{}\"})}catch(r){this.options.chunkedMessageSender.sendInlineMessageForView(e,{type:\"fetch-response\",responseType:\"error\",requestId:t.requestId,status:432,error:\"failed\"})}}}var fetchWrapper=new FetchWrapper;";
+
 // Previous Vite/rolldown minifier shape (template literals, `x==null`, `var X=class`).
 function retiredMinifierChronicleMainFixture() {
   return [
@@ -46,7 +48,7 @@ function retiredMinifierChronicleMainFixture() {
     "var appOptions={getSkysightRecorderController:()=>Cr().skysight?xe:null,artifactSessionHostLifecycle:null};",
     "var connection={enableSkysightChronicle:()=>xe.enable(),resumeChronicle:()=>xe.resume()};",
     "var Host=class{constructor(){this.options=appOptions;let i=connection;this.services={chronicle:process.platform===`darwin`&&this.options.getSkysightRecorderController!=null?new $O(i,this.options.getSkysightRecorderController,()=>Cr().skysight,()=>globalThis.applications,e=>globalThis.resolvedApplications,{list:()=>globalThis.history,listSuggestions:()=>globalThis.historySuggestions,listSummaryIntervals:e=>[e]}):void 0}}};var host=new Host;",
-    "var bridge={\"set-remote-wsl-connections-enabled\":()=>null};",
+    FETCH_WRAPPER_FIXTURE,
   ].join("");
 }
 
@@ -63,9 +65,25 @@ function currentChronicleMainFixture() {
     "var appOptions={getSkysightRecorderController:()=>Cr().skysight?xe:null,artifactSessionHostLifecycle:null};",
     "var connection={enableSkysightChronicle:()=>xe.enable(),resumeChronicle:()=>xe.resume()};",
     "class Host{constructor(){this.options=appOptions;let i=connection;this.services={chronicle:\"darwin\"===process.platform&&null!=this.options.getSkysightRecorderController?new $O(i,this.options.getSkysightRecorderController,()=>Cr().skysight,()=>globalThis.applications,e=>globalThis.resolvedApplications,{list:()=>globalThis.history,listSuggestions:()=>globalThis.historySuggestions,listSummaryIntervals:e=>[e]}):void 0}}}var host=new Host;",
-    'var electron={ipcMain:{handle(){}}},channel="test";function trusted(){return true}function context(){return null}var Bridge=class{globalState;windowManager;chunkedMessageSender;fetchWrapper;constructor(options){Object.assign(this,options)}async handleMessage(e,t){switch(t.type){case"fetch":await this.fetchWrapper.handleRequest(e,t);break;case"cancel-fetch":this.fetchWrapper.cancelRequest(e,t);break;case"other":return"untouched"}}};var Context=class{constructor(){this.messageHandler=new Bridge({})}async handleMessage(e,t){await this.messageHandler.handleMessage(e,t)}};electron.ipcMain.handle(channel,async(t,n)=>{if(!trusted(t))return;let a=context(t.sender);a?await a.handleMessage(t.sender,n):null});var bridge={};',
+    FETCH_WRAPPER_FIXTURE,
   ].join("");
 }
+
+test("chronicle-skysight recognizes the signed inline archive dependency", () => {
+  // 26.1103 inlines the archive implementation before its reason argument.
+  const source = currentChronicleMainFixture().replace(
+    'await archive({codexHome:V.codexHome,reason:"skysight_gate_enabled"})',
+    'await async function({codexHome:e,reason:t}){let r=ee().join(e,...on),n=ee().join(e,".codex-chronicle-assets-to-install.marker"),[i,s]=await Promise.all([oa(r),oa(n)]);if(!i&&!s)return null;let a=new Date().toISOString(),o=ee().join(e,...oi,`${Date.now()}-${(0,tm.randomUUID)()}`),l=s?await ey().readFile(n,"utf8"):null,c={originalPath:r,moveTimestamp:a,markerExisted:s,markerContents:l,migrationReason:t};return await ey().mkdir(o,{recursive:!0}),i&&await os(r,ee().join(o,"skill")),s&&await os(n,ee().join(o,"marker")),await ey().writeFile(ee().join(o,"metadata.json"),JSON.stringify(c),"utf8"),{archivePath:o,metadata:c}}({codexHome:V.codexHome,reason:"skysight_gate_enabled"})',
+  );
+  assert.notEqual(source, currentChronicleMainFixture());
+  assert.equal(chronicleControllerContract(source), "current");
+  const result = captureWarns(() => applyChronicleSkysightMainBridgePatch(source));
+  assert.notEqual(result.value, source);
+  assert.deepEqual(result.warnings, []);
+  assert.equal(chronicleControllerContract(result.value), "patched");
+  assert.equal(applyChronicleSkysightMainBridgePatch(result.value), result.value);
+  assert.doesNotThrow(() => new (require("node:vm").Script)(result.value));
+});
 
 test("chronicle-skysight is an independent disabled-by-default feature", () => {
   const manifest = JSON.parse(
@@ -185,6 +203,12 @@ test("chronicle-skysight owns the activity-memory bridge", () => {
   assert.equal(applyChronicleSkysightMainBridgePatch(patched), patched);
   assert.match(patched, /"chronicle-permissions":async/);
   assert.match(patched, /"linux-record-replay-skysight-start":async/);
+  assert.match(patched, /const codexLinuxChronicleBridgeHandlers=\{/);
+  assert.match(
+    patched,
+    /async handleRequest\(e,t\)\{\/\*codex-linux-chronicle-skysight-route\*\/if\(codexLinuxChronicleFetchHandler\(t\?\.url\)\)return void await codexLinuxChronicleFetch\(t,codexLinuxChronicleMessage=>this\.options\.chunkedMessageSender\.sendInlineMessageForView\(e,codexLinuxChronicleMessage\)\);if\("\/codex\/dictation-stream-connect-info"===t\.url\)/,
+  );
+  assert.doesNotMatch(patched, /set-remote-wsl-connections-enabled/);
   assert.match(patched, /\(N\|\|"linux"===process\.platform\)&&\(xe=new Hse\(/);
   assert.match(patched, /request:"linux"===process\.platform\?codexLinuxChronicleRequest:/);
   assert.match(patched, /reconcileComputerHistoryPluginInstallation:"linux"===process\.platform\?\(\)=>\{\}:/);
@@ -233,15 +257,25 @@ test("chronicle-skysight fails closed for missing duplicate ambiguous mixed and 
     .replace("class Hse{", "class Hsf{");
   const variants = {
     retiredMinifier: retiredMinifierChronicleMainFixture(),
-    missingFetchRoute: current.replace(
-      'case"fetch":await this.fetchWrapper.handleRequest(e,t);break;',
-      'case"fetch-disabled":await this.fetchWrapper.handleRequest(e,t);break;',
+    missingFetchEntry: current.replace(
+      '"/codex/dictation-stream-connect-info"===t.url',
+      '"/codex/other-route"===t.url',
     ),
-    missingIpcTrustGate: current.replace('if(!trusted(t))return;', 'if(false)return;'),
-    missingMessageHandlerWiring: current.replace(
-      "this.messageHandler=new Bridge(",
-      "this.unusedHandler=new Bridge(",
+    retiredFetchEntry: current.replace(
+      'throw Error("HTTP requests must use the HTTP fetch service.")',
+      "return this.handleLegacyRequest(e,t)",
     ),
+    duplicateFetchEntry: `${current}class OtherFetchWrapper{async handleRequest(e,t){if("/codex/dictation-stream-connect-info"===t.url)return void await this.handleDictationStreamConnectInfoRequest(e,t);throw Error("HTTP requests must use the HTTP fetch service.")}}`,
+    missingViewResponder: current.replaceAll(
+      "this.options.chunkedMessageSender.sendInlineMessageForView(e,{type:\"fetch-response\"",
+      "this.options.sender.send(e,{type:\"fetch-response\"",
+    ),
+    missingRoute: patched.replace("/*codex-linux-chronicle-skysight-route*/", ""),
+    alteredRoute: patched.replace(
+      /\/\*codex-linux-chronicle-skysight-route\*\/[^;]+\)\);/,
+      (route) => `;${route.replace("return void await ", "")}`,
+    ),
+    missingRegistry: patched.replace("const codexLinuxChronicleBridgeHandlers={", "const codexLinuxChronicleHandlers={"),
     missing: current.replace('this.request("skysightStatus")', 'this.request("statusChanged")'),
     missingRollback: current.replace("Failed to enable Chronicle and stop the recorder during rollback", "Failed"),
     duplicateController: current.slice(0, serviceStart) + duplicateController + current.slice(serviceStart),
@@ -281,19 +315,6 @@ test("chronicle-skysight fails closed for missing duplicate ambiguous mixed and 
   }
 });
 
-test("chronicle-skysight registers through the current trusted fetch bridge", () => {
-  const current = currentChronicleMainFixture();
-  assert.equal(chronicleControllerContract(current), "current");
-  const patched = applyChronicleSkysightMainBridgePatch(current);
-  assert.notEqual(patched, current);
-  assert.equal(chronicleControllerContract(patched), "patched");
-  assert.match(patched, /codexLinuxRequestHandlers=\{[\s\S]*?\};/);
-  assert.match(patched, /vscode:\/\/codex\/"/);
-  assert.match(patched, /codexLinuxHandleRequest\(e,t\)/);
-  assert.equal(applyChronicleSkysightMainBridgePatch(patched), patched);
-  assert.doesNotThrow(() => new (require("node:vm").Script)(patched));
-});
-
 test("chronicle-skysight drives recorder controls without exposing the unsupported Linux service", async () => {
   const source = currentChronicleMainFixture();
   const patched = applyChronicleSkysightMainBridgePatch(source);
@@ -307,6 +328,7 @@ test("chronicle-skysight drives recorder controls without exposing the unsupport
     { state: "stopped", is_running: false, currentSegmentEventsPath: "/last/events.jsonl", currentSegmentMetadataPath: "/last/metadata.json" },
     { ok: true, exclusions: [{ kind: "app", value: "secret-app" }] },
     { ok: true, exclusions: [] },
+    { state: "running", is_running: true },
   ];
   const childProcess = {
     execFile(_bin, args, _options, callback) {
@@ -333,9 +355,8 @@ test("chronicle-skysight drives recorder controls without exposing the unsupport
     },
   };
 
-  const requestHandlers = findRequestHandlerMap(patched).text;
   require("node:vm").runInNewContext(
-    `${patched};globalThis.chronicle=host.services.chronicle;globalThis.controller=xe;globalThis.bridge={${requestHandlers}};`,
+    `${patched};globalThis.chronicle=host.services.chronicle;globalThis.controller=xe;globalThis.bridge=codexLinuxChronicleBridgeHandlers;globalThis.fetchWrapper=fetchWrapper;`,
     context,
   );
   assert.equal(context.globalThis.chronicle, undefined);
@@ -387,6 +408,37 @@ test("chronicle-skysight drives recorder controls without exposing the unsupport
     ["skysight", "list-exclusions"],
     ["skysight", "update-exclusion", "--kind", "app", "--value", "secret-app", "--reason", "private", "--remove"],
   ]);
+
+  // Webview fetches reach the bridge through the desktop fetch wrapper.
+  const fetchWrapper = context.globalThis.fetchWrapper;
+  await fetchWrapper.handleRequest("view", {
+    requestId: "status-1",
+    url: "vscode://codex/linux-record-replay-skysight-status",
+    body: "{}",
+  });
+  await fetchWrapper.handleRequest("view", {
+    requestId: "bad-body",
+    url: "vscode://codex/linux-record-replay-skysight-status",
+    body: "{",
+  });
+  await fetchWrapper.handleRequest("view", { requestId: "dictation", url: "/codex/dictation-stream-connect-info" });
+  await assert.rejects(
+    fetchWrapper.handleRequest("view", { requestId: "proto", url: "vscode://codex/__proto__", body: "{}" }),
+    /HTTP requests must use the HTTP fetch service/,
+  );
+  await assert.rejects(
+    fetchWrapper.handleRequest("view", { requestId: "other", url: "vscode://codex/linux-record-replay-start", body: "{}" }),
+    /HTTP requests must use the HTTP fetch service/,
+  );
+  const messages = JSON.parse(JSON.stringify(context.globalThis.viewMessages));
+  assert.deepEqual(messages.map(({ view, message }) => [view, message.requestId, message.responseType, message.status]), [
+    ["view", "status-1", "success", 200],
+    ["view", "bad-body", "error", 500],
+    ["view", "dictation", "success", 200],
+  ]);
+  assert.equal(JSON.parse(messages[0].message.bodyJsonString).json.state, "running");
+  assert.match(messages[1].message.error, /Invalid Linux bridge request/);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), ["skysight", "status"]);
 });
 
 test("chronicle-skysight Linux controller never invokes upstream migration dependencies", async () => {

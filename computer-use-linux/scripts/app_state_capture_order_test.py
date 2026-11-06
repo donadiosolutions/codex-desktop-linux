@@ -22,6 +22,8 @@ import time
 import unittest
 import zlib
 
+from socket_fixture import INDICATOR_SOCKET, TEMPDIR_NAME, private_bus_config, socket_tempdir
+
 SERVER = str(Path(sys.argv[1]).resolve())
 TARGET = 0x5000
 OTHER = 0x6000
@@ -73,7 +75,8 @@ class CaptureOrderTests(unittest.TestCase):
             CODEX_COMPUTER_USE_SCREENSHOT_BACKEND='gnome-screenshot',
             PATH=str(self.root)+':/usr/bin:/bin')
         for name in ('DISPLAY', 'WAYLAND_DISPLAY', 'AT_SPI_BUS_ADDRESS', 'NIRI_SOCKET',
-                     'SWAYSOCK', 'I3SOCK', 'COMPUTER_USE_LINUX_HYPRLAND_BACKGROUND'):
+                     'SWAYSOCK', 'I3SOCK', 'COMPUTER_USE_LINUX_HYPRLAND_BACKGROUND',
+                     'CODEX_COMPUTER_USE_HYPRLAND_BACKGROUND'):
             self.env.pop(name, None)
         for name in ('systemctl', 'gdbus', 'xdotool', 'wtype', 'xrandr', 'ydotool', 'ydotoold',
                      'grim', 'kscreen-doctor', 'swaymsg', 'i3-msg', 'niri'):
@@ -138,13 +141,12 @@ if __name__ == '__main__':
     if len(sys.argv) > 2 and sys.argv[2] == '--private':
         result = unittest.main(argv=[sys.argv[0]], exit=False).result
         raise SystemExit(0 if result.wasSuccessful() else 1)
-    with tempfile.TemporaryDirectory(prefix='cul-capture-order-') as directory:
+    # Each test's directory is the server's runtime dir, where its capture
+    # handshake names the overlay socket, the longest one here.
+    with socket_tempdir('cul-capture-', [f'{TEMPDIR_NAME}/{INDICATOR_SOCKET}'],
+                        bus_dir='') as directory:
         env = dict(os.environ, XDG_RUNTIME_DIR=directory)
-        config = Path(directory)/'bus.conf'
-        config.write_text('<busconfig><type>session</type>'
-            f'<listen>unix:tmpdir={directory}</listen>'
-            '<policy context="default"><allow own="*"/>'
-            '<allow send_destination="*"/><allow receive_sender="*"/></policy></busconfig>')
+        config = private_bus_config(Path(directory)/'bus.conf', directory)
         proc = subprocess.Popen(['dbus-run-session', '--config-file', str(config), '--', '/usr/bin/python3',
             __file__, SERVER, '--private', directory], env=env, start_new_session=True)
         try:

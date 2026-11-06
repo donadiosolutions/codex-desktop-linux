@@ -297,6 +297,9 @@ impl ScreenshotPayloadOptions {
 /// fallback chain. Accepts `gnome-shell`, `gnome-extension`, `portal`, `x11`,
 /// `gnome-screenshot`, or `pixelflux`.
 const SCREENSHOT_BACKEND_ENV: &str = "CODEX_COMPUTER_USE_SCREENSHOT_BACKEND";
+/// Standalone computer-use-linux name for [`SCREENSHOT_BACKEND_ENV`], read
+/// when the Codex name is unset or blank.
+const SCREENSHOT_BACKEND_ENV_STANDALONE: &str = "COMPUTER_USE_LINUX_SCREENSHOT_BACKEND";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScreenshotBackend {
@@ -501,17 +504,20 @@ async fn capture_with_pixelflux(
 }
 
 fn forced_backend() -> Result<Option<ScreenshotBackend>> {
-    match std::env::var(SCREENSHOT_BACKEND_ENV) {
-        Ok(value) if !value.trim().is_empty() => {
-            ScreenshotBackend::parse(&value).map(Some).ok_or_else(|| {
-                anyhow!(
-                    "{SCREENSHOT_BACKEND_ENV}={value:?} is not a recognized backend \
-                     (expected gnome-shell, gnome-extension, portal, x11, gnome-screenshot, or pixelflux)"
-                )
-            })
+    for key in [SCREENSHOT_BACKEND_ENV, SCREENSHOT_BACKEND_ENV_STANDALONE] {
+        match std::env::var(key) {
+            Ok(value) if !value.trim().is_empty() => {
+                return ScreenshotBackend::parse(&value).map(Some).ok_or_else(|| {
+                    anyhow!(
+                        "{key}={value:?} is not a recognized backend \
+                         (expected gnome-shell, gnome-extension, portal, x11, gnome-screenshot, or pixelflux)"
+                    )
+                });
+            }
+            _ => {}
         }
-        _ => Ok(None),
     }
+    Ok(None)
 }
 
 pub async fn capture_screenshot() -> Result<ScreenshotCapture> {
@@ -1266,11 +1272,10 @@ fn unique_suffix() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_sockets::PrivateBus;
     use std::{
-        io::{BufRead, BufReader},
         os::fd::AsFd,
         os::unix::fs::PermissionsExt,
-        process::{Child, Command, Stdio},
         sync::{Arc, Mutex},
     };
     use zbus::zvariant::Fd;
@@ -1329,50 +1334,6 @@ mod tests {
         received_mode: Arc<Mutex<Option<u32>>>,
     }
 
-    struct PrivateBus {
-        child: Child,
-        address: String,
-        _stdout: BufReader<std::process::ChildStdout>,
-    }
-
-    impl PrivateBus {
-        fn start() -> Self {
-            let mut child = Command::new("dbus-daemon")
-                .args(["--session", "--nofork", "--print-address=1"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("dbus-daemon must be installed for private-bus screenshot tests");
-            let stdout = child.stdout.take().unwrap();
-            let mut reader = BufReader::new(stdout);
-            let mut address = String::new();
-            reader
-                .read_line(&mut address)
-                .expect("dbus-daemon must print its private bus address");
-            assert!(
-                !address.trim().is_empty(),
-                "dbus-daemon returned an empty address"
-            );
-            Self {
-                child,
-                address: address.trim().to_string(),
-                _stdout: reader,
-            }
-        }
-
-        fn builder(&self) -> zbus::Result<zbus::connection::Builder<'_>> {
-            zbus::connection::Builder::address(self.address.as_str())
-        }
-    }
-
-    impl Drop for PrivateBus {
-        fn drop(&mut self) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
-    }
-
     #[zbus::interface(name = "com.openai.Codex.TestScreenshot")]
     impl FdScreenshotProducer {
         async fn capture_screenshot_to_fd(&self, fd: Fd<'_>) -> (bool, String) {
@@ -1407,14 +1368,13 @@ mod tests {
         Proxy<'static>,
         Arc<Mutex<Option<u32>>>,
     ) {
-        let bus = PrivateBus::start();
+        let bus = PrivateBus::start("cul-screenshot-fd");
         let name = format!(
             "com.openai.Codex.TestScreenshot_{}",
             unique_suffix().replace('-', "_")
         );
         let received_mode = Arc::new(Mutex::new(None));
-        let service = bus
-            .builder()
+        let service = zbus::connection::Builder::address(bus.address())
             .unwrap()
             .name(name.as_str())
             .unwrap()
@@ -1429,7 +1389,11 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let connection = bus.builder().unwrap().build().await.unwrap();
+        let connection = zbus::connection::Builder::address(bus.address())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
         let proxy = Proxy::new_owned(
             connection.clone(),
             name,
@@ -1590,8 +1554,12 @@ mod tests {
 
     #[tokio::test]
     async fn extension_fd_capture_reports_setup_guidance_for_missing_service_and_method() {
-        let bus = PrivateBus::start();
-        let connection = bus.builder().unwrap().build().await.unwrap();
+        let bus = PrivateBus::start("cul-screenshot-fd");
+        let connection = zbus::connection::Builder::address(bus.address())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
         let temp_dir = std::env::temp_dir().join(format!("cua-fd-guidance-{}", unique_suffix()));
         fs::create_dir(&temp_dir).unwrap();
         let missing_service = Proxy::new(
@@ -1671,6 +1639,8 @@ mod tests {
         let _guard = crate::pixelflux::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // Start from neither name, whatever the caller's environment exports.
+        std::env::remove_var(SCREENSHOT_BACKEND_ENV_STANDALONE);
         std::env::set_var(SCREENSHOT_BACKEND_ENV, "gnome-screenshot");
         assert_eq!(
             forced_backend().unwrap(),
@@ -1691,6 +1661,29 @@ mod tests {
         assert!(error.to_string().contains("not a recognized backend"));
 
         std::env::remove_var(SCREENSHOT_BACKEND_ENV);
+        assert_eq!(forced_backend().unwrap(), None);
+
+        // The standalone name is an alias; the Codex name wins when both are set.
+        std::env::set_var(SCREENSHOT_BACKEND_ENV_STANDALONE, "gnome-screenshot");
+        assert_eq!(
+            forced_backend().unwrap(),
+            Some(ScreenshotBackend::GnomeScreenshot)
+        );
+        std::env::set_var(SCREENSHOT_BACKEND_ENV, "x11");
+        assert_eq!(forced_backend().unwrap(), Some(ScreenshotBackend::X11));
+        std::env::set_var(SCREENSHOT_BACKEND_ENV, "  ");
+        assert_eq!(
+            forced_backend().unwrap(),
+            Some(ScreenshotBackend::GnomeScreenshot)
+        );
+        std::env::set_var(SCREENSHOT_BACKEND_ENV_STANDALONE, "bogus");
+        let error = forced_backend().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("COMPUTER_USE_LINUX_SCREENSHOT_BACKEND"));
+
+        std::env::remove_var(SCREENSHOT_BACKEND_ENV);
+        std::env::remove_var(SCREENSHOT_BACKEND_ENV_STANDALONE);
         assert_eq!(forced_backend().unwrap(), None);
     }
 
@@ -1721,6 +1714,7 @@ mod tests {
         std::env::set_var("PIXELFLUX_CU", port.to_string());
         std::env::set_var("PIXELFLUX_CU_TOKEN", "secret");
         std::env::remove_var(SCREENSHOT_BACKEND_ENV);
+        std::env::remove_var(SCREENSHOT_BACKEND_ENV_STANDALONE);
         let capture = capture_screenshot_raw().await.unwrap();
         std::env::remove_var("PIXELFLUX_CU");
         std::env::remove_var("PIXELFLUX_CU_TOKEN");

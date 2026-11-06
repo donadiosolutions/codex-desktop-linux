@@ -288,3 +288,15 @@ test("unified builder patch fails closed when its bindings shadow require", () =
     assert.throws(() => patch(shadowed), /native config builder shadows require/);
   }
 });
+
+
+test("inline plugin synchronization carries its verified root to cached thread config",()=>{
+ const {findMatchingBrace}=require('../../scripts/patches/lib/minified-js.js');
+ const start=selector.indexOf('async function configure(e){'),open=selector.indexOf('{',start),end=findMatchingBrace(selector,open)+1;
+ const inline=selector.slice(start,end).replace('async function configure(', 'async function(');
+ const source=(selector.slice(0,start)+selector.slice(end)).replace('await configure({',`await ${inline}({`);
+ const result=unified(source);assert.notEqual(result,source);assert.equal(unified(result),result);
+ assert.match(result,/e\.codexLinuxCuaContext\.codexLinuxCuaPluginRoot=i/);
+ assert.match(result,/codexLinuxCuaContext:selection/);
+ assert.doesNotThrow(()=>new vm.Script(result));
+});

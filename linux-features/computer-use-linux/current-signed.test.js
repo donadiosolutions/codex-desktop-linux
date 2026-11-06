@@ -7,7 +7,6 @@ const test = require("node:test");
 const vm = require("node:vm");
 const descriptors = require("./patch.js");
 const { findMainProcessChunks } = require("../../scripts/patches/lib/assets.js");
-const { listWebviewAssetNames } = require("../../scripts/patches/lib/assets.js");
 
 function signedChunks() {
   const mainProcess = findMainProcessChunks(process.env.CODEX_SIGNED_EXTRACTED_APP);
@@ -41,7 +40,7 @@ test("current signed native metadata factory patches without changing the truste
 }, () => {
   // Locate the chunk holding the fetch handler semantically, not by chunk id.
   const owners = signedChunks().filter(({ source }) =>
-    source.includes("nativeApplications:this.fetchHandler.nativeApplications"));
+    /nativeApplications:this\.(?:fetchHandler|desktopServices)\.nativeApplications/.test(source));
   assert.equal(owners.length, 1, "Expected one chunk exposing native Applications metadata");
   const [{ file, source: actual }] = owners;
   const patch = descriptors.find(({ id }) => id === "native-applications").apply;
@@ -74,37 +73,37 @@ test("every current signed main-process descriptor patches exactly one chunk ide
   }
 });
 
-test("current signed Rspack webview owners match the feature descriptors", {
+test("every current signed webview descriptor patches its rspack owners idempotently", {
   skip: !process.env.CODEX_SIGNED_EXTRACTED_APP,
 }, () => {
-  const assetsDir = path.join(process.env.CODEX_SIGNED_EXTRACTED_APP, "webview", "assets");
-  const names = listWebviewAssetNames(assetsDir, /\.js$/);
-  const assets = names.map(name => ({
-    name,
-    source: fs.readFileSync(path.join(assetsDir, name), "utf8"),
-  }));
-  const expected = [
-    ["codex-app-thread-tools", source => source.includes("readDynamicTools:e=>")],
-    ["ui-availability", source => source.includes("computerUseAvailability:") && source.includes(".available")],
-    ["host-platform", source => source.includes("isHostCompatiblePlatform:") && source.includes('windowType:"electron"')],
-    ["native-settings-visibility", source => source.includes(".plugin.id") && source.includes("new Set(")],
-  ];
-  for (const [id, owns] of expected) {
-    const descriptor = descriptors.find(item => item.id === id);
-    assert(descriptor, `missing ${id} descriptor`);
-    const owners = assets.filter(({ name, source }) => descriptor.pattern.test(name) && owns(source) &&
-      (descriptor.assetMatch == null || descriptor.assetMatch(source, name)));
-    assert(owners.length > 0, `${id} current signed owner`);
-    const changed = owners.flatMap(({ name, source }) => {
-      try {
-        const patched = descriptor.apply(source);
-        if (patched === source) return [];
-        assert.equal(descriptor.apply(patched), patched, `${id} ${name} should be idempotent`);
-        return [name];
-      } catch (error) {
-        assert.fail(`${id} ${name}: ${error.message}`);
-      }
-    });
-    assert(changed.length > 0, `${id} should patch at least one current signed owner`);
+  const { findWebviewAssetsContaining } = require("../../scripts/patches/lib/assets.js");
+  const { patchBreaksJavaScriptSyntax } = require("../../scripts/patches/lib/javascript-syntax.js");
+  const root = process.env.CODEX_SIGNED_EXTRACTED_APP;
+  const expectedOwners = {
+    "ui-availability": 1,
+    "host-platform": 1,
+    // The Plugins presentation module is duplicated into several lazy chunks.
+    "native-settings-visibility": null,
+  };
+  for (const descriptor of descriptors.filter(({ phase }) => phase === "webview-asset")) {
+    const owners = findWebviewAssetsContaining(root, descriptor.assetNeedles)
+      .map(assetName => ({
+        assetName,
+        source: fs.readFileSync(path.join(root, "webview", "assets", assetName), "utf8"),
+      }))
+      .filter(({ source }) => descriptor.assetMatch?.(source) ?? true);
+    const expected = expectedOwners[descriptor.id];
+    if (expected == null) assert.ok(owners.length > 1, descriptor.id);
+    else assert.equal(owners.length, expected, descriptor.id);
+    for (const { assetName, source } of owners) {
+      const patched = quietly(() => descriptor.apply(source));
+      assert.notEqual(patched, source, `${descriptor.id} did not change ${assetName}`);
+      assert.equal(descriptor.apply(patched), patched, `${descriptor.id} is not idempotent`);
+      assert.equal(
+        patchBreaksJavaScriptSyntax(source, patched),
+        false,
+        `${descriptor.id} produced invalid JavaScript in ${assetName}`,
+      );
+    }
   }
 });

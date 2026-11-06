@@ -10,15 +10,15 @@ const descriptors=require('./patch.js');
 const descriptor=id=>descriptors.find(d=>d.id===id);
 test('current settings outbound gate survives copy stage and exposes Linux tab',()=>{
  const d=descriptor('linux-remote-control-settings-ux');
- assert.equal(d.assetMatch(fixture.gate),true);
- const p=d.apply(fixture.gate);assert.notEqual(p,fixture.gate);assert.equal(d.apply(p),p);
+
+ const original=fixture.gate+";";const p=d.apply(original);assert.notEqual(p,original);assert.equal(d.apply(p),p);
  for(const [platform,hide,want]of [['Linux',true,true],['Mac',true,false],['Mac',false,true]]){
   const ctx={navigator:{userAgent:platform},G:{Zj:()=>hide},tD:null};vm.runInNewContext(p,ctx);assert.equal(ctx.nV,want);
  }
 });
 test('current native service refresh selects and patches 5-second effect',()=>{
  const d=descriptor('linux-remote-connections-refresh'),source=fixture.refreshContract+';'+fixture.effect;
- assert.equal(d.assetMatch(source),true);const p=d.apply(source);assert.notEqual(p,source);assert.equal(d.apply(p),p);assert.match(p,/,5e3\)/);
+const p=d.apply(source);assert.notEqual(p,source);assert.equal(d.apply(p),p);assert.match(p,/,5e3\)/);
 });
 test('current revoke resets active setup and retains cache/telemetry wiring',()=>{
  const d=descriptor('linux-remote-control-client-revoke-setup-reset');
@@ -28,7 +28,7 @@ test('current revoke resets active setup and retains cache/telemetry wiring',()=
 test('signed current settings passes ordered descriptor stack and remains ESM', {skip:!process.env.CODEX_SIGNED_APP},()=>{
  let source=fs.readFileSync(path.join(process.env.CODEX_SIGNED_APP,'webview/assets',fixture.asset),'utf8');assert.equal(createHash('sha256').update(source).digest('hex'),fixture.sha256);
  for(const id of ['linux-remote-control-copy','linux-remote-control-settings-ux','linux-remote-control-client-revoke-setup-reset','linux-remote-connections-refresh']){
-  const d=descriptor(id);assert.ok(d.pattern.test(fixture.asset),id);assert.ok(d.assetMatch(source),id);const p=d.apply(source);assert.notEqual(p,source,id);assert.equal(d.apply(p),p,id);source=p;
+  const d=descriptor(id);if(d.assetMatch)assert.ok(d.assetMatch(source),id);const p=d.apply(source);assert.notEqual(p,source,id);assert.equal(d.apply(p),p,id);source=p;
  }
  new vm.Script(source.replace(/export const /g,'const '));
 });
@@ -90,4 +90,15 @@ test('current revoke follows renamed hook exports and requires local identity li
  assert.notEqual(patched,null);assert.notEqual(patched,renamed);
  assert.equal(applyCurrentRevokeSetupReset(patched),patched);
  assert.equal(applyCurrentRevokeSetupReset(renamed.replace('localRemoteControlClientId:ec','unrelatedClientId:ec')),null);
+});
+
+
+test("current inline refresh preserves cancellation and installs resume triggers",()=>{
+ const source='eB=()=>{let e=null,t=!1,n=window.setInterval(()=>{(async()=>{t||(t=!0,e=new AbortController,await (async()=>{await oI(e.signal)})().finally(()=>{e=null,t=!1}))})()},15e3);return()=>{e?.abort(),window.clearInterval(n)}}';
+ const d=descriptor('linux-remote-connections-refresh'),patched=d.apply(source);
+ assert.notEqual(patched,source);assert.equal(d.apply(patched),patched);
+ assert.match(patched,/,5e3\)/);assert.match(patched,/window.addEventListener\(`resume`/);
+ assert.match(patched,/window.removeEventListener\(`resume`/);
+ assert.match(patched,/e\?\.abort\(\)/);
+ new vm.Script(patched);
 });

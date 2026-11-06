@@ -9,16 +9,10 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
-const {
-  applyWebviewAssetPatchDescriptors,
-  normalizePatchDescriptors,
-} = require("../../scripts/patches/engine.js");
-const { listWebviewAssetNames } = require("../../scripts/patches/lib/assets.js");
 const nativeLayout = require("./fixtures/native-layout.js");
 const nativeWindowGeometry = require("./fixtures/native-window-geometry.js");
 const nativeInputPolicy = require("./fixtures/native-input-policy.js");
 const nativePresentation = require("./fixtures/native-presentation.js");
-const currentRendererShape = fs.readFileSync(path.join(__dirname, "fixtures/current-renderer-shape.js"), "utf8");
 const { signal, session: kwinSession, bridgeForSession } = require("./fixtures/kwin-session.cjs");
 const settle = () => new Promise(resolve => setImmediate(resolve));
 require("./kwin-bridge.test.cjs");
@@ -31,10 +25,16 @@ const {
 } = require("../../scripts/lib/linux-features.js");
 const {
   DESCRIPTOR_ID,
+  RENDERER_FOCUS_NEEDLES,
+  RENDERER_GESTURE_NEEDLES,
+  applyPetOverlayGestureRendererPatch,
   applyPetOverlayPatch,
   applyPetOverlayRendererPatch,
+  descriptors: petOverlayDescriptors,
   mergedPetOverlaySettings,
 } = require("./patch.js");
+const { findWebviewAssetsContaining } = require("../../scripts/patches/lib/assets.js");
+const { patchBreaksJavaScriptSyntax } = require("../../scripts/patches/lib/javascript-syntax.js");
 
 function copyFeatureTo(featuresRoot) {
   const featureDir = path.join(featuresRoot, "pet-overlay");
@@ -139,76 +139,6 @@ test("gesture identity reaches the controller and RPC completion retains its ori
   assert.deepEqual(service.codexPetOverlayCompleteDrag(id, false), [7, id, false, null]);
   const sample = { pointerScreenX: 130, pointerScreenY: 100 };
   assert.deepEqual(service.codexPetOverlayCompleteDrag(id, false, sample), [7, id, false, sample]);
-});
-
-test("signed Rspack renderer shape patches focus and drag inside its module and stays idempotent", () => {
-  const descriptors = require("./patch.js").descriptors;
-  const focus = descriptors.find(item => item.id === "pet-overlay-hidden-focus");
-  const gesture = descriptors.find(item => item.id === "pet-overlay-kwin-gesture");
-  assert.equal(focus.assetMatch(currentRendererShape), true);
-  assert.equal(gesture.assetMatch(currentRendererShape), true);
-
-  const withFocus = focus.apply(currentRendererShape);
-  const patched = gesture.apply(withFocus);
-  assert.notEqual(withFocus, currentRendererShape);
-  assert.notEqual(patched, withFocus);
-  assert.equal(focus.apply(withFocus), withFocus);
-  assert.equal(gesture.apply(patched), patched);
-  const moduleStart = patched.indexOf("XpSi(e,t,a){");
-  assert.ok(patched.indexOf("function codexPetOverlayScheduleQuickChatFocus(") > moduleStart);
-  assert.ok(patched.indexOf("function codexPetOverlayConfirmRendererDrag(") > moduleStart);
-  assert.match(patched, /codexPetOverlayHiddenFocus===!0/);
-  assert.match(patched, /codexPetOverlayGestureId/);
-  const checked = spawnSync(process.execPath, ["--input-type=module", "--check", "-"], {
-    encoding: "utf8",
-    input: patched,
-  });
-  assert.equal(checked.status, 0, checked.stderr);
-});
-
-const signedExtractedApp = process.env.CODEX_SIGNED_EXTRACTED_APP;
-test("current signed renderer assets patch through the descriptor engine and remain valid ESM", { skip: !signedExtractedApp }, () => {
-  const signedAssetsDir = path.join(signedExtractedApp, "webview", "assets");
-  const descriptors = require("./patch.js").descriptors.filter(item => item.phase === "webview-asset");
-  const matches = listWebviewAssetNames(signedAssetsDir, /\.(?:c|m)?js$/)
-    .filter(assetName => {
-      const source = fs.readFileSync(path.join(signedAssetsDir, assetName), "utf8");
-      return descriptors.every(item => item.assetMatch(source, assetName));
-    });
-  assert.ok(matches.length > 0, "expected a signed async chunk matching both renderer contracts");
-
-  const cacheRoot = path.join(process.env.XDG_CACHE_HOME ?? path.join(os.homedir(), ".cache"), "codex-desktop-dev");
-  fs.mkdirSync(cacheRoot, { recursive: true });
-  const testRoot = fs.mkdtempSync(path.join(cacheRoot, "pet-overlay-assets-"));
-  try {
-    const assetsDir = path.join(testRoot, "webview", "assets");
-    for (const assetName of matches) {
-      const destination = path.join(assetsDir, assetName);
-      fs.mkdirSync(path.dirname(destination), { recursive: true });
-      fs.copyFileSync(path.join(signedAssetsDir, assetName), destination);
-    }
-    const normalized = normalizePatchDescriptors(descriptors.map(item => ({
-      ...item,
-      featureId: "pet-overlay",
-      sourceKind: "feature",
-    })));
-    applyWebviewAssetPatchDescriptors(testRoot, normalized, {}, null);
-    for (const assetName of matches) {
-      const assetPath = path.join(assetsDir, assetName);
-      const patched = fs.readFileSync(assetPath, "utf8");
-      assert.notEqual(patched, fs.readFileSync(path.join(signedAssetsDir, assetName), "utf8"));
-      const syntax = spawnSync(process.execPath, ["--input-type=module", "--check"], {
-        encoding: "utf8",
-        input: patched,
-      });
-      assert.equal(syntax.status, 0, syntax.stderr.slice(-1200));
-      const once = patched;
-      applyWebviewAssetPatchDescriptors(testRoot, normalized, {}, null);
-      assert.equal(fs.readFileSync(assetPath, "utf8"), once, `${assetName} should be idempotent`);
-    }
-  } finally {
-    fs.rmSync(testRoot, { recursive: true, force: true });
-  }
 });
 
 function legacyAvatarOverlayBundleFixture() {
@@ -348,8 +278,10 @@ test("pet-overlay is discoverable and disabled until listed in features.json", (
   }
 });
 
-const quickChatFocusFixture = `function action(t){let e=t.requestId;return cr({requestId:e,layoutRevision:null})}
-function prepare(o,u,f){if(u==null||o?.layoutRevision==null)return;let{requestId:e,layoutRevision:t}=o,n=window.requestAnimationFrame(()=>{n=window.requestAnimationFrame(()=>{u.completeQuickChatFocus(e,t).then(t=>{t&&f(e)}).catch(failed)})});return()=>{window.cancelAnimationFrame(n)}}`;
+// Quick Chat focus action and schedule shapes from the signed 26.1029.61003
+// rspack Mini page chunk.
+const quickChatFocusFixture = `function action(t){if(null!=t.requestId){let e=t.requestId;if(nZ?.requestId===e)return null;return cr({requestId:e,layoutRevision:null})}return null}
+function prepare(h,w,x){if(null==w||h?.layoutRevision==null)return;let{requestId:e,layoutRevision:t}=h,a=window.requestAnimationFrame(()=>{a=window.requestAnimationFrame(()=>{w.completeQuickChatFocus(e,t).then(t=>{t&&x(e)}).catch(n8)})});return()=>{window.cancelAnimationFrame(a)}}`;
 
 function quickChatFocusScenario(visibilityState) {
   let serial = 0;
@@ -357,13 +289,14 @@ function quickChatFocusScenario(visibilityState) {
   const context = {
     document: { visibilityState: "visible" },
     cr: value => value,
+    nZ: null,
     window: {
       setTimeout: callback => { timers.set(++serial, callback); return serial; },
       clearTimeout: id => timers.delete(id),
       requestAnimationFrame: callback => { frames.set(++serial, callback); return serial; },
       cancelAnimationFrame: id => frames.delete(id),
     },
-    failed: error => errors.push(error),
+    n8: error => errors.push(error),
   };
   const patched = applyPetOverlayRendererPatch(quickChatFocusFixture);
   assert.equal(applyPetOverlayRendererPatch(patched), patched);
@@ -434,7 +367,7 @@ test("Mini focus renderer patch rejects missing and duplicate scheduling anchors
 });
 
 test("Mini focus renderer patch handles renamed minified identifiers and fails closed on action drift", () => {
-  const renamed = quickChatFocusFixture.replace(/\b[etnouf]\b/g, id => `$${id}`);
+  const renamed = quickChatFocusFixture.replace(/\b[ethawx]\b/g, id => `$${id}`);
   assert.doesNotThrow(() => new vm.Script(applyPetOverlayRendererPatch(renamed)));
   assert.throws(() => applyPetOverlayRendererPatch(quickChatFocusFixture.replace("layoutRevision:null", "other:null")));
 });
@@ -3613,32 +3546,35 @@ test(
   },
 );
 
-
-test("current native renderer observes upstream reactive pet selection", {
-  skip: process.env.CODEX_SIGNED_EXTRACTED_APP == null,
-}, () => {
-  const assets = path.join(process.env.CODEX_SIGNED_EXTRACTED_APP, "webview", "assets");
-  const files = listWebviewAssetNames(assets, /\.(?:c|m)?js$/);
-  const sources = files.map(name => ({ name, source: fs.readFileSync(path.join(assets, name), "utf8") }));
-  const selection = sources.filter(({ source }) =>
-    source.includes("dYlv(e,t,a)") && source.includes("selectedAvatar:t,selectedAvatarId:") &&
-    source.includes("setSelectedAvatarId") && source.includes("a.d(t,{WU:()=>m,_I:()=>u,so:()=>d})"));
-  const native = sources.filter(({ source }) =>
-    source.includes("AvatarOverlayNativePage:") && source.includes('j=a("dYlv")') &&
-    source.includes("selectedAvatar:p,selectedAvatarId:m") && source.includes("layout$"));
-  assert.equal(selection.length, 1);
-  assert.equal(native.length, 1);
-  const hook = selection[0].source;
-  const page = native[0].source;
-  assert.match(hook, /selectedAvatarId:/);
-  assert.match(hook, /setSelectedAvatarId:/);
-  assert.match(page, /\(0,j\.WU\)\(\)/, "native overlay must call the reactive selection hook");
-  assert.match(page, /selectedAvatarId:[A-Za-z_$][\w$]*\}=/);
+test("renderer descriptors select the Mini page chunk by content needles", () => {
+  const byId = new Map(petOverlayDescriptors.map(descriptor => [descriptor.id, descriptor]));
+  assert.deepEqual(byId.get("pet-overlay-kwin-gesture").assetNeedles, RENDERER_GESTURE_NEEDLES);
+  assert.deepEqual(byId.get("pet-overlay-hidden-focus").assetNeedles, RENDERER_FOCUS_NEEDLES);
+  assert.ok(petOverlayDescriptors.every(({ pattern }) => pattern == null));
+  for (const needle of RENDERER_FOCUS_NEEDLES) assert.ok(quickChatFocusFixture.includes(needle), needle);
+  const gestureFixture = fs.readFileSync(path.join(__dirname, "fixtures", "native-renderer-gesture.js"), "utf8");
+  for (const needle of RENDERER_GESTURE_NEEDLES) assert.ok(gestureFixture.includes(needle), needle);
 });
 
-test("native proximity patch fails closed when the current stop callback contract drifts", () => {
-  const source = currentAvatarOverlayBundleFixture().replace("null==this.stopPetControlsProximity&&", "this.changedProximityTracker??=");
-  const {result,warnings} = captureWarnings(() => applyPetOverlayPatch(source));
-  assert.equal(result,source);
-  assert.ok(warnings.some(message=>message.includes("incomplete")));
-});
+test(
+  "renderer patches change exactly one signed Mini page chunk and keep it a valid module",
+  { skip: process.env.CODEX_SIGNED_EXTRACTED_APP == null },
+  () => {
+    const root = process.env.CODEX_SIGNED_EXTRACTED_APP;
+    const focusOwners = findWebviewAssetsContaining(root, RENDERER_FOCUS_NEEDLES);
+    const gestureOwners = findWebviewAssetsContaining(root, RENDERER_GESTURE_NEEDLES);
+    assert.equal(focusOwners.length, 1);
+    assert.deepEqual(gestureOwners, focusOwners);
+    const source = fs.readFileSync(path.join(root, "webview", "assets", focusOwners[0]), "utf8");
+    const focused = applyPetOverlayRendererPatch(source);
+    const patched = applyPetOverlayGestureRendererPatch(focused);
+    assert.notEqual(focused, source);
+    assert.notEqual(patched, focused);
+    assert.equal(patchBreaksJavaScriptSyntax(source, patched), false);
+    assert.equal(applyPetOverlayRendererPatch(patched), patched);
+    assert.equal(applyPetOverlayGestureRendererPatch(patched), patched);
+    assert.match(patched, /=async\([\w$]+,[\w$]+\)=>\{/);
+    assert.match(patched, /codexPetOverlayGestureId==null&&[\w$]+\.[\w$]+\.dispatchMessage\("avatar-overlay-drag-end",/);
+    assert.match(patched, /await codexPetOverlayConfirmRendererDrag\([\w$]+,[\w$]+\.appServices\.avatarOverlay,/);
+  },
+);

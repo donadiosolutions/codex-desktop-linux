@@ -1,15 +1,9 @@
 "use strict";
 
-const { registerChronicleBridge, chronicleBridgeRegistered } = require("../chronicle-skysight/patch.js");
-
 const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
-const fs = require("node:fs");
-const path = require("node:path");
-const { extractedAppPatch } = require("../../scripts/patches/descriptor.js");
-const { javascriptSourceParses } = require("../../scripts/patches/lib/javascript-syntax.js");
 
 const RECORD_REPLAY_PLUGIN_NAME = "record-and-replay";
-const HUD_RUNTIME_VERSION = 5;
+const HUD_RUNTIME_VERSION = 6;
 const RECORD_REPLAY_MODULE_EXPRESSIONS = Object.freeze({
   childProcessVar: 'require("node:child_process")',
   fsVar: 'require("node:fs")',
@@ -46,7 +40,11 @@ function hasRecordReplayPluginGate(source) {
     return false;
   }
 
-  const expectedDescriptor = buildRecordReplayDescriptor();
+  const expectedDescriptor = buildRecordReplayDescriptor(pluginGateArray);
+  if (pluginGateArray.currentRecordReplayNamespace != null) {
+    return source.split(expectedDescriptor).length - 1 === 1 &&
+      pluginGateArray.text.split(expectedDescriptor).length - 1 === 1;
+  }
   const sourceNameCount = [...source.matchAll(recordReplayPluginNamePattern("g"))].length;
   const arrayNameCount = [
     ...pluginGateArray.text.matchAll(recordReplayPluginNamePattern("g")),
@@ -67,7 +65,11 @@ function hasObsoleteRecordReplayPluginGate(source) {
   ).test(source);
 }
 
-function buildRecordReplayDescriptor() {
+function buildRecordReplayDescriptor(pluginGateArray) {
+  if (pluginGateArray?.currentRecordReplayNamespace != null) {
+    const namespace = pluginGateArray.currentRecordReplayNamespace;
+    return `{...${namespace}.recordAndReplay,isAvailable:({features:e,platform:t})=>"linux"===t&&e.recordAndReplay}`;
+  }
   return `{installWhenMissing:!0,name:\`${RECORD_REPLAY_PLUGIN_NAME}\`,isAvailable:({platform:e})=>e===\`linux\`}`;
 }
 
@@ -94,6 +96,25 @@ function findMatchingBracket(source, openIndex) {
 }
 
 function findBundledPluginGateArray(source) {
+  const currentRecordReplay = new RegExp(
+    String.raw`\.\.\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\.recordAndReplay,isAvailable:\(\{features:([A-Za-z_$][\w$]*),platform:([A-Za-z_$][\w$]*)\}\)=>"darwin"===\3&&\2\.recordAndReplay`,
+    "g",
+  );
+  for (const marker of source.matchAll(currentRecordReplay)) {
+    const namespace = marker[1];
+    let openIndex = source.lastIndexOf("[", marker.index);
+    while (openIndex !== -1) {
+      const closeIndex = findMatchingBracket(source, openIndex);
+      if (closeIndex > marker.index) {
+        const text = source.slice(openIndex + 1, closeIndex);
+        if (text.split(marker[0]).length === 2 && text.includes(`...${namespace}.latex,isAvailable:()=>!0`)) {
+          return { start: openIndex + 1, end: closeIndex, text, descriptorNamespace: namespace, currentRecordReplayNamespace: namespace };
+        }
+      }
+      openIndex = source.lastIndexOf("[", openIndex - 1);
+    }
+  }
+
   const markerPattern = /\.\.\.([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\.computerUse\b/g;
   for (const marker of source.matchAll(markerPattern)) {
     const markerIndex = marker.index;
@@ -129,10 +150,10 @@ function applyRecordReplayPluginGatePatch(currentSource) {
   if (hasRecordReplayPluginGate(currentSource)) {
     return currentSource;
   }
-  if (hasAnyRecordReplayPluginName(currentSource)) {
+  const pluginGateArray = findBundledPluginGateArray(currentSource);
+  if (pluginGateArray?.currentRecordReplayNamespace == null && hasAnyRecordReplayPluginName(currentSource)) {
     throw new Error("Optional Record & Replay plugin gate patch drift: invalid isAvailable availability contract");
   }
-  const pluginGateArray = findBundledPluginGateArray(currentSource);
   if (pluginGateArray == null) {
     throw new Error("Optional Record & Replay plugin gate patch drift: could not find expected upstream .computerUse plugin descriptor array");
   }
@@ -141,7 +162,7 @@ function applyRecordReplayPluginGatePatch(currentSource) {
     throw new Error("Optional Record & Replay plugin gate patch drift: could not find bundled plugin descriptor insertion point");
   }
   const insertionIndex = pluginGateArray.start + match.index;
-  return `${currentSource.slice(0, insertionIndex)}${buildRecordReplayDescriptor()},${currentSource.slice(insertionIndex)}`;
+  return `${currentSource.slice(0, insertionIndex)}${buildRecordReplayDescriptor(pluginGateArray)},${currentSource.slice(insertionIndex)}`;
 }
 
 function recordReplayBridgeSource({ fsVar }) {
@@ -173,17 +194,38 @@ function recordReplayHelperSource({ fsVar, pathVar }) {
   return `function codexLinuxRecordReplayWriteTempJson(e){let t=process.env.XDG_RUNTIME_DIR||process.env.TMPDIR||"/tmp",n=${pathVar}.join(t,"codex-record-replay-traces-"+(process.getuid?process.getuid():process.pid));${fsVar}.mkdirSync(n,{recursive:true,mode:448});try{if(${fsVar}.lstatSync(n).isSymbolicLink())throw Error("trace directory is a symlink");${fsVar}.chmodSync(n,448)}catch(r){throw r}let r=${pathVar}.join(n,"trace-"+Date.now()+"-"+process.pid+"-"+Math.random().toString(36).slice(2)+".json");${fsVar}.writeFileSync(r,String(e),{mode:384});return r}`;
 }
 
+// chronicle-skysight (a required feature) owns the module-scope Linux bridge
+// handler registry and the desktop fetch route that serves it. Record & Replay
+// registers its handlers right after that registry declaration.
+const CHRONICLE_BRIDGE_HANDLERS_NAME = "codexLinuxChronicleBridgeHandlers";
+const CHRONICLE_BRIDGE_HANDLERS_END_MARKER = "/*codex-linux-chronicle-bridge-handlers-end*/";
+const RECORD_REPLAY_BRIDGE_END_MARKER = "/*codex-linux-record-replay-bridge-end*/";
+
+function recordReplayMainBridgeRegistration() {
+  return `${CHRONICLE_BRIDGE_HANDLERS_END_MARKER}\n${recordReplayHelperSource(RECORD_REPLAY_MODULE_EXPRESSIONS)}\nObject.assign(${CHRONICLE_BRIDGE_HANDLERS_NAME},{${recordReplayBridgeSource(RECORD_REPLAY_MODULE_EXPRESSIONS)}});${RECORD_REPLAY_BRIDGE_END_MARKER}`;
+}
+
+function hasChronicleBridgeDependency(source) {
+  return countOccurrences(source, CHRONICLE_BRIDGE_HANDLERS_END_MARKER) === 1
+    && countOccurrences(source, `const ${CHRONICLE_BRIDGE_HANDLERS_NAME}={`) === 1
+    && countOccurrences(source, "/*codex-linux-chronicle-skysight-route*/") === 1
+    && source.includes("function codexLinuxRecordReplayRun(");
+}
+
 function hasCompleteRecordReplayMainBridgePatch(source) {
   const helperPayload = recordReplayHelperSource(RECORD_REPLAY_MODULE_EXPRESSIONS);
   const bridgePayload = recordReplayBridgeSource(RECORD_REPLAY_MODULE_EXPRESSIONS);
-  return countOccurrences(source, helperPayload) === 1
+  return hasChronicleBridgeDependency(source)
+    && countOccurrences(source, recordReplayMainBridgeRegistration()) === 1
+    && countOccurrences(source, helperPayload) === 1
     && countOccurrences(source, bridgePayload) === 1
-    && chronicleBridgeRegistered(source, bridgePayload);
+    && countOccurrences(source, RECORD_REPLAY_BRIDGE_END_MARKER) === 1;
 }
 
 function hasAnyRecordReplayMainBridgeArtifact(source) {
   return source.includes("codexLinuxRecordReplayWriteTempJson")
-    || source.includes('"linux-record-replay-start"');
+    || source.includes('"linux-record-replay-start"')
+    || source.includes(RECORD_REPLAY_BRIDGE_END_MARKER);
 }
 
 function applyRecordReplayMainBridgePatch(currentSource) {
@@ -194,24 +236,28 @@ function applyRecordReplayMainBridgePatch(currentSource) {
     }
     return currentSource;
   }
-  if (!currentSource.includes("codexLinuxRecordReplayRun")) {
+  if (!hasChronicleBridgeDependency(currentSource)) {
     warn("Chronicle / Skysight dependency bridge is missing", patchName);
     return currentSource;
   }
-
-  try {
-    const patched = registerChronicleBridge(currentSource, recordReplayBridgeSource(RECORD_REPLAY_MODULE_EXPRESSIONS));
-    return `${recordReplayHelperSource(RECORD_REPLAY_MODULE_EXPRESSIONS)}\n${patched}`;
-  } catch (error) {
-    warn(`Could not uniquely resolve current signed-release bridge insertion point: ${error.message}`, patchName);
+  const patchedSource = currentSource.replace(
+    CHRONICLE_BRIDGE_HANDLERS_END_MARKER,
+    () => recordReplayMainBridgeRegistration(),
+  );
+  if (!hasCompleteRecordReplayMainBridgePatch(patchedSource)) {
+    warn("Record & Replay bridge registration changed while patching", patchName);
     return currentSource;
   }
+  return patchedSource;
 }
 
 function recordReplayHudRuntimeSource() {
   return [
     `;(()=>{`,
     `const VERSION=${HUD_RUNTIME_VERSION};`,
+    // rspack appends this runtime to every webview runtime entry; the HUD
+    // belongs to the main window only, not to detached popout windows.
+    `if(/^\\/detached-window(?:\\.html)?(?:\\/|$)/.test(globalThis.location?.pathname??""))return;`,
     `if(globalThis.codexLinuxRecordReplayHudVersion===VERSION)return;`,
     `globalThis.codexLinuxRecordReplayHudVersion=VERSION;`,
     `let seq=0,pending=new Map,hud=null,timer=null,lastStatus=null,stopping=false,canceling=false,capturedTranscripts=new Set,pendingTranscripts=[],desktopSnapshotInFlight=false,lastDesktopSnapshotAt=0;`,
@@ -267,29 +313,30 @@ function recordReplayActiveSpeechContextExpression(dispatchVar, transcriptVar) {
 
 function recordReplayCurrentChatGptBlocks(source) {
   const id = String.raw`[A-Za-z_$][\w$]*`;
-  const starts = source.matchAll(new RegExp(String.raw`if\((?<transcript>${id})\.length>0\|\|(?:(?<handlers>${id})\.chatgpt!=null|null!=(?<currentHandlers>${id})\.chatgpt)\)\{`, "g"));
+  const starts = source.matchAll(new RegExp(String.raw`if\((?<transcript>${id})\.length>0\|\|null!=(?<metadata>${id})\)\{`, "g"));
   const blocks = [];
   for (const start of starts) {
     const openBrace = start.index + start[0].length - 1;
     const closeBrace = findMatchingBrace(source, openBrace);
     if (closeBrace === -1) continue;
     const text = source.slice(start.index, closeBrace + 1);
-    const legacy = countOccurrences(text, "global-dictation-record-history-item") === 1 && countOccurrences(text, "transcript_dispatched") === 1;
-    const current = countOccurrences(text, 'global-dictation-record-history-item') === 1 && countOccurrences(text, '"transcript_dispatched"') === 1;
-    if (!legacy && !current) continue;
-    const actionMatches = [...text.matchAll(current
-      ? new RegExp(String.raw`else if\("send"===(?<actionContext>${id})\.action\)`, "g")
-      : new RegExp(String.raw`else if\((?<actionContext>${id})\.action===\`send\`\)`, "g"))];
+    if (countOccurrences(text, "global-dictation-record-history-item") !== 1 ||
+        countOccurrences(text, "transcript_dispatched") !== 1) continue;
+    const actionMatches = [...text.matchAll(new RegExp(String.raw`else if\("send"===(?<actionContext>${id})\.action\)`, "g"))];
     if (actionMatches.length !== 1) continue;
     const capture = text.match(
       new RegExp(String.raw`^if\([^{}]+\)\{(?<capture>\(globalThis\.codexLinuxRecordReplayCaptureTranscript\?\.\(\k<transcript>,(?<captureAction>${id})\.action\)[^;]+\);)?`.replace("\\k<transcript>", start.groups.transcript)),
     );
+    const historyGuard = new RegExp(
+      String.raw`^${escapeRegExp(start.groups.transcript)}\.length>0&&null==${id}&&null==${id}\.chatgpt\?`,
+    );
+    if (capture == null || !historyGuard.test(text.slice(capture[0].length))) continue;
     blocks.push({
       0: text,
       index: start.index,
       groups: {
         transcript: start.groups.transcript,
-        actionContext: actionMatches[0].groups.actionContext ?? actionMatches[0].groups.actionContext2,
+        actionContext: actionMatches[0].groups.actionContext,
         capture: capture?.groups?.capture,
         captureAction: capture?.groups?.captureAction,
       },
@@ -321,32 +368,18 @@ function recordReplayDictationTranscriptState(source) {
   return { kind: "partial" };
 }
 
+const RUNTIME_ENTRY_EXPORT = /export\{[A-Za-z_$][\w$]* as __webpack_require__\}/;
+
 function applyRecordReplayHudPatch(currentSource) {
   if (currentSource.includes("codexLinuxRecordReplayHudVersion=")) {
     return currentSource;
   }
+  if (!RUNTIME_ENTRY_EXPORT.test(currentSource) || !currentSource.includes("codex-host-chunked-message-v1")) {
+    warn("Could not find rspack webview runtime entry contract", "Record & Replay HUD runtime patch");
+    return currentSource;
+  }
   const separator = currentSource.endsWith("\n") ? "" : "\n";
   return currentSource + separator + recordReplayHudRuntimeSource();
-}
-
-function patchRecordReplayHudEntry(extractedDir) {
-  const htmlPath = path.join(extractedDir, "webview", "index.html");
-  if (!fs.existsSync(htmlPath)) return { changed: false };
-  const html = fs.readFileSync(htmlPath, "utf8");
-  const entries = [...html.matchAll(/<script\b[^>]*\bsrc="\/assets\/([^"]+\.js)"[^>]*><\/script>/gu)]
-    .map((match) => match[1]);
-  const entryName = entries.at(-1);
-  if (entryName == null || entries.length === 0 || path.basename(entryName) !== entryName) return { changed: false };
-  const entryPath = path.join(extractedDir, "webview", "assets", entryName);
-  if (!fs.existsSync(entryPath)) return { changed: false };
-  const original = fs.readFileSync(entryPath, "utf8");
-  const patched = applyRecordReplayHudPatch(original);
-  if (!javascriptSourceParses(patched)) {
-    warn(`HUD runtime would make ${entryName} invalid JavaScript`, "Record & Replay HUD runtime patch");
-    return { changed: false, assetName: entryName };
-  }
-  if (patched !== original) fs.writeFileSync(entryPath, patched, "utf8");
-  return { changed: patched !== original, assetName: entryName };
 }
 
 function applyRecordReplayDictationTranscriptPatch(currentSource) {
@@ -385,9 +418,8 @@ function hasRecordReplayDictationTranscriptContract(source) {
 
 function recordReplayCompiledGlobalDictationPattern() {
   const id = String.raw`[A-Za-z_$][\w$]*`;
-  const dispatch = String.raw`[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*`;
   return new RegExp(
-    String.raw`(?<dispatch>${dispatch})\.dispatchMessage\(["'\x60]global-dictation-completed["'\x60],\{sessionId:(?<session>${id})\.sessionId,text:(?<transcript>${id})\}\),(?<suffix>\k<session>\.analytics\.performance\.mark\(["'\x60]transcript_dispatched["'\x60]\))`,
+    String.raw`(?<![\w$.])(?<dispatch>${id}(?:\.${id})*)\.dispatchMessage\("global-dictation-completed",\{sessionId:(?<session>${id})\.sessionId,text:(?<transcript>${id})\}\),(?<suffix>\k<session>\.analytics\.performance\.mark\("transcript_dispatched"\))`,
     "",
   );
 }
@@ -407,7 +439,9 @@ function applyRecordReplayGlobalDictationTranscriptPatch(currentSource) {
       compiledCompletedPattern,
       (...args) => {
         const { dispatch, session, transcript, suffix } = args.at(-1);
-        return `${recordReplayActiveSpeechContextExpression(dispatch, transcript)},${dispatch}.dispatchMessage(\`global-dictation-completed\`,{sessionId:${session}.sessionId,text:${transcript}}),${suffix}`;
+        // Parenthesized: upstream dispatches from the else branch of a recovery
+        // ternary, so the extra fetch must stay inside that branch.
+        return `(${recordReplayActiveSpeechContextExpression(dispatch, transcript)},${dispatch}.dispatchMessage("global-dictation-completed",{sessionId:${session}.sessionId,text:${transcript}})),${suffix}`;
       },
     );
   }
@@ -430,19 +464,24 @@ const descriptors = [
     order: 152,
     apply: applyRecordReplayMainBridgePatch,
   },
-  extractedAppPatch({
+  {
     id: "record-replay-hud",
-    phase: "extracted-app:post-webview",
+    phase: "webview-asset",
     order: 153,
     ciPolicy: "optional",
-    apply: patchRecordReplayHudEntry,
-  }),
+    // rspack webview runtime entries (main and detached windows); the HUD
+    // runtime itself stays inert outside the main window.
+    assetNeedles: ["codex-host-chunked-message-v1", "as __webpack_require__}"],
+    missingDescription: "rspack webview runtime entry",
+    skipDescription: "Record & Replay HUD runtime patch",
+    apply: applyRecordReplayHudPatch,
+  },
   {
     id: "record-replay-dictation-transcript",
     phase: "webview-asset",
     order: 20695,
     ciPolicy: "optional",
-    pattern: /^(?:async\/)?\d+\.[0-9a-f]+\.js$/,
+    assetNeedles: ["global-dictation-record-history-item", "transcript_dispatched"],
     assetMatch: hasRecordReplayDictationTranscriptContract,
     missingDescription: "composer dictation bundle",
     skipDescription: "Record & Replay dictation transcript patch",
@@ -453,8 +492,7 @@ const descriptors = [
     phase: "webview-asset",
     order: 20696,
     ciPolicy: "optional",
-    pattern: /^(?:async\/)?\d+\.[0-9a-f]+\.js$/,
-    assetMatch: (source) => source.includes("global-dictation-completed") && recordReplayCompiledGlobalDictationPattern().test(source),
+    assetNeedles: ["global-dictation-completed", "transcript_dispatched"],
     missingDescription: "global dictation bundle",
     skipDescription: "Record & Replay global dictation transcript patch",
     apply: applyRecordReplayGlobalDictationTranscriptPatch,
@@ -468,7 +506,6 @@ module.exports = {
   applyRecordReplayGlobalDictationTranscriptPatch,
   applyRecordReplayPluginGatePatch,
   applyRecordReplayHudPatch,
-  patchRecordReplayHudEntry,
   applyRecordReplayMainBridgePatch,
   descriptors,
   recordReplayBridgeSource,

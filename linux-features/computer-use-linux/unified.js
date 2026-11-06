@@ -61,12 +61,24 @@ function rootPattern(source) {
   return escapeRegExp(source).replace(escapeRegExp(ROOT_PLACEHOLDER), `(?<pluginRoot>${ID})`);
 }
 
+function anonymousSyncCall(source, syncSource) {
+  const start = source.indexOf(syncSource);
+  if (start < 0 || source.indexOf(syncSource, start + 1) >= 0) throw drift("ambiguous inline plugin synchronization");
+  const prefix = source.slice(0, start).match(/([\w$]+)=await $/);
+  const tail = source.slice(start + syncSource.length);
+  const match = tail.match(/^\(\{browserBackends:[\w$]+,deferTools:[\w$]+\.deferCuaTools,surfaces:[\w$]+,codexHome:[\w$]+,marketplaceName:[\w$]+,marketplaces:[\w$]+,nodeRepl:[\w$]+\?void 0:[\w$]+(?<context>,codexLinuxCuaContext:(?<selection>[\w$]+))?\}\)/);
+  if (prefix == null || match == null) throw drift("changed inline plugin synchronization call");
+  match.index = start + syncSource.length;
+  match.groups = { ...match.groups, enabled: prefix[1] };
+  return match;
+}
+
 function lifecycleContract(source, builder, syncSource) {
-  const owner = uniqueMatch(syncSource, new RegExp(`^(?:async )?function (?<name>${ID})\\((?<argument>${ID})\\)\\{`, "g"),
+  const owner = uniqueMatch(syncSource, new RegExp(`^(?:async )?function(?: (?<name>${ID}))?\\((?<argument>${ID})\\)\\{`, "g"),
     "expected one plugin synchronization owner");
   requireUsages(source, builder, 3); // declaration, plugin synchronization, thread configuration
-  requireUsages(source, owner.groups.name, 2); // declaration and cached selection initialization
-  const sync = uniqueMatch(source, new RegExp(
+  if (owner.groups.name != null) requireUsages(source, owner.groups.name, 2); // declaration and cached selection initialization
+  const sync = owner.groups.name == null ? anonymousSyncCall(source, syncSource) : uniqueMatch(source, new RegExp(
     `(?<enabled>${ID})=await ${escapeRegExp(owner.groups.name)}\\(\\{browserBackends:${ID},deferTools:${ID}\\.deferCuaTools,` +
     `surfaces:${ID},codexHome:${ID},marketplaceName:${ID},marketplaces:${ID},nodeRepl:${ID}\\?void 0:${ID}` +
     `(?<context>,${CONTEXT_KEY}:(?<selection>${ID}))?\\}\\)`, "g"), "expected one cached plugin synchronization call");
@@ -115,7 +127,7 @@ function lifecycleContract(source, builder, syncSource) {
 }
 
 function enclosingFunction(source, targetIndex) {
-  const functions = /(?:async )?function [A-Za-z_$][\w$]*\([^)]*\)\{/gu;
+  const functions = /(?:async )?function(?: [A-Za-z_$][\w$]*)?\([^)]*\)\{/gu;
   let owner = null;
   for (const candidate of source.matchAll(functions)) {
     if (candidate.index > targetIndex) break;
@@ -138,72 +150,6 @@ function selectorPattern() {
   return /(?<native>[\w$]+)=(?<ready>[\w$]+)&&(?<features>[\w$]+)\.computerUse&&(?<legacy>[\w$]+)\.enabled&&\("win32"===(?<runtime>[\w$]+)\.platform\|\|"darwin"===\k<runtime>\.platform&&null!=\k<legacy>\.paths\.serviceAppPath\)(?<linux>\|\|\k<ready>&&"linux"===\k<runtime>\.platform&&\k<features>\.computerUse&&\k<legacy>\.enabled)?,(?<mode>[\w$]+)=(?<modeLinux>"linux"===\k<runtime>\.platform\?\k<native>:)?(?<modeValue>\k<features>\.computerUse&&\(!\k<features>\.browserUseTinysky\|\|"darwin"!==\k<runtime>\.platform\|\|\k<legacy>\.enabled\))(?=,)/g;
 }
 
-function applyCurrentRspackComputerUsePatch(source) {
-  const marker = "CODEX_LINUX_CUA_HOST_SOCKET:process.env.CODEX_LINUX_CUA_HOST_SOCKET";
-  if (source.includes(marker)) {
-    if (!source.includes("native-client.mjs") || !source.includes("scripts\",\"native-service.mjs")) {
-      throw drift("partial current Rspack native bridge");
-    }
-    return source;
-  }
-
-  const selector = uniqueMatch(source, selectorPattern(), "expected one native surface selector");
-  const { native, ready, runtime, features, legacy, mode, modeValue, linux } = selector.groups;
-  if (linux != null) throw drift("partially patched current Rspack selector");
-
-  const builder = uniqueMatch(source,
-    /function (?<name>[\w$]+)\(\{browserBackends:(?<backends>[\w$]+),deferTools:(?<defer>[\w$]+),surfaces:(?<surfaces>[\w$]+),nodeRepl:(?<nodeRepl>[\w$]+),accessBootstrapPath:(?<bootstrap>[\w$]+)\}\)\{/g,
-    "expected current native config builder");
-  const builderOwner = enclosingFunction(source, builder.index);
-  if (builderOwner == null || builderOwner.start !== builder.index) throw drift("current config builder owner changed");
-  const builderSource = source.slice(builderOwner.start, builderOwner.end);
-  const { surfaces, nodeRepl } = builder.groups;
-  const service = uniqueMatch(builderSource,
-    new RegExp(`${surfaces}\\.includes\\("computer"\\)&&\\((?<services>[\\w$]+)\\.sky="@oai/sky/service"\\)`, "g"),
-    "expected current sky service registration");
-  const envPrefix = `...${nodeRepl}?.env,CUA_REPL_ENABLED_SURFACES:${surfaces}.join(","),`;
-  const envIndex = builderSource.indexOf(envPrefix);
-  if (envIndex < 0 || builderSource.indexOf(envPrefix, envIndex + envPrefix.length) >= 0) {
-    throw drift("expected one current CUA environment builder");
-  }
-  const syncCall = uniqueMatch(source,
-    /Object\.assign\((?<config>[\w$]+),(?<builder>[\w$]+)\(\{\.\.\.(?<argument>[\w$]+),accessBootstrapPath:(?<bootstrap>[\w$]+)\}\)\)/g,
-    "expected verified plugin config initialization");
-  if (syncCall.groups.builder !== builder.groups.name) throw drift("plugin config uses a different CUA builder");
-  const owner = enclosingFunction(source, syncCall.index);
-  if (owner == null) throw drift("plugin config initialization owner changed");
-  const ownerSource = source.slice(owner.start, owner.end);
-  const pluginRoot = uniqueMatch(ownerSource,
-    new RegExp(`(?<root>[\\w$]+)=\\(0,[\\w$]+\\.[\\w$]+\\)\\(\\{codexHome:${syncCall.groups.argument}\\.codexHome,localVersion:(?<plugin>[\\w$]+)\\.plugin\\.localVersion,marketplaceName:\\k<plugin>\\.marketplace\\.name,pluginName:\\k<plugin>\\.plugin\\.name\\}\\)` , "g"),
-    "expected verified CUA plugin root");
-  const rootArgument = new RegExp(`${builder.groups.name}\\(\\{\\.\\.\\.${syncCall.groups.argument},accessBootstrapPath:${syncCall.groups.bootstrap}\\}\\)`);
-  if (!rootArgument.test(ownerSource)) throw drift("changed trusted plugin root initialization");
-  const pluginRootParam = freshBuilderRoot(builderSource);
-
-  const threadGate = uniqueMatch(source,
-    /&&"1"===eq\(\)\.env\.CODEX_APP_SERVER_USE_LOCAL_DAEMON/g,
-    "expected current local CUA thread gate");
-
-  const replacements = [
-    [selector.index, selector[0].length,
-      `${native}=${ready}&&${features}.computerUse&&${legacy}.enabled&&("win32"===${runtime}.platform||"darwin"===${runtime}.platform&&null!=${legacy}.paths.serviceAppPath)||${ready}&&"linux"===${runtime}.platform&&${features}.computerUse&&${legacy}.enabled,${mode}="linux"===${runtime}.platform?${native}:${modeValue}`],
-    [builderOwner.start + service.index, service[0].length,
-      `${surfaces}.includes("computer")&&(${service.groups.services}.sky=${pluginRootParam}?require("node:path").join(${pluginRootParam},"scripts","native-service.mjs"):JSON.parse(${nodeRepl}?.env[el.ytA]??"{}").sky??"@oai/sky/service")`],
-    [builderOwner.start + envIndex, envPrefix.length,
-      `...${nodeRepl}?.env,CODEX_LINUX_CUA_HOST_SOCKET:process.env.CODEX_LINUX_CUA_HOST_SOCKET,NODE_REPL_JS_BANNER:${pluginRootParam}?${bannerExpression(pluginRootParam)}:${nodeRepl}?.env.NODE_REPL_JS_BANNER,CUA_REPL_ENABLED_SURFACES:${surfaces}.join(","),`],
-    [builder.index + builder[0].length - 2, 1, `,${pluginRootParam})`],
-    [syncCall.index, syncCall[0].length,
-      syncCall[0].replace(/\}\)\)$/, `},${pluginRoot.groups.root}))`)],
-    [threadGate.index, threadGate[0].length, ""],
-  ];
-  let patched = source;
-  for (const [index, length, replacement] of replacements.sort((a, b) => b[0] - a[0])) {
-    patched = patched.slice(0, index) + replacement + patched.slice(index + length);
-  }
-  if (!patched.includes(marker) || !patched.includes("native-client.mjs")) throw drift("current native bridge insertion failed");
-  return patched;
-}
-
 function applyUnifiedComputerUsePatch(chunk) {
   if (!chunk.includes("cuaReplSurfaces")) {
     // The rspack main process spans several chunks; only one owns CUA setup.
@@ -219,11 +165,6 @@ function applyUnifiedComputerUsePatch(chunk) {
   }
   const bounds = moduleBounds(chunk, chunkSelectors[0].index);
   const source = chunk.slice(bounds.start, bounds.end);
-  if (source.includes("async function rG(") &&
-      (source.includes("CODEX_APP_SERVER_USE_LOCAL_DAEMON") || source.includes("CODEX_LINUX_CUA_HOST_SOCKET:process.env.CODEX_LINUX_CUA_HOST_SOCKET"))) {
-    const patchedCurrent = applyCurrentRspackComputerUsePatch(source);
-    return patchedCurrent === source ? chunk : chunk.slice(0, bounds.start) + patchedCurrent + chunk.slice(bounds.end);
-  }
   const patchedModule = applyUnifiedComputerUseModulePatch(source);
   return patchedModule === source ? chunk : chunk.slice(0, bounds.start) + patchedModule + chunk.slice(bounds.end);
 }
@@ -250,11 +191,11 @@ function applyUnifiedComputerUseModulePatch(source) {
   const patchedServices = [...builderSource.matchAll(new RegExp(
     `${surfaces}\\.includes\\("computer"\\)&&\\((?<services>[\\w$]+)\\.sky=` +
       `${rootPattern(pluginFile(ROOT_PLACEHOLDER, "native-service.mjs"))}\\)`, "g"))];
+  // Optional audio environment block; carried through unchanged.
   const audioEnvironmentPattern =
-    `(?<audio>\\.\\.\\.${nodeRepl}\\?\\.env\\.SKY_AUDIO_ATTACHMENTS==="1"\\?\\{` +
+    `(?<audio>\\.\\.\\.${nodeRepl}\\?\\.env\\.SKY_[A-Z_]+==="1"\\?\\{` +
     `SKY_ENABLE_AUDIO:${surfaces}\\.includes\\("computer"\\)\\?"1":"0",` +
-    `SKY_AUDIO_ATTACHMENTS:${surfaces}\\.includes\\("computer"\\)\\?"1":"0",` +
-    'NODE_REPL_ENABLE_AUDIO:"0"\\}:\\{\\},)';
+    `[^{}]*\\}:\\{\\},)`;
   const environmentPrefix = `\\{\\.\\.\\.${nodeRepl}\\?\\.env,CUA_REPL_ENABLED_SURFACES:${surfaces}\\.join\\(","\\),`;
   const servicesEnvironment = `\\[(?<constants>[\\w$]+)\\.(?<constant>[\\w$]+)\\]:JSON\\.stringify\\((?<services>[\\w$]+)\\)`;
   const currentBanners = [...builderSource.matchAll(new RegExp(

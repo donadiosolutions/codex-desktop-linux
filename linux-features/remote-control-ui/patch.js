@@ -8,32 +8,18 @@ function warn(message, patchName) {
   console.warn(`WARN: ${message} — skipping ${patchName}`);
 }
 
+// The remote connections atoms read the Statsig gate through the jotai getter:
+// `get(gates.JW,"4114442250")`.
+const REMOTE_CONNECTIONS_GATE_PATTERN =
+  /([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?),"4114442250"\)(?!\|\|navigator\.userAgent\.includes\(`Linux`\))/g;
+const PATCHED_REMOTE_CONNECTIONS_GATE = `"4114442250")||${LINUX_GATE})`;
+
 function applyRemoteConnectionsVisibilityPatch(source) {
-  const currentOwner = /Object\.getOwnPropertyDescriptor\((?<features>[A-Za-z_$][\w$]*),"remote_connections"\)\?\.value===!0\|\|(?<fallback>[A-Za-z_$][\w$]*)(?<linux>\|\|navigator\.userAgent\.includes\(`Linux`\))?(?<tail>[,}])/g;
-  const owners = [...source.matchAll(currentOwner)];
-  if (owners.length === 1 && owners[0].groups.features !== owners[0].groups.fallback) {
-    const owner = owners[0];
-    if (owner.groups.linux != null) return source;
-    const replacement = owner[0].replace(owner.groups.tail, `||${LINUX_GATE}${owner.groups.tail}`);
-    return source.slice(0, owner.index) + replacement + source.slice(owner.index + owner[0].length);
-  }
-  const quotedGate = /([A-Za-z_$][\w$]*)\("4114442250"\)/gu;
-  const quotedMatches = [...source.matchAll(quotedGate)];
-  if (quotedMatches.length === 1 && source.includes('Object.getOwnPropertyDescriptor(')) {
-    const owner = quotedMatches[0];
-    const replacement = `(${owner[1]}("4114442250")||${LINUX_GATE})`;
-    return source.slice(0, owner.index) + replacement + source.slice(owner.index + owner[0].length);
-  }
-  let patched = source;
-  patched = patched.replace(
-    /([A-Za-z_$][\w$]*)\(`4114442250`\)(?!\|\|navigator\.userAgent\.includes\(`Linux`\))/g,
-    `($1(\`4114442250\`)||${LINUX_GATE})`,
+  const patched = source.replace(
+    REMOTE_CONNECTIONS_GATE_PATTERN,
+    (_match, getter, gate) => `(${getter}(${gate},"4114442250")||${LINUX_GATE})`,
   );
-  patched = patched.replace(
-    /([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),`4114442250`\)(?!\|\|navigator\.userAgent\.includes\(`Linux`\))/g,
-    `($1($2,\`4114442250\`)||${LINUX_GATE})`,
-  );
-  if (patched !== source || source.includes(`\`4114442250\`)||${LINUX_GATE}`) || source.includes(`"4114442250"||${LINUX_GATE}`)) {
+  if (patched !== source || source.includes(PATCHED_REMOTE_CONNECTIONS_GATE)) {
     return patched;
   }
   warn("Could not find remote connections Statsig gate", "remote control UI remote connections visibility patch");
@@ -41,9 +27,6 @@ function applyRemoteConnectionsVisibilityPatch(source) {
 }
 
 function applyRemoteControlConnectionsVisibilityPatch(source) {
-  if (source.includes(REMOTE_CONTROL_UI_VISIBILITY_MARKER)) {
-    return source;
-  }
   const contract = remoteControlConnectionsVisibilityContract(source);
   if (contract?.state === "patched" || contract?.state === "mobile-patched") {
     return source;
@@ -80,11 +63,12 @@ function remoteControlConnectionsVisibilityContract(source) {
   const body = owner[3];
   const current = `return ${flag}&&(${connections}?.available??!0)&&${connections}?.accessRequired!==!0`;
   const patched = `return (${flag}||${LINUX_GATE})&&(${connections}?.available??!0)&&${connections}?.accessRequired!==!0`;
+  const escape = (value) => value.replace(/[$]/g, "\\$");
   const mobilePattern = new RegExp(
     `^let ([A-Za-z_$][\\w$]*)=typeof navigator!=\`undefined\`&&navigator\\.userAgent\\.includes\\(\`Linux\`\\);` +
       `/\\*${REMOTE_MOBILE_VISIBILITY_MARKER}(\\*/\\*${REMOTE_CONTROL_UI_VISIBILITY_MARKER})?\\*/` +
-      `return\\(\\1\\|\\|${flag}\\)&&\\(\\1\\|\\|\\(${connections}\\?\\.available\\?\\?!0\\)\\)&&` +
-      `${connections}\\?\\.accessRequired!==!0$`,
+      `return\\(\\1\\|\\|${escape(flag)}\\)&&\\(\\1\\|\\|\\(${escape(connections)}\\?\\.available\\?\\?!0\\)\\)&&` +
+      `${escape(connections)}\\?\\.accessRequired!==!0$`,
     "u",
   );
   const mobile = body.match(mobilePattern);
@@ -102,43 +86,31 @@ function remoteControlConnectionsVisibilityContract(source) {
   };
 }
 
-function matchesRemoteControlConnectionsVisibilityContract(source) {
-  return source.includes("remoteControlConnectionsState") &&
-    remoteControlConnectionsVisibilityContract(source) != null;
-}
-
-function matchesRemoteConnectionsVisibilityContract(source) {
-  return /Object\.getOwnPropertyDescriptor\([A-Za-z_$][\w$]*,"remote_connections"\)\?\.value===!0\|\|[A-Za-z_$][\w$]*\}/u.test(source) || source.includes('`4114442250`');
-}
-
-function matchesExperimentalFeaturesContract(source) {
-  return source.includes("remote_control") && /(?:name!==[`"']remote_control[`"']|[`"']remote_control[`"']!==[A-Za-z_$][\w$]*\.name)/.test(source) &&
-    /name\.startsWith\([`"']realtime_[`"']\)/.test(source);
-}
+// The experimental features settings list hides beta features through one
+// filter: `"beta"===e.stage&&...&&"remote_control"!==e.name&&!e.name.startsWith("realtime_")`.
+const EXPERIMENTAL_FEATURES_FILTER =
+  /("beta"===([A-Za-z_$][\w$]*)\.stage&&[^;{}]*?"plugin"!==\2\.name)&&"remote_control"!==\2\.name(&&!\2\.name\.startsWith\("realtime_"\))/g;
+const PATCHED_EXPERIMENTAL_FEATURES_FILTER =
+  /"beta"===([A-Za-z_$][\w$]*)\.stage&&[^;{}]*?"plugin"!==\1\.name&&!\1\.name\.startsWith\("realtime_"\)/g;
 
 function applyExperimentalFeaturesPatch(source) {
-  const needle = "&&e.name!==`remote_control`";
-  if (source.includes(needle)) {
-    return source.replace(needle, "");
+  const filters = [...source.matchAll(EXPERIMENTAL_FEATURES_FILTER)];
+  if (filters.length === 1) {
+    return source.replace(EXPERIMENTAL_FEATURES_FILTER, "$1$3");
   }
-  if (source.includes("!e.name.startsWith(`realtime_`)&&e.name!==`chronicle`")) {
+  if (filters.length === 0 && [...source.matchAll(PATCHED_EXPERIMENTAL_FEATURES_FILTER)].length === 1 &&
+      !source.includes('"remote_control"!==')) {
     return source;
   }
-  for (const quote of ["`", '"', "'"]) {
-    const current = `&&e.name!==${quote}remote_control${quote}`;
-    if (source.includes(current)) return source.replace(current, "");
-    const reversed = `&&${quote}remote_control${quote}!==e.name`;
-    if (source.includes(reversed)) return source.replace(reversed, "");
-  }
-  if (source.includes("remote_control")) {
-    warn(
-      "Could not find remote_control experimental feature filter",
-      "remote control UI experimental features patch",
-    );
-  }
+  warn(
+    "Could not find remote_control experimental feature filter",
+    "remote control UI experimental features patch",
+  );
   return source;
 }
 
+// rspack duplicates shared modules into every async chunk that uses them, so
+// these descriptors patch each chunk that carries the contract.
 module.exports = {
   descriptors: [
     {
@@ -146,8 +118,7 @@ module.exports = {
       phase: "webview-asset",
       order: 20500,
       ciPolicy: "optional",
-      pattern: /^(?:async\/)?\d+\.[0-9a-f]+\.js$/,
-      assetMatch: matchesRemoteConnectionsVisibilityContract,
+      assetNeedles: ['"4114442250"', '"features.remote_connections"'],
       missingDescription: "remote connection visibility bundle",
       skipDescription: "remote control UI remote connections visibility patch",
       apply: applyRemoteConnectionsVisibilityPatch,
@@ -157,9 +128,7 @@ module.exports = {
       phase: "webview-asset",
       order: 20510,
       ciPolicy: "optional",
-      pattern: /^(?:async\/)?\d+\.[0-9a-f]+\.js$/,
-      assetMatch: matchesRemoteControlConnectionsVisibilityContract,
-      matchPolicy: "all",
+      assetNeedles: ["remoteControlConnectionsState:", "slingshotEnabled:", "accessRequired!==!0"],
       missingDescription: "remote control connections visibility bundle",
       skipDescription: "remote control UI remote control connections visibility patch",
       apply: applyRemoteControlConnectionsVisibilityPatch,
@@ -169,9 +138,7 @@ module.exports = {
       phase: "webview-asset",
       order: 20520,
       ciPolicy: "optional",
-      pattern: /^(?:async\/)?\d+\.[0-9a-f]+\.js$/,
-      assetMatch: matchesExperimentalFeaturesContract,
-      matchPolicy: "all",
+      assetNeedles: ['"multi_agent"!==', 'startsWith("realtime_")'],
       missingDescription: "experimental features query bundle",
       skipDescription: "remote control UI experimental features patch",
       apply: applyExperimentalFeaturesPatch,

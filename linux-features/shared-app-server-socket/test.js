@@ -11,6 +11,7 @@ const path = require("node:path");
 const { PassThrough } = require("node:stream");
 const test = require("node:test");
 const vm = require("node:vm");
+const { makeSocketTempDir: makeUnixSocketTempDir } = require("../../scripts/lib/unix-socket-dir.test-helpers.js");
 
 const {
   loadLinuxFeaturePatchDescriptors,
@@ -25,7 +26,6 @@ const {
 const socketEnvHook = path.join(__dirname, "socket-env.sh");
 const orphanReaper = path.join(__dirname, "orphan-reaper.js");
 const attachedCli = path.join(__dirname, "attached-cli.sh");
-const unixSocketPathMaxBytes = 107;
 const testRuntimeRoot = fs.mkdtempSync(
   path.join(os.tmpdir(), "shared-app-server-socket-test-runtime-"),
 );
@@ -41,15 +41,10 @@ test.after(() => {
   fs.rmSync(testRuntimeRoot, { recursive: true, force: true });
 });
 
+// XDG_RUNTIME_DIR now names this file's own runtime root under TMPDIR, so the
+// fallback for a long TMPDIR is the host's runtime dir.
 function makeSocketTempDir(prefix, socketRelativePath = "app-server.sock") {
-  for (const root of [...new Set([os.tmpdir(), "/tmp"])]) {
-    const template = path.join(root, prefix);
-    const longestGeneratedPath = path.join(`${template}XXXXXX`, socketRelativePath);
-    if (Buffer.byteLength(longestGeneratedPath) <= unixSocketPathMaxBytes) {
-      return fs.mkdtempSync(template);
-    }
-  }
-  throw new Error("could not create a temporary directory with room for a Unix socket path");
+  return makeUnixSocketTempDir(prefix, socketRelativePath, { runtimeDir: originalRuntimeDir });
 }
 
 function createProcessSnapshotFs(processesByPid) {
@@ -855,11 +850,25 @@ async function spawnOrphanAuthority(socketPath, alias = false) {
   assert.equal(Number.isSafeInteger(pid), true);
   const startTime = processStartTime(pid);
   assert.notEqual(startTime, null);
-  await waitForCondition(
-    () => hasLegitimateOrphanAdoption(pid) && fs.existsSync(socketPath),
-    "detached authority to be adopted by PID 1 or the systemd user manager",
-  );
+  try {
+    await waitForCondition(
+      () => hasLegitimateOrphanAdoption(pid) && fs.existsSync(socketPath),
+      "detached authority to be adopted by PID 1 or the systemd user manager",
+    );
+  } catch (error) {
+    stopOrphanAuthority({ pid, startTime });
+    throw error;
+  }
   return { pid, startTime };
+}
+
+function stopOrphanAuthority(orphan) {
+  if (orphan == null || processStartTime(orphan.pid) !== orphan.startTime) return;
+  try {
+    process.kill(orphan.pid, "SIGTERM");
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+  }
 }
 
 // Mirrors the rspack/SWC-minified 26.1027 main-process chunk: double-quoted
@@ -1049,8 +1058,16 @@ test("attached CLI verifier accepts real Linux listeners and accepted connection
           assert.ok(rows.some((line) => / 00000000 0001 03 /.test(line)), "accepted stream row");
         }
         const fdDir = `/proc/${authority.pid}/fd`;
-        const modes = fs.readdirSync(fdDir)
-          .map((fd) => fs.lstatSync(path.join(fdDir, fd)).mode & 0o777);
+        // The authority keeps opening and closing its own descriptors, so an
+        // entry listed here can be gone by the time it is read.
+        const modes = fs.readdirSync(fdDir).flatMap((fd) => {
+          try {
+            return [fs.lstatSync(path.join(fdDir, fd)).mode & 0o777];
+          } catch (error) {
+            if (error.code === "ENOENT") return [];
+            throw error;
+          }
+        });
         assert.ok(modes.includes(0o300));
         assert.ok(modes.includes(0o700));
         const result = spawnSync("bash", ["-c",
@@ -2149,7 +2166,7 @@ test(
     assert.deepEqual(warnings, []);
     assert.match(
       patched,
-      /\.call\(this,\{WebSocket:[\w$]+\.[\w$]+,MessageCodec:[\w$]+\.[\w$]+,ConnectionAdapter:[\w$]+\.[\w$]+,keepAlive:[\w$]+\.[\w$]+,url:"ws:\/\/codex-app-server\/rpc",maximumFrameBytes:0x[0-9a-f]+,maximumFrameHeader:"x-codex-websocket-max-unfragmented-message-bytes"\}\)/,
+      /\.call\(this,\{WebSocket:[\w$]+\.[\w$]+,MessageCodec:[\w$]+\.[\w$]+,ConnectionAdapter:[\w$]+\.[\w$]+,keepAlive:[\w$]+\.[\w$]+,url:"ws:\/\/codex-app-server\/rpc",maximumFrameBytes:0x[0-9a-f]+,maximumFrameHeader:"x-codex-websocket-max-unfragmented-message-bytes",headers:\(0,[\w$]+\.[\w$]+\)\(\)\}\)/,
     );
     assert.match(patched, /return new CodexLinuxSharedAppServerSocketTransport\(process\.env\.CODEX_LINUX_APP_SERVER_BRIDGE_SOCKET,async\(\)=>\[/);
     new vm.Script(patched, { filename: "patched-chunk.js" });
@@ -2450,7 +2467,7 @@ test(`socket hook selects a secure canonical authority for adoption (${alias ? "
 }
 
 test("socket hook rejects an insecure canonical authority and keeps the private fallback", () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-canonical-unsafe-"));
+  const tempDir = makeSocketTempDir("ss-unsafe-", "codex-home/app-server-control/app-server-control.sock");
   const appDir = path.join(tempDir, "app");
   const codexHome = path.join(tempDir, "codex-home");
   const controlDir = path.join(codexHome, "app-server-control");
@@ -2488,7 +2505,7 @@ test("socket hook rejects an insecure canonical authority and keeps the private 
 });
 
 test("socket hook rejects a stale canonical socket and keeps the private fallback", async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-canonical-stale-"));
+  const tempDir = makeSocketTempDir("ss-stale-", "codex-home/app-server-control/app-server-control.sock");
   const appDir = path.join(tempDir, "app");
   const codexHome = path.join(tempDir, "codex-home");
   const controlDir = path.join(codexHome, "app-server-control");
@@ -2534,7 +2551,7 @@ test("socket hook rejects a stale canonical socket and keeps the private fallbac
 });
 
 test("explicit canonical socket override does not authorize adoption without launcher proof", async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-explicit-canonical-"));
+  const tempDir = makeSocketTempDir("ss-explicit-", "codex-home/app-server-control/app-server-control.sock");
   const codexHome = path.join(tempDir, "codex-home");
   const controlDir = path.join(codexHome, "app-server-control");
   const socketPath = path.join(controlDir, "app-server-control.sock");
@@ -2565,7 +2582,7 @@ test("explicit canonical socket override does not authorize adoption without lau
 });
 
 test("launcher clears inherited adoption proof for an explicit canonical override", () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-inherited-adopt-"));
+  const tempDir = makeSocketTempDir("ss-adopt-", "codex-home/app-server-control/app-server-control.sock");
   const codexHome = path.join(tempDir, "codex-home");
   const controlDir = path.join(codexHome, "app-server-control");
   const socketPath = path.join(controlDir, "app-server-control.sock");
@@ -3177,12 +3194,17 @@ test("orphan reaper rejects an authority adopted by an unrelated live parent", (
 
 for (const alias of [false, true]) {
   test(`orphan reaper stops an exact reparented authority with ${alias ? "a socket alias" : "a direct socket"}`, async () => {
-    const tempDir = makeSocketTempDir("shared-app-server-orphan-reaper-");
+    // The alias listens on app-server.sock.target, the longest socket path.
+    const tempDir = makeSocketTempDir(
+      "shared-app-server-orphan-reaper-",
+      alias ? "app-server.sock.target" : "app-server.sock",
+    );
     const socketPath = path.join(tempDir, "app-server.sock");
     const lockPath = `${socketPath}.lock`;
-    const orphan = await spawnOrphanAuthority(socketPath, alias);
-    fs.writeFileSync(lockPath, `99999999 1 ${orphan.pid} ${orphan.startTime}\n`, { mode: 0o600 });
+    let orphan;
     try {
+      orphan = await spawnOrphanAuthority(socketPath, alias);
+      fs.writeFileSync(lockPath, `99999999 1 ${orphan.pid} ${orphan.startTime}\n`, { mode: 0o600 });
       const result = spawnSync(process.execPath, [orphanReaper, socketPath], {
         encoding: "utf8",
       });
@@ -3195,13 +3217,7 @@ for (const alias of [false, true]) {
       assert.equal(fs.existsSync(socketPath), false);
       assert.equal(fs.existsSync(lockPath), false);
     } finally {
-      if (processStartTime(orphan.pid) === orphan.startTime) {
-        try {
-          process.kill(orphan.pid, "SIGTERM");
-        } catch (error) {
-          if (error.code !== "ESRCH") throw error;
-        }
-      }
+      stopOrphanAuthority(orphan);
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
@@ -3212,12 +3228,14 @@ test("orphan reaper refuses two live listener inodes for the same pathname", asy
   const tempDir = makeSocketTempDir("shared-app-server-rebind-reaper-");
   const socketPath = path.join(tempDir, "app-server.sock");
   const lockPath = `${socketPath}.lock`;
-  const orphan = await spawnOrphanAuthority(socketPath);
-  const lockContents = `99999999 1 ${orphan.pid} ${orphan.startTime}\n`;
-  fs.writeFileSync(lockPath, lockContents, { mode: 0o600 });
-  fs.unlinkSync(socketPath);
-  const replacement = await listenUnix(socketPath);
+  let orphan;
+  let replacement;
   try {
+    orphan = await spawnOrphanAuthority(socketPath);
+    const lockContents = `99999999 1 ${orphan.pid} ${orphan.startTime}\n`;
+    fs.writeFileSync(lockPath, lockContents, { mode: 0o600 });
+    fs.unlinkSync(socketPath);
+    replacement = await listenUnix(socketPath);
     await waitForCondition(
       () => unixListenerInodes(socketPath).length === 2,
       "old and replacement listener inodes",
@@ -3231,14 +3249,8 @@ test("orphan reaper refuses two live listener inodes for the same pathname", asy
     assert.equal(fs.readFileSync(lockPath, "utf8"), lockContents);
     assert.equal(fs.lstatSync(socketPath).isSocket(), true);
   } finally {
-    await closeServer(replacement);
-    if (processStartTime(orphan.pid) === orphan.startTime) {
-      try {
-        process.kill(orphan.pid, "SIGTERM");
-      } catch (error) {
-        if (error.code !== "ESRCH") throw error;
-      }
-    }
+    if (replacement) await closeServer(replacement);
+    stopOrphanAuthority(orphan);
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
@@ -4162,4 +4174,14 @@ test("negotiated transport rejects unrelated or missing header producers", () =>
     const source = syntheticBundle().replace("headers:h,", replacement);
     assert.equal(findTransportSymbols(source), null);
   }
+});
+
+
+test("config overrides retain current nested plugin availability callback", () => {
+  const callback = 'async()=>[...(0,KS.s1)(e.globalState,e.hostConfig),...await e.secretAuthStorageConfigOverrides,...await async function(e){if("local"!==e.hostConfig.kind)return[];let t=await sd({useWsl:(0,ed.cPM)(e.hostConfig),resourcesPath:e.resourcesPath});return[`plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=${null!=t}`]}(e)]';
+  const source = syntheticBundle().replace('async()=>[...await Ope(e)]', callback);
+  const patched = applySharedAppServerSocketPatch(source);
+  assert.notEqual(patched, source);
+  assert.ok(patched.includes(`process.env.CODEX_LINUX_APP_SERVER_BRIDGE_SOCKET,${callback})`));
+  assert.equal(applySharedAppServerSocketPatch(patched), patched);
 });
