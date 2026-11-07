@@ -591,9 +591,10 @@ function validateLinuxRemoteControlAutoConnectContract(extractedDir) {
     fs.existsSync(buildDir) ? fs.readdirSync(buildDir).filter((name) => name.endsWith(".js")).sort() : [],
     /async setRemoteControlEnabled\([A-Za-z_$][\w$]*\)\{[\s\S]{0,1000}?"Remote control connections are unavailable"[\s\S]{0,1000}?\}getState\([A-Za-z_$][\w$]*\)\{return this\.[A-Za-z_$][\w$]*\.appServerConnectionState\([A-Za-z_$][\w$]*\)\}setAutoConnect\((?<params>[A-Za-z_$][\w$]*)\)\{return this\.(?<service>[A-Za-z_$][\w$]*)\.setRemoteConnectionAutoConnect\(\k<params>\.hostId,\k<params>\.autoConnect\)\}/u,
   );
-  const callerCount = callerMatches.length + currentServiceOwnerMatches.length;
-  if (serviceMatches.length !== 1 || callerCount !== 1) {
-    const reason = `could not uniquely resolve upstream auto-connect service and caller (service=${serviceMatches.length}, caller=${callerCount})`;
+  const callerCount = callerMatches.length;
+  const ownerCount = currentServiceOwnerMatches.length;
+  if (serviceMatches.length !== 1 || callerCount > 1 || ownerCount > 1 || callerCount + ownerCount < 1) {
+    const reason = `could not uniquely resolve upstream auto-connect service and caller (service=${serviceMatches.length}, caller=${callerCount}, owner=${ownerCount})`;
     console.warn(`WARN: ${reason}`);
     return { matched: false, changed: false, reason };
   }

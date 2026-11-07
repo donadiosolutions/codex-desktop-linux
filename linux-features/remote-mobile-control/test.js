@@ -2883,6 +2883,30 @@ test("upstream auto-connect service preserves an explicit settings choice", asyn
   }
 });
 
+test("current auto-connect owner and settings caller form one complete contract", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-remote-auto-connect-current-"));
+  try {
+    const buildDir = path.join(root, ".vite", "build");
+    const assetsDir = path.join(root, "webview", "assets", "async");
+    fs.mkdirSync(buildDir, { recursive: true });
+    fs.mkdirSync(assetsDir, { recursive: true });
+    const owner = 'class ConnectionsService{async setRemoteControlEnabled(e){throw Error("Remote control connections are unavailable")}getState(e){return this.connections.appServerConnectionState(e)}setAutoConnect(e){return this.connections.setRemoteConnectionAutoConnect(e.hostId,e.autoConnect)}}';
+    const servicePath = path.join(buildDir, "early-bootstrap.js");
+    const callerPath = path.join(assetsDir, "14625.95f35fcee5.js");
+    fs.writeFileSync(servicePath, owner);
+    fs.writeFileSync(callerPath, syntheticAutoConnectSettingsCallerBundle());
+    assert.deepEqual(validateLinuxRemoteControlAutoConnectContract(root), { matched: true, changed: false });
+
+    fs.appendFileSync(callerPath, syntheticAutoConnectSettingsCallerBundle());
+    assert.equal(validateLinuxRemoteControlAutoConnectContract(root).matched, false);
+    fs.writeFileSync(callerPath, syntheticAutoConnectSettingsCallerBundle());
+    fs.appendFileSync(servicePath, owner);
+    assert.equal(validateLinuxRemoteControlAutoConnectContract(root).matched, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("patched Linux device-key provider signs upstream-canonical enrollment and connection payloads", async () => {
   const configHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-remote-mobile-key-store-"));
   try {
@@ -3640,6 +3664,15 @@ test("remote mobile control feature participates in ASAR patching and reports", 
 
 
 const SIGNED_APP = process.env.CODEX_SIGNED_EXTRACTED_APP;
+
+test("signed upstream auto-connect owner and settings caller remain coherent", {
+  skip: SIGNED_APP == null,
+}, () => {
+  assert.deepEqual(validateLinuxRemoteControlAutoConnectContract(SIGNED_APP), {
+    matched: true,
+    changed: false,
+  });
+});
 
 function signedMainProcessChunks() {
   const buildDir = path.join(SIGNED_APP, ".vite", "build");
