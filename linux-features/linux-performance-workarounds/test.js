@@ -20,9 +20,9 @@ const {
   matchesLinuxMarkdownAnimationPerformanceContract,
 } = require("./implementation.js");
 
-// Shapes below follow the signed 26.1029.61003 rspack webview.
+// Shapes below follow the signed 26.1103.31037 rspack webview.
 function currentAppShellTabLayoutFixture() {
-  return 'function tabs(){return ew.map((e,t)=>{let n=eh===e.id;return e.render({disabled:e.disabled,isActive:n,isClosable:e.isClosable,isPresented:ex===e.id,isRenaming:tt===e.id,animateLayout:e8,animateExit:ez&&!eN,animatePosition:ez&&eN,animateWidth:tA,layoutTransition:tu,targetWidth:tC[t],onActionsWidthChange:t=>{},trailingDecoration:{"data-app-shell-tab-separator":e.id}})})}';
+  return 'function tabs(){let e8=!0,ez=!0,eN=!1,t$=ew.map((e,t)=>{let n=t===eW,i=e.render({disabled:e.disabled,isActive:n,isClosable:e.isClosable,isPresented:!!e.presentedContent,isRenaming:e.renameState.active,animateLayout:e8,animateExit:ez&&!eN,animatePosition:ez&&eN,animateWidth:tA,closeButtonTabIndex:-1,controller:eF,dragActivator:"tab",shortcutHint:null});return i});return t$}';
 }
 
 function currentSidebarFixture() {
@@ -70,10 +70,8 @@ test("linux-performance-workarounds remains an opt-in renderer-only feature", ()
       ["markdown-animation", "extracted-app:post-webview"],
     ],
   );
-  const sidebarDescriptor = descriptors.find(({ id }) => id === "sidebar-scroll");
-  const tabDescriptor = descriptors.find(({ id }) => id === "app-shell-tab-layout");
-  assert.deepEqual(sidebarDescriptor.assetNeedles, SIDEBAR_ASSET_NEEDLES);
-  assert.deepEqual(tabDescriptor.assetNeedles, TAB_ASSET_NEEDLES);
+  assert.deepEqual(descriptors.find(({ id }) => id === "sidebar-scroll").assetNeedles, SIDEBAR_ASSET_NEEDLES);
+  assert.deepEqual(descriptors.find(({ id }) => id === "app-shell-tab-layout").assetNeedles, TAB_ASSET_NEEDLES);
   assert.ok(descriptors.every(({ pattern }) => pattern == null));
   for (const needle of SIDEBAR_ASSET_NEEDLES) assert.ok(currentSidebarFixture().includes(needle), needle);
   for (const needle of TAB_ASSET_NEEDLES) assert.ok(currentAppShellTabLayoutFixture().includes(needle), needle);
@@ -93,12 +91,12 @@ test("sidebar workaround locates the current semantic container after asset move
 
 test("sidebar workaround fails closed for duplicate or drifted containers", () => {
   const source = currentSidebarFixture();
+  const descriptor = descriptors.find(({ id }) => id === "sidebar-scroll");
   for (const drifted of [
     source + source,
     source.replace("[contain:layout_paint]", "[contain:paint]"),
     source.replace("let{scrollTop:n}=e.currentTarget;", ""),
   ]) {
-    const descriptor = descriptors.find(({ id }) => id === "sidebar-scroll");
     assert.equal(descriptor.assetMatch(drifted), false);
     const result = captureWarnings(() => descriptor.apply(drifted));
     assert.equal(result.value, drifted);
@@ -110,7 +108,7 @@ test("current app-shell tab workaround disables tab layout animation", () => {
   assert.equal(matchesLinuxAppShellTabLayoutPerformanceContract(source), true);
   const patched = applyLinuxAppShellTabLayoutPerformancePatch(source);
   assert.notEqual(patched, source);
-  assert.match(patched, /animateLayout:!1,animateExit:ez&&!eN,animatePosition:ez&&eN/u);
+  assert.match(patched, /animateLayout:!1,animateExit:ez&&!eN,animatePosition:ez&&eN,animateWidth:tA/u);
   assert.doesNotThrow(() => new Function(patched));
   assert.equal(matchesLinuxAppShellTabLayoutPerformanceContract(patched), true);
   assert.equal(applyLinuxAppShellTabLayoutPerformancePatch(patched), patched);
@@ -119,12 +117,12 @@ test("current app-shell tab workaround disables tab layout animation", () => {
 test("app-shell tab workaround fails closed for missing, duplicate, mixed, and partial owners", () => {
   const owner = currentAppShellTabLayoutFixture();
   const patched = applyLinuxAppShellTabLayoutPerformancePatch(owner);
-  const renamed = owner.replaceAll("ew", "otherTabs");
+  const renamed = owner.replaceAll("Qe", "Xe").replaceAll("map", "tabsById");
   const cases = [
-    owner.replace('"data-app-shell-tab-separator"', '"data-panel-separator"'),
+    owner.replace("disabled:e.disabled", "disabled:!1"),
     owner + renamed,
     patched + renamed,
-    owner.replace("animatePosition:ez&&eN", "animatePosition:ez&&other"),
+    owner.replace("animateWidth:tA", "layoutWidth:tA"),
   ];
   for (const source of cases) {
     assert.equal(matchesLinuxAppShellTabLayoutPerformanceContract(source), false);

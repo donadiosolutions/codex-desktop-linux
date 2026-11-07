@@ -260,7 +260,8 @@ state.
 | Nix flake | Manual build | `nix run github:ilysenko/codex-desktop-linux` |
 | Transactional update manager | Native packages | Included unless built with `PACKAGE_WITH_UPDATER=0` |
 | Official Browser and Chrome integrations | Upstream | Reused from the official Linux package; no legacy port layer |
-| Focusable Quit confirmation | Always | Required compatibility patch parents the upstream confirmation on Linux |
+| Reliable shell environment startup | Always | Owned by the verified upstream runtime; no core shell-startup patch is applied |
+| Reliable approved quit completion | Always | A required core patch consumes upstream quit approval in the unique `before-quit` owner so teardown reaches `will-quit` |
 | Optional Linux feature framework | Disabled | Configure with `make setup-native` |
 | Distinct desktop identity | Always | **ChatGPT Community**, blue `C` icon, `codex-desktop` package identity |
 
@@ -294,6 +295,7 @@ requirements, known limitations, configuration, and tests.
 | `directory-only-working-tree-watch` | Bounded Watchbound working-tree watching | [Docs](linux-features/directory-only-working-tree-watch/README.md) |
 | `filesystem-root-follow-ups` | Allow follow-ups in existing local tasks rooted at `/` | [Docs](linux-features/filesystem-root-follow-ups/README.md) |
 | `flatpak-chrome-native-messaging` | Bridge the official Chrome extension into Flatpak Google Chrome | [Docs](linux-features/flatpak-chrome-native-messaging/README.md) |
+| `fork-sidebar-fallback` | Allow chat forks without a ready optional sidebar rollout client | [Docs](linux-features/fork-sidebar-fallback/README.md) |
 | `frameless-titlebar` | Hide official Linux overlay buttons for compositor-managed decorations | [Docs](linux-features/frameless-titlebar/README.md) |
 | `global-dictation` | X11 and XDG portal global dictation hotkeys | [Docs](linux-features/global-dictation/README.md) |
 | `wayland-global-shortcuts` | Native Wayland support for the app's Popout, Mini/Pet and other global shortcuts; independent of dictation | [Docs](linux-features/wayland-global-shortcuts/README.md) |

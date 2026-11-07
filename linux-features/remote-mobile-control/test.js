@@ -1836,6 +1836,15 @@ test("a reasoning-summary resolver with ambiguous callers is rejected byte-ident
   assert.ok(warnings.some((warning) => warning.includes("ambiguous or incomplete")));
 });
 
+test("nested current resolver patches its enclosing mobile host contract", () => {
+  const source = 'let resolver=async function({manager:e,conversationId:t,operation:n,capabilities:r},p,h){async function nested(e,t,n,r,i,a,s){let S=a.latestThreadSettings,C=a.configRequirements,q=n.request,I=a.initialParams,ye=I?.summary??"none";S?.summary!==void 0&&(ye=S.summary),null!=s.reasoningSummaryOverride&&(ye=s.reasoningSummaryOverride),ye=null==C?null:C.model_reasoning_summary??ye,void 0!==q.summary&&(ye=q.summary);logger.info("Reasoning summary turn-start config resolved",{safe:{summary:ye}});return{summary:ye}}return nested(e,t,n,r,p,h,{reasoningSummaryOverride:null})};function call(e,c,p,d){let g={manager:e,conversationId:c,operation:p,turnStarts:d,capabilities:{}};return resolver(g,{},{latestThreadSettings:{},configRequirements:{},initialParams:{summary:"auto"}})}';
+  const patched = applyLinuxRemoteMobileReasoningSummaryPatch(source);
+  assert.notEqual(patched, source);
+  assert.match(patched, /codexLinuxRemoteMobileHost:"local"===e\.getHostId\(\)/);
+  assert.equal(applyLinuxRemoteMobileReasoningSummaryPatch(patched), patched);
+  assert.doesNotThrow(() => new vm.Script(patched));
+});
+
 test("current reasoning-summary owner keeps durable mobile summaries off and preserves explicit summaries", async () => {
   const source = syntheticCurrentReasoningSummaryTurnStartBundle();
   const patched = applyLinuxRemoteMobileReasoningSummaryPatch(source);
@@ -3815,6 +3824,14 @@ test(
         assert.equal(descriptor.apply(result.value, {}), result.value, `${descriptor.id} ${name}`);
         patchedAssets.set(name, result.value);
       }
+    }
+    // The mobile setup flag the revoke reset clears is still a global-state
+    // key. Rspack may carry the same key registry in multiple chunks.
+    const keys = findWebviewAssetsContaining(SIGNED_APP, ['CODEX_MOBILE_SETUP_COMPLETED:"codex-mobile-has-connected-device"']);
+    assert.ok(keys.length > 0);
+    for (const name of keys) {
+      const source = fs.readFileSync(path.join(assetsDir, name), "utf8");
+      assert.equal(source.split('CODEX_MOBILE_SETUP_COMPLETED:"codex-mobile-has-connected-device"').length - 1, 1, name);
     }
     for (const [name, patched] of patchedAssets) {
       execFileSyncForModuleCheck(patched, name);

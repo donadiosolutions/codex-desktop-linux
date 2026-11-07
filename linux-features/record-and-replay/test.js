@@ -1092,7 +1092,7 @@ test("record-and-replay plugin gate adds Linux availability to the current rspac
   const source = `var a5=[{...ei.iRL.computerUse,isAvailable:({features:e,platform:t})=>("darwin"===t||"win32"===t)&&e.computerUse},{...ei.iRL.recordAndReplay,isAvailable:({features:e,platform:t})=>"darwin"===t&&e.recordAndReplay},{...ei.iRL.latex,isAvailable:()=>!0},{...ei.iRL.visualize,isAvailable:()=>!0}]`;
   const patched = applyRecordReplayPluginGatePatch(source);
   assert.notEqual(patched, source);
-  assert.match(patched, /\.\.\.ei\.iRL\.recordAndReplay,isAvailable:\(\{features:e,platform:t\}\)=>"linux"===t&&e\.recordAndReplay/);
+  assert.match(patched, /\.\.\.ei\.iRL\.recordAndReplay,isAvailable:\(\{features:e,platform:t\}\)=>\("darwin"===t\|\|"linux"===t\)&&e\.recordAndReplay/);
   assert.equal(applyRecordReplayPluginGatePatch(patched), patched);
 });
 
@@ -1108,7 +1108,7 @@ test("record-and-replay plugin gate patches the signed current rspack registry",
   const { name, source } = owners[0];
   const patched = applyRecordReplayPluginGatePatch(source);
   assert.notEqual(patched, source);
-  assert.match(patched, /\.recordAndReplay,isAvailable:\(\{features:[A-Za-z_$][\w$]*,platform:[A-Za-z_$][\w$]*\}\)=>"linux"===/);
+  assert.match(patched, /\.recordAndReplay,isAvailable:\(\{features:[A-Za-z_$][\w$]*,platform:[A-Za-z_$][\w$]*\}\)=>\("darwin"===[A-Za-z_$][\w$]*\|\|"linux"===/);
   assert.equal(applyRecordReplayPluginGatePatch(patched), patched);
   assert.doesNotThrow(() => new vm.Script(patched, { filename: name }));
 });

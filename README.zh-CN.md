@@ -234,7 +234,8 @@ Nix 用户应从 profile、Home Manager 配置或 NixOS module 中删除该包�
 | Nix flake | 手动构建 | `nix run github:ilysenko/codex-desktop-linux` |
 | 事务式更新管理器 | 原生包 | 除非设置 `PACKAGE_WITH_UPDATER=0` |
 | 官方 Browser 和 Chrome 集成 | 上游提供 | 直接复用官方 Linux 实现，不保留旧移植层 |
-| 可聚焦的退出确认框 | 始终启用 | 必要兼容性补丁在 Linux 上为上游确认框设置父窗口 |
+| 可靠的 shell 环境启动 | 始终启用 | 由已验证的上游 runtime 负责；不应用核心 shell 启动补丁 |
+| 可靠地完成已批准的退出 | 始终启用 | 必需的核心补丁在唯一的 `before-quit` owner 中消费上游退出批准，使清理流程能够到达 `will-quit` |
 | Linux 可选扩展框架 | 默认关闭 | 使用 `make setup-native` 配置 |
 | 独立桌面标识 | 始终启用 | **ChatGPT Community**、蓝色 `C` 图标、`codex-desktop` package identity |
 
@@ -267,6 +268,7 @@ Nix 用户应从 profile、Home Manager 配置或 NixOS module 中删除该包�
 | `directory-only-working-tree-watch` | 有界 Watchbound 工作树监听 | [文档](linux-features/directory-only-working-tree-watch/README.md) |
 | `filesystem-root-follow-ups` | 允许工作目录为 `/` 的现有本地任务继续发送消息 | [文档](linux-features/filesystem-root-follow-ups/README.md) |
 | `flatpak-chrome-native-messaging` | 将官方 Chrome 扩展连接到 Flatpak Google Chrome | [文档](linux-features/flatpak-chrome-native-messaging/README.md) |
+| `fork-sidebar-fallback` | 可选侧边栏功能开关客户端未就绪时，允许 fork 会话 | [文档](linux-features/fork-sidebar-fallback/README.md) |
 | `frameless-titlebar` | 隐藏官方 Linux overlay 按钮，改由 compositor 管理窗口装饰 | [文档](linux-features/frameless-titlebar/README.md) |
 | `global-dictation` | X11 / XDG portal 全局听写快捷键 | [文档](linux-features/global-dictation/README.md) |
 | `wayland-global-shortcuts` | 为弹出聊天、Mini/Pet 等全局快捷键提供原生 Wayland 支持；可独立于听写启用 | [文档](linux-features/wayland-global-shortcuts/README.md) |

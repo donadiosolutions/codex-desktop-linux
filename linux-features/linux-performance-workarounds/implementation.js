@@ -15,7 +15,7 @@ const SIDEBAR_STYLE =
   '{animationName:"none",animationTimeline:"auto","--bottom-fade":"calc(var(--spacing) * 10)"}';
 
 const SIDEBAR_ASSET_NEEDLES = [".sidebarScroll,className:", "vertical-scroll-fade-mask", "[contain:layout_paint]"];
-const TAB_ASSET_NEEDLES = ["animateLayout:", "onActionsWidthChange:", "data-app-shell-tab-separator"];
+const TAB_ASSET_NEEDLES = [".render({disabled:", "animateLayout:", "animatePosition:"];
 const MARKDOWN_STYLESHEET_NEEDLES = ["[data-markdown-animated]", ".FadeListDecoration-", ".ImageEnter-"];
 const WEBVIEW_STYLESHEET_DIRECTORIES = ["", "async"];
 const SIDEBAR_WARNING =
@@ -121,20 +121,23 @@ function applyLinuxMarkdownAnimationStylesheetPatch(extractedDir) {
 }
 
 function layoutAnimationFlags(source) {
-  if (!TAB_ASSET_NEEDLES.every(needle => source.includes(needle))) return [];
-  const pattern = new RegExp(
+  const currentPattern = new RegExp(
     `(?<tab>${JS_IDENT})\\.render\\(\\{disabled:\\k<tab>\\.disabled,isActive:${JS_IDENT},` +
-      `isClosable:\\k<tab>\\.isClosable,isPresented:${JS_IDENT}===\\k<tab>\\.id,` +
-      `isRenaming:${JS_IDENT}===\\k<tab>\\.id,animateLayout:(?<expression>${JS_IDENT}|!1),` +
-      `animateExit:(?<animate>${JS_IDENT})&&!(?<dragging>${JS_IDENT}),` +
-      `animatePosition:\\k<animate>&&\\k<dragging>,animateWidth:${JS_IDENT},` +
-      `layoutTransition:${JS_IDENT},targetWidth:${JS_IDENT}\\[${JS_IDENT}\\],onActionsWidthChange:`,
+      `isClosable:\\k<tab>\\.isClosable,isPresented:[^,]+,isRenaming:[^,]+,` +
+      `animateLayout:(?<expression>${JS_IDENT}),animateExit:[^,]+,animatePosition:[^,]+,animateWidth:`,
     "gu",
   );
-  return [...source.matchAll(pattern)].map(match => {
-    const start = match.index + match[0].indexOf(`animateLayout:${match.groups.expression}`) + "animateLayout:".length;
-    return { start, end: start + match.groups.expression.length, patched: match.groups.expression === "!1" };
-  });
+  const patchedPattern = new RegExp(
+    `(?<tab>${JS_IDENT})\\.render\\(\\{disabled:\\k<tab>\\.disabled,isActive:${JS_IDENT},` +
+      `isClosable:\\k<tab>\\.isClosable,isPresented:[^,]+,isRenaming:[^,]+,` +
+      `animateLayout:(?<expression>!1),animateExit:[^,]+,animatePosition:[^,]+,animateWidth:`,
+    "gu",
+  );
+  return [...source.matchAll(currentPattern), ...source.matchAll(patchedPattern)].map((match) => ({
+    start: match.index + match[0].indexOf(match.groups.expression),
+    end: match.index + match[0].indexOf(match.groups.expression) + match.groups.expression.length,
+    patched: match.groups.expression === "!1",
+  }));
 }
 
 function matchesLinuxAppShellTabLayoutPerformanceContract(source) {
