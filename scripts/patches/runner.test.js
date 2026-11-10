@@ -21,7 +21,7 @@ const {
   findQuitLifecycleContract,
 } = require("./core/quit-confirmation-focus/patch.js");
 
-const emptyConfig = path.join(__dirname, "..", "..", "linux-features", "features.example.json");
+const emptyConfig = path.join(__dirname, "..", "..", "tests", "fixtures", "linux-features", "disabled.json");
 
 test("the official Linux baseline registers the required quit compatibility patch", () => {
   assert.deepEqual(

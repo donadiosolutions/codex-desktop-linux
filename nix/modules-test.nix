@@ -122,6 +122,35 @@ let
   ];
 in
 assert lib.assertMsg
+  (features.defaultFeatureIds == [ "provider-outage-recovery" ]
+    && packages.codex-desktop.passthru.linuxFeatureIds == features.defaultFeatureIds)
+  "Default Nix package features did not follow the public manifest defaults";
+assert lib.assertMsg
+  ((packages.codex-desktop.override { linuxFeatureIds = [ ]; }).passthru.linuxFeatureIds == [ ])
+  "An explicit empty Nix package feature list did not disable the defaults";
+assert lib.assertMsg
+  (lib.all (evaluate:
+    let
+      defaultConfig = (evaluate { enable = true; }).config.programs.codexDesktopLinux;
+      optedOut = (evaluate { enable = true; linuxFeatures = [ ]; }).config.programs.codexDesktopLinux;
+    in defaultConfig.linuxFeatures == features.defaultFeatureIds
+      && (import ./package-selection.nix {
+        cfg = defaultConfig; flakePackages = packages; inherit lib;
+      }).package.passthru.linuxFeatureIds == features.defaultFeatureIds
+      && optedOut.linuxFeatures == [ ]
+      && (import ./package-selection.nix {
+        cfg = optedOut; flakePackages = packages; inherit lib;
+      }).package.passthru.linuxFeatureIds == [ ]
+  ) [ evalHome evalNixOS ])
+  "Nix modules did not apply manifest defaults or preserve an explicit empty selection";
+assert lib.assertMsg
+  (lib.all (package: lib.elem "provider-outage-recovery" package.passthru.linuxFeatureIds) [
+    packages.codex-desktop-computer-use-ui
+    packages.codex-desktop-remote-mobile-control
+    packages.codex-desktop-computer-use-ui-remote-mobile-control
+  ])
+  "Named Nix feature profiles omitted the default recovery feature";
+assert lib.assertMsg
   (features.normalize [ "ui-tweaks" "ui-tweaks" "agent-workspace" ] == [ "agent-workspace" "ui-tweaks" ])
   "Nix feature IDs are not sorted and deduplicated";
 assert lib.assertMsg

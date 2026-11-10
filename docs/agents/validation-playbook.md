@@ -20,7 +20,7 @@ fixtures and fail closed.
 
 ## Baseline build
 
-Build with `features.example.json`, inspect `.codex-linux/build-info.json`, and
+Build with an explicit `{"enabled": []}` feature configuration, inspect `.codex-linux/build-info.json`, and
 compare the official and staged `resources/app.asar` hashes. Confirm no runtime
 replacement, external CLI, or local content server appears in the staged tree.
 The hashes must match when neither required core nor enabled feature descriptors

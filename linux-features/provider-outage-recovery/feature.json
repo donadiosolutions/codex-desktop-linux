@@ -1,0 +1,7 @@
+{
+  "id": "provider-outage-recovery",
+  "title": "Recover conversations after provider outages",
+  "description": "Bounded automatic continuation after confirmed temporary HTTP 503 failures, with a countdown and cancellation.",
+  "defaultEnabled": true,
+  "entrypoints": { "patchDescriptors": "./descriptors.js" }
+}

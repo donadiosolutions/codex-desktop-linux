@@ -1,6 +1,6 @@
 # Linux Features
 
-`linux-features/` contains opt-in Linux integration modules for this wrapper.
+`linux-features/` contains configurable Linux integration modules for this wrapper.
 These are not upstream Codex plugins; they are Linux-side extensions that can
 add ASAR patches, staged resources, runtime hooks, package hooks, or custom
 build/install hooks. The full architecture contract is documented in
@@ -9,9 +9,11 @@ Every feature targets the verified official Linux `.deb` payload; none depends
 on a macOS bundle, replacement Electron runtime, or rebuilt upstream native
 module.
 
-By default, no optional Linux features are enabled. Copy
-`features.example.json` to `features.json` before running `./install.sh` or
-building packages, then list the feature ids you want:
+Without a local `features.json`, public repository manifests with
+`"defaultEnabled": true` are selected (`provider-outage-recovery` currently).
+Copy `features.example.json` to `features.json` before running `./install.sh` or
+building packages to customize the selection. An explicit `enabled` array
+replaces all defaults; this disables every feature:
 
 ```json
 {
@@ -24,7 +26,7 @@ Feature choices are read during the install/build pipeline; if you change this
 file after an app has already been generated, rerun the install/build step.
 Native packages preserve the enabled feature id list and settings in the
 packaged update-builder bundle, so `codex-update-manager` rebuilds keep the
-same opt-in features across auto-updates.
+same feature selection across auto-updates.
 
 Feature-specific local settings can live in the same gitignored file under
 `settings.<feature-id>`. Keep tracked `feature.json` files as shipped defaults;
@@ -95,9 +97,10 @@ Each feature directory must include:
 - optional `test.js` — self-contained tests for the feature
 
 Repository-owned build plumbing may set `"internal": true` in `feature.json`.
-Every manifest defaults to disabled when `defaultEnabled` is omitted. If
-provided, it must be the JSON boolean `false`; `true`, `null`, numbers, strings,
-arrays, and objects are rejected for repository, local, and internal features.
+Every manifest defaults to disabled when `defaultEnabled` is omitted. Explicit
+values must be JSON booleans. Only public repository features may use `true`;
+local and internal features must remain disabled by default. Existing local
+configurations, including empty selections, never gain newly declared defaults.
 Internal features are hidden from the setup wizard and public feature summary,
 cannot be selected through native `features.json`, and must be explicitly
 allowlisted by the owning build integration.

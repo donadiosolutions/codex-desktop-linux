@@ -294,7 +294,9 @@
         gsettingsSchemaDataDirs =
           lib.concatMapStringsSep ":" gsettingsSchemaRoot gsettingsSchemaPackages;
         xdgDefaultDataDirs = "/usr/local/share:/usr/share";
-        emptyFeaturesConfig = pkgs.writeText "empty-features.json" ''{"enabled":[]}'';
+        defaultFeaturesConfig = pkgs.writeText "default-features.json" (builtins.toJSON {
+          enabled = nixLinuxFeatures.defaultFeatureIds;
+        });
         helperWorkspaceSource = lib.cleanSourceWith {
           src = sourceRoot;
           filter = path: type:
@@ -483,7 +485,7 @@
           '';
         };
         mkCodexDesktop = {
-          linuxFeatureIds ? [ ],
+          linuxFeatureIds ? nixLinuxFeatures.defaultFeatureIds,
           enableComputerUseUi ? false,
         }:
           let
@@ -637,9 +639,9 @@
           };
 
         codexDesktop = lib.makeOverridable mkCodexDesktop { };
-        remoteMobile = codexDesktop.override { linuxFeatureIds = [ "remote-mobile-control" ]; };
-        computerUse = codexDesktop.override { linuxFeatureIds = [ "computer-use-linux" ]; };
-        chronicleSkysight = codexDesktop.override { linuxFeatureIds = [ "chronicle-skysight" ]; };
+        remoteMobile = codexDesktop.override { linuxFeatureIds = nixLinuxFeatures.defaultFeatureIds ++ [ "remote-mobile-control" ]; };
+        computerUse = codexDesktop.override { linuxFeatureIds = nixLinuxFeatures.defaultFeatureIds ++ [ "computer-use-linux" ]; };
+        chronicleSkysight = codexDesktop.override { linuxFeatureIds = nixLinuxFeatures.defaultFeatureIds ++ [ "chronicle-skysight" ]; };
         # Maximal profiles keep the historical shared-profile feature set.
         # Community profile isolation and account switching intentionally
         # conflict with shared-app-server-socket; enable them separately.
@@ -732,7 +734,7 @@
             source ${sourceRoot}/scripts/lib/process-detection.sh
             # shellcheck disable=SC1091
             source ${sourceRoot}/scripts/lib/candidate-install.sh
-            export CODEX_LINUX_FEATURES_CONFIG="''${CODEX_LINUX_FEATURES_CONFIG:-${emptyFeaturesConfig}}"
+            export CODEX_LINUX_FEATURES_CONFIG="''${CODEX_LINUX_FEATURES_CONFIG:-${defaultFeaturesConfig}}"
             final_dir="''${CODEX_INSTALL_DIR:-$PWD/codex-app}"
             parent="$(dirname "$final_dir")"
             name="$(basename "$final_dir")"
@@ -1154,7 +1156,7 @@
           codex-desktop-computer-use-ui = computerUse;
           codex-desktop-remote-mobile-control = remoteMobile;
           codex-desktop-computer-use-ui-remote-mobile-control = codexDesktop.override {
-            linuxFeatureIds = [ "computer-use-linux" "remote-mobile-control" ];
+            linuxFeatureIds = nixLinuxFeatures.defaultFeatureIds ++ [ "computer-use-linux" "remote-mobile-control" ];
           };
           codex-desktop-maximal-directory-watch = maximalDirectory;
           codex-desktop-maximal-shallow-watch = maximalShallow;
@@ -1168,7 +1170,7 @@
           codex-desktop-computer-use-ui-remote-mobile-control = {
             type = "app";
             program = "${codexDesktop.override {
-              linuxFeatureIds = [ "computer-use-linux" "remote-mobile-control" ];
+              linuxFeatureIds = nixLinuxFeatures.defaultFeatureIds ++ [ "computer-use-linux" "remote-mobile-control" ];
             }}/bin/codex-desktop";
           };
           installer = { type = "app"; program = "${installer}/bin/codex-desktop-installer"; };

@@ -58,7 +58,7 @@ test("official Linux baseline has required compatibility descriptors", () => {
     }],
   );
   assert.equal(featurePatchDescriptors({
-    featuresConfigPath: path.join(__dirname, "..", "linux-features", "features.example.json"),
+    featuresConfigPath: path.join(__dirname, "..", "tests", "fixtures", "linux-features", "disabled.json"),
   }).length, 0);
 });
 
@@ -81,7 +81,7 @@ test("an explicitly empty core registry leaves an extracted official-style app u
   patchExtractedApp(root, {
     report,
     corePatchRoot: path.join(root, "empty-core-registry"),
-    featuresConfigPath: path.join(__dirname, "..", "linux-features", "features.example.json"),
+    featuresConfigPath: path.join(__dirname, "..", "tests", "fixtures", "linux-features", "disabled.json"),
   });
   assert.deepEqual(report.patches, []);
   for (const [filePath, bytes] of before) assert.deepEqual(fs.readFileSync(filePath), bytes);
@@ -99,7 +99,7 @@ test("final main-process syntax gate rejects duplicate parameters without execut
   fs.writeFileSync(chunk, "function Aa({browserBackends:e,deferTools:t,surfaces:n,nodeRepl:r},r){}");
   const options = {
     corePatchRoot: path.join(root, "empty-core"),
-    featuresConfigPath: path.join(__dirname, "..", "linux-features", "features.example.json"),
+    featuresConfigPath: path.join(__dirname, "..", "tests", "fixtures", "linux-features", "disabled.json"),
   };
   assert.throws(() => patchExtractedApp(root, options), (error) =>
     error.code === "PATCH_INTEGRITY_FAILURE" &&
@@ -131,7 +131,7 @@ test("syntax validation runs after extracted-app post-webview transforms", (t) =
   `);
   assert.throws(() => patchExtractedApp(root, {
     corePatchRoot,
-    featuresConfigPath: path.join(__dirname, "..", "linux-features", "features.example.json"),
+    featuresConfigPath: path.join(__dirname, "..", "tests", "fixtures", "linux-features", "disabled.json"),
   }), /JavaScript syntax validation failed.*main\.js: SyntaxError: Duplicate parameter name/);
 });
 

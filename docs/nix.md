@@ -25,7 +25,8 @@ can no longer see it. The derivation relocates that metadata into verified
 unsafe report fallback. These checks run against both official architectures.
 Builds apply the required core compatibility patch to `resources/app.asar`;
 the official ELF and native-module payload stays byte-for-byte intact. Optional
-ASAR features remain disabled unless explicitly selected.
+ASAR features follow the public manifest defaults; currently
+`provider-outage-recovery` is enabled. Explicit feature lists replace defaults.
 
 ```bash
 nix run github:ilysenko/codex-desktop-linux
@@ -58,14 +59,20 @@ nix build .#codex-desktop-computer-use-ui
 
 ## Features
 
-Use the NixOS or Home Manager module and pass explicit feature IDs. Defaults are
-empty. Feature resources and required retained helper crates are staged by the
+Use the NixOS or Home Manager module to customize feature IDs. An omitted
+`linuxFeatures` selects public manifest defaults (`provider-outage-recovery`
+currently); an explicit list replaces them, including `linuxFeatures = [];` to
+disable all public features. The package override `linuxFeatureIds = [];` provides
+the same opt-out. Named convenience outputs add their feature to the defaults.
+The directory installer uses the defaults unless `CODEX_LINUX_FEATURES_CONFIG`
+points to an explicit configuration, where `{"enabled": []}` disables all features.
+Feature resources and required retained helper crates are staged by the
 Nix derivation; helpers are release-built as Nix inputs, not during an update.
 
 ```nix
 programs.codexDesktopLinux = {
   enable = true;
-  linuxFeatures = [ "read-aloud" ];
+  linuxFeatures = [ "provider-outage-recovery" "read-aloud" ];
 };
 ```
 

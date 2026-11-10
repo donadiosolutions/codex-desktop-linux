@@ -41,8 +41,8 @@ Generated output includes `codex-app/`, `codex-app.backup-*`, candidates,
 
 ## Important contracts
 
-- `linux-features/features.example.json` is the committed feature-free
-  baseline; `features.json` is local state.
+- `linux-features/features.example.json` is the committed default-feature
+  template; `features.json` is local state and its explicit selection replaces defaults.
 - `stage_update_builder_bundle()` in `scripts/lib/package-common.sh` assembles
   the minimal rebuild bundle under `/opt/codex-desktop/update-builder/` in native
   package staging. It selects enabled descriptors, resources, plugin templates,

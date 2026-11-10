@@ -53,14 +53,66 @@ class FeaturePickerModelTests(unittest.TestCase):
                         data["defaultEnabled"] = case["value"]
                     (directory / "feature.json").write_text(json.dumps(data))
                     (directory / "README.md").write_text("# Default fixture\n")
-                    if "error" in case:
+                    error = case.get("error") or (
+                        "defaultEnabled true is not allowed"
+                        if case.get("value") is True and origin != "repo" else None
+                    )
+                    if error:
                         with self.assertRaises(feature_picker.SelectionError) as failure:
                             feature_picker.discover_features(root)
-                        self.assertIn(case["error"], str(failure.exception))
+                        self.assertIn(error, str(failure.exception))
                     else:
                         features = feature_picker.discover_features(root)
                         self.assertEqual(list(features), [] if origin == "internal" else ["probe"])
-                        self.assertEqual(feature_picker.SelectionModel(features).ordered_selected(), [])
+                        if features:
+                            self.assertEqual(features["probe"].default_enabled, case.get("value") is True)
+                        expected = ["probe"] if origin == "repo" and case.get("value") is True else []
+                        self.assertEqual(feature_picker.read_current_selection(root / "features.json", features), expected)
+
+    def test_missing_config_defaults_and_explicit_opt_out(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            features = {
+                "recovery": feature_picker.Feature("recovery", "Recovery", "", ("dependency",), (), default_enabled=True),
+                "dependency": self.feature("dependency"),
+                "opt-in": self.feature("opt-in"),
+            }
+            config = root / "features.json"
+            (root / "features.example.json").write_text('{"enabled":["opt-in"]}')
+            current = feature_picker.read_current_selection(config, features)
+            self.assertEqual(current, ["recovery"])
+            self.assertEqual(set(feature_picker.SelectionModel(features, current).ordered_selected()), {"recovery", "dependency"})
+            for enabled in ([], ["opt-in"]):
+                config.write_text(json.dumps({"enabled": enabled}))
+                self.assertEqual(feature_picker.read_current_selection(config, features), enabled)
+            config.write_text('{"enabled":true}')
+            with self.assertRaisesRegex(feature_picker.SelectionError, "enabled must be an array"):
+                feature_picker.read_current_selection(config, features)
+
+    def test_bootstrap_picker_matches_defaults_and_explicit_selections(self):
+        # Exercise the wizard's embedded config reader without host probes or GTK.
+        wizard = (REPO_ROOT / "scripts/bootstrap-wizard.sh").read_text()
+        body = wizard.split("run_feature_config_python() {", 1)[1].split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            for feature_id, default in (("recovery", True), ("opt-in", False)):
+                directory = root / feature_id
+                directory.mkdir()
+                (directory / "feature.json").write_text(json.dumps({
+                    "id": feature_id, "defaultEnabled": default,
+                }))
+                (directory / "README.md").write_text("# Fixture\n")
+            config = root / "features.json"
+            (root / "features.example.json").write_text('{"enabled":["opt-in"]}')
+            for enabled, expected in ((None, "recovery"), ([], None), (["opt-in"], "opt-in")):
+                if enabled is not None:
+                    config.write_text(json.dumps({"enabled": enabled}))
+                result = subprocess.run(
+                    [sys.executable, "-", str(root), str(config), "", "", "0", "tsv"],
+                    input=body, capture_output=True, text=True, check=True, timeout=10,
+                )
+                selected = [line.split("\t")[0] for line in result.stdout.splitlines() if line.endswith("\t1")]
+                self.assertEqual(selected, [expected] if expected else [])
 
     def test_feature_ids_match_public_local_and_alternate_directories(self):
         for case in MANIFEST_CASES["directories"]:
@@ -117,7 +169,7 @@ class FeaturePickerModelTests(unittest.TestCase):
                 if "error" in case:
                     with self.assertRaises(feature_picker.SelectionError) as failure:
                         feature_picker.discover_features(root)
-                    self.assertIn(str(manifest), str(failure.exception))
+                    self.assertIn(str(manifest.resolve()), str(failure.exception))
                     self.assertIn(case["error"], str(failure.exception))
                     if "must be an object" not in case["error"]:
                         self.assertIn("patchDescriptors, stageHook, cleanupHook", str(failure.exception))
@@ -443,7 +495,7 @@ class FeaturePickerModelTests(unittest.TestCase):
                 "id": "bad",
                 "title": "Bad",
                 "description": "",
-                "defaultEnabled": True,
+                "defaultEnabled": "true",
             }))
             with self.assertRaises(feature_picker.SelectionError):
                 feature_picker.discover_features(root)
