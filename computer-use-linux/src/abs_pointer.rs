@@ -7,7 +7,9 @@
 //!
 //! Here we create our own uinput device that exposes a true `ABS_X`/`ABS_Y`
 //! axis whose range matches the full screenshot's pixel dimensions. The
-//! compositor maps that range across its logical output layout. Callers keep
+//! compositor maps that range across its logical output layout. It also
+//! exposes `REL_WHEEL`/`REL_HWHEEL` so scroll events travel with the same
+//! pointer state as the motion that positioned the cursor. Callers keep
 //! using capture-pixel coordinates, which can differ from logical coordinates
 //! on scaled outputs. Returned landings describe the emitted coordinates;
 //! they are not a readback of the compositor's actual pointer position.
@@ -35,6 +37,40 @@ pub(crate) struct PointerLanding {
 pub(crate) struct DragLanding {
     pub(crate) start: PointerLanding,
     pub(crate) end: PointerLanding,
+}
+
+/// The buttons, wheel axes and properties the device declares next to its
+/// absolute X/Y axes.
+struct DeviceCapabilities {
+    keys: AttributeSet<KeyCode>,
+    relative_axes: AttributeSet<RelativeAxisCode>,
+    props: AttributeSet<PropType>,
+}
+
+impl DeviceCapabilities {
+    fn new() -> Self {
+        Self {
+            keys: AttributeSet::from_iter([
+                KeyCode::BTN_LEFT,
+                KeyCode::BTN_RIGHT,
+                KeyCode::BTN_MIDDLE,
+            ]),
+            // Wheel axes keep scroll events on the same device as the motion
+            // that positioned the pointer. A wheel sent through ydotool's
+            // device right after this one jumped the cursor can be routed
+            // with a stale pointer position and dropped. The kernel drops
+            // events for codes a device did not declare, so a wheel without
+            // these axes would be dropped silently too.
+            relative_axes: AttributeSet::from_iter([
+                RelativeAxisCode::REL_WHEEL,
+                RelativeAxisCode::REL_HWHEEL,
+            ]),
+            // INPUT_PROP_DIRECT marks the device as a direct (absolute)
+            // pointer so libinput maps its axes to screen coordinates rather
+            // than treating it as a relative touchpad.
+            props: AttributeSet::from_iter([PropType::DIRECT]),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -126,14 +162,11 @@ impl AbsPointer {
             UinputAbsSetup::new(AbsoluteAxisCode::ABS_X, AbsInfo::new(0, 0, max_x, 0, 0, 1));
         let abs_y =
             UinputAbsSetup::new(AbsoluteAxisCode::ABS_Y, AbsInfo::new(0, 0, max_y, 0, 0, 1));
-        let keys =
-            AttributeSet::from_iter([KeyCode::BTN_LEFT, KeyCode::BTN_RIGHT, KeyCode::BTN_MIDDLE]);
-        let relative_axes =
-            AttributeSet::from_iter([RelativeAxisCode::REL_WHEEL, RelativeAxisCode::REL_HWHEEL]);
-        // INPUT_PROP_DIRECT marks the device as a direct (absolute) pointer so
-        // libinput maps its axes to screen coordinates rather than treating it
-        // as a relative touchpad.
-        let props = AttributeSet::from_iter([PropType::DIRECT]);
+        let DeviceCapabilities {
+            keys,
+            relative_axes,
+            props,
+        } = DeviceCapabilities::new();
 
         let device = VirtualDevice::builder()
             .context("uinput builder (is /dev/uinput writable?)")?
@@ -210,6 +243,9 @@ impl AbsPointer {
         let plan = scroll_plan(target, dx, dy, self.geometry.max_x, self.geometry.max_y);
         if let Some(frames) = plan.motion {
             self.emit_motion_frames(frames)?;
+            // The blocking input worker keeps the compositor's move-to-wheel
+            // settle delay under the same cancellation-safe input guard.
+            sleep(Duration::from_millis(35));
         }
         if !plan.wheel.is_empty() {
             self.device
@@ -458,7 +494,7 @@ mod local_motion_tests {
 pub(crate) mod tests {
     use super::{
         AbsPointer, AbsPointerGeometry, EventType, InputEvent, KeyCode, PointerButton,
-        PointerEvents, PointerLanding,
+        PointerEvents, PointerLanding, RelativeAxisCode,
     };
 
     #[test]
@@ -540,6 +576,22 @@ pub(crate) mod tests {
                 .unwrap()
                 .iter()
                 .filter(|(kind, _, _)| *kind == EventType::KEY.0)
+                .map(|(_, code, value)| (*code, *value))
+                .collect()
+        }
+
+        /// Every event seen so far, as `(type, code, value)`.
+        pub(crate) fn all_events(&self) -> Vec<(u16, u16, i32)> {
+            self.events.lock().unwrap().clone()
+        }
+
+        /// The wheel events (`EV_REL`) seen so far, as `(code, value)`.
+        pub(crate) fn wheel_events(&self) -> Vec<(u16, i32)> {
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(kind, _, _)| *kind == EventType::RELATIVE.0)
                 .map(|(_, code, value)| (*code, *value))
                 .collect()
         }
@@ -675,6 +727,66 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(motion[..4], [1, 11, 0, 10]);
         assert_eq!(motion[motion.len() - 2..], [99, 60]);
+    }
+
+    /// udev's input_id calls absolute X/Y with mouse buttons an absolute
+    /// mouse, before its touchscreen test, so INPUT_PROP_DIRECT does not
+    /// make this a touchscreen. A touch or tool button, or BTN_0/BTN_1 with
+    /// a wheel (a tablet pad), would change that. The wheel axes must be
+    /// declared, or the kernel drops the wheel events.
+    #[test]
+    fn device_declares_a_wheel_and_stays_an_absolute_mouse() {
+        use super::{DeviceCapabilities, PropType};
+        let capabilities = DeviceCapabilities::new();
+        for axis in [RelativeAxisCode::REL_WHEEL, RelativeAxisCode::REL_HWHEEL] {
+            assert!(capabilities.relative_axes.contains(axis), "{axis:?}");
+        }
+        for axis in [RelativeAxisCode::REL_X, RelativeAxisCode::REL_Y] {
+            assert!(!capabilities.relative_axes.contains(axis), "{axis:?}");
+        }
+        assert!(capabilities.keys.contains(KeyCode::BTN_LEFT));
+        for key in [
+            KeyCode::BTN_0,
+            KeyCode::BTN_1,
+            KeyCode::BTN_TOUCH,
+            KeyCode::BTN_TOOL_PEN,
+            KeyCode::BTN_TOOL_FINGER,
+        ] {
+            assert!(!capabilities.keys.contains(key), "{key:?}");
+        }
+        assert!(capabilities.props.contains(PropType::DIRECT));
+    }
+
+    /// Wheel deltas go out on the same absolute pointer device that emitted
+    /// the last motion, so the compositor routes them
+    /// with that device's pointer position.
+    #[test]
+    fn wheel_emits_relative_axis_events_from_the_pointer_device() {
+        let events = RecordedEvents::default();
+        let mut pointer = AbsPointer::with_events(events.clone(), 100, 100);
+
+        assert_eq!(pointer.scroll(None, 2, -3).unwrap(), None);
+
+        assert_eq!(
+            events.wheel_events(),
+            [
+                (RelativeAxisCode::REL_WHEEL.0, -3),
+                (RelativeAxisCode::REL_HWHEEL.0, 2),
+            ]
+        );
+    }
+
+    /// A failed wheel write surfaces as an error instead of being swallowed,
+    /// mirroring how motion failures abort the action.
+    #[test]
+    fn wheel_reports_a_failed_emit() {
+        let events = RecordedEvents::failing_on(&[0]);
+        let mut pointer = AbsPointer::with_events(events, 100, 100);
+
+        let error = format!("{:#}", pointer.scroll(None, 0, -1).unwrap_err());
+
+        assert!(error.contains("failed to emit absolute pointer wheel motion"), "{error}");
+        assert!(error.contains("uinput write failed"), "{error}");
     }
 
     #[test]
