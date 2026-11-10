@@ -8,8 +8,14 @@ let
     (builtins.attrNames entries);
   manifests = map
     (name:
-      let manifest = builtins.fromJSON (builtins.readFile (featuresRoot + "/${name}/feature.json"));
-      in if manifest.id == name then manifest
+      let
+        manifest = builtins.fromJSON (builtins.readFile (featuresRoot + "/${name}/feature.json"));
+        defaultEnabled = manifest.defaultEnabled or false;
+      in if !builtins.isBool defaultEnabled then
+        throw "Linux feature '${name}' defaultEnabled must be a boolean"
+      else if defaultEnabled && (manifest.internal or false) then
+        throw "Linux feature '${name}' defaultEnabled true is not allowed for internal features"
+      else if manifest.id == name then manifest
       else throw "Linux feature directory '${name}' contains mismatched id '${manifest.id}'")
     featureDirectories;
   manifestIds = map (manifest: manifest.id) manifests;
@@ -21,6 +27,8 @@ let
     then lib.filter (featureId: !(lib.elem featureId internalFeatureIds))
       (lib.sort builtins.lessThan manifestIds)
     else throw "Duplicate Linux feature IDs were discovered";
+  defaultFeatureIds = normalize (map (manifest: manifest.id)
+    (lib.filter (manifest: manifest.defaultEnabled or false) manifests));
   manifestById = lib.listToAttrs (map (manifest: {
     name = manifest.id;
     value = manifest;
@@ -87,7 +95,7 @@ let
         normalized;
 in
 {
-  inherit internalFeatureIds normalize normalizeAll retiredFeatureIds supportedFeatureIds;
+  inherit defaultFeatureIds internalFeatureIds normalize normalizeAll retiredFeatureIds supportedFeatureIds;
 
   # Keep explicitly retired IDs valid while rejecting arbitrary unknown IDs
   # and dependency conflicts during option checking, even for custom packages.

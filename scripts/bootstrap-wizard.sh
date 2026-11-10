@@ -697,8 +697,10 @@ def discover_features(root):
             continue
         if not (manifest_path.parent / "README.md").is_file():
             die(f"Linux feature '{feature_id}' must include README.md next to feature.json")
-        if data.get("defaultEnabled") is True:
-            die(f"Linux feature '{feature_id}' must be disabled by default; defaultEnabled true is not allowed")
+        if "defaultEnabled" in data and not isinstance(data["defaultEnabled"], bool):
+            die(f"Linux feature '{feature_id}' defaultEnabled must be a boolean")
+        if data.get("defaultEnabled") is True and (origin == "local" or data.get("internal") is True):
+            die(f"Linux feature '{feature_id}' defaultEnabled true is not allowed for local or internal features")
         if "internal" in data and not isinstance(data["internal"], bool):
             die(f"Linux feature '{feature_id}' internal must be a boolean")
         if data.get("internal") is True:
@@ -713,6 +715,7 @@ def discover_features(root):
             "description": str(description),
             "origin": origin,
             "local": origin == "local",
+            "defaultEnabled": data.get("defaultEnabled") is True,
             "requires": normalize_id_list(data.get("requires"), "requires", manifest_path),
             "conflicts": normalize_id_list(data.get("conflicts"), "conflicts", manifest_path),
             "manifest_path": str(manifest_path),
@@ -721,13 +724,8 @@ def discover_features(root):
 
 def read_feature_config(path):
     if not path.exists():
-        fallback = features_root / "features.example.json"
-        if fallback.exists():
-            return read_json(fallback, "Linux features example config") or {}
-        else:
-            return {}
-    else:
-        return read_json(path, "Linux features config") or {}
+        return {"enabled": [feature_id for feature_id, feature in features.items() if feature["defaultEnabled"]]}
+    return read_json(path, "Linux features config") or {}
 
 def read_enabled_ids(data, path):
     enabled = data.get("enabled", [])

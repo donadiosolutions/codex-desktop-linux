@@ -11,7 +11,7 @@
 </p>
 
 `codex-desktop` 是 OpenAI 官方 Linux ChatGPT 桌面应用的非官方社区发行版。
-它验证并重新打包已签名的官方 Linux 软件包，提供默认关闭的 Linux 扩展，
+它验证并重新打包已签名的官方 Linux 软件包，提供可配置的 Linux 扩展，
 并可构建 deb、RPM、pacman、AppImage 和 Nix 产物。
 
 桌面菜单中的自定义应用名为 **ChatGPT Community**，图标带有蓝色 `C`。
@@ -236,12 +236,13 @@ Nix 用户应从 profile、Home Manager 配置或 NixOS module 中删除该包�
 | 官方 Browser 和 Chrome 集成 | 上游提供 | 直接复用官方 Linux 实现，不保留旧移植层 |
 | 可靠的 shell 环境启动 | 始终启用 | 由已验证的上游 runtime 负责；不应用核心 shell 启动补丁 |
 | 可靠地完成已批准的退出 | 始终启用 | 必需的核心补丁在唯一的 `before-quit` owner 中消费上游退出批准，使清理流程能够到达 `will-quit` |
-| Linux 可选扩展框架 | 默认关闭 | 使用 `make setup-native` 配置 |
+| Linux 可选扩展框架 | 可配置 | 使用 `make setup-native` 配置 |
 | 独立桌面标识 | 始终启用 | **ChatGPT Community**、蓝色 `C` 图标、`codex-desktop` package identity |
 
 ### 可选 Linux 扩展
 
-以下扩展全部默认关闭。每个扩展目录中的 README 都包含依赖、限制、配置与测试。
+没有本地功能配置时，`provider-outage-recovery` 默认启用；其他扩展仍需手动启用。
+每个扩展目录中的 README 都包含依赖、限制、配置与测试。
 
 | 扩展 ID | 用途 | 文档 |
 |---|---|---|
@@ -283,6 +284,7 @@ Nix 用户应从 profile、Home Manager 配置或 NixOS module 中删除该包�
 | `preferred-editor-file-links` | 单击源代码链接时使用所选编辑器打开 | [文档](linux-features/preferred-editor-file-links/README.md) |
 | `project-group-last-updated-sort` | 对 project group 和 task 应用 Last updated 排序 | [文档](linux-features/project-group-last-updated-sort/README.md) |
 | `project-task-sort` | 恢复 alternate Projects 的 Created 排序 | [文档](linux-features/project-task-sort/README.md) |
+| `provider-outage-recovery` | 服务提供商故障后恢复中断的会话；默认启用 | [文档](linux-features/provider-outage-recovery/README.md) |
 | `read-aloud` | 为 assistant response 添加 Linux 朗读控件 | [文档](linux-features/read-aloud/README.md) |
 | `read-aloud-mcp` | 让 agent 通过 Linux Read Aloud backend 发声 | [文档](linux-features/read-aloud-mcp/README.md) |
 | `reasoning-visibility` | 在常规设置中添加默认关闭且已翻译的推理摘要开关；重启后生效 | [文档](linux-features/reasoning-visibility/README.md) |
@@ -344,6 +346,8 @@ Quick Chat 入口才会可用。
 make setup-native
 ```
 
+没有本地配置时，默认启用 `provider-outage-recovery`。显式的 `enabled` 列表会
+替换默认选择；`{"enabled": []}` 会关闭全部扩展。已有配置保留原来的选择。
 也可以手动复制 gitignored 配置：
 
 ```bash
@@ -353,6 +357,7 @@ cp linux-features/features.example.json linux-features/features.json
 ```json
 {
   "enabled": [
+    "provider-outage-recovery",
     "read-aloud",
     "ui-tweaks"
   ]

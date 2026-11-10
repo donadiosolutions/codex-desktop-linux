@@ -12,7 +12,7 @@
 
 `codex-desktop` is an unofficial, community-maintained distribution of
 OpenAI's official Linux ChatGPT desktop application. It verifies and
-repackages the signed upstream Linux payload, adds disabled-by-default Linux
+repackages the signed upstream Linux payload, adds configurable Linux
 features, and produces deb, RPM, pacman, AppImage, and Nix outputs.
 
 The custom application appears in desktop menus as **ChatGPT Community** and
@@ -262,12 +262,13 @@ state.
 | Official Browser and Chrome integrations | Upstream | Reused from the official Linux package; no legacy port layer |
 | Reliable shell environment startup | Always | Owned by the verified upstream runtime; no core shell-startup patch is applied |
 | Reliable approved quit completion | Always | A required core patch consumes upstream quit approval in the unique `before-quit` owner so teardown reaches `will-quit` |
-| Optional Linux feature framework | Disabled | Configure with `make setup-native` |
+| Optional Linux feature framework | Configurable | Configure with `make setup-native` |
 | Distinct desktop identity | Always | **ChatGPT Community**, blue `C` icon, `codex-desktop` package identity |
 
 ### Optional Linux features
 
-Every feature below is disabled by default. Its adjacent README describes
+`provider-outage-recovery` is enabled by default when no local feature config
+exists; all other features remain opt-in. Each adjacent README describes
 requirements, known limitations, configuration, and tests.
 
 | Feature ID | Purpose | Documentation |
@@ -310,6 +311,7 @@ requirements, known limitations, configuration, and tests.
 | `preferred-editor-file-links` | Open source links in the selected editor with a plain click | [Docs](linux-features/preferred-editor-file-links/README.md) |
 | `project-group-last-updated-sort` | Apply Last updated ordering to project groups and tasks | [Docs](linux-features/project-group-last-updated-sort/README.md) |
 | `project-task-sort` | Restore Created ordering for alternate Projects tasks | [Docs](linux-features/project-task-sort/README.md) |
+| `provider-outage-recovery` | Recover interrupted chats after provider outages; enabled by default | [Docs](linux-features/provider-outage-recovery/README.md) |
 | `read-aloud` | Add Linux read-aloud controls to assistant responses | [Docs](linux-features/read-aloud/README.md) |
 | `read-aloud-mcp` | Let the agent speak through the Linux Read Aloud backend | [Docs](linux-features/read-aloud-mcp/README.md) |
 | `reasoning-visibility` | Add a translated, default-off General setting to show reasoning summaries; changes apply after restart | [Docs](linux-features/reasoning-visibility/README.md) |
@@ -379,7 +381,10 @@ The recommended editor is the setup wizard:
 make setup-native
 ```
 
-For manual configuration, copy the example to the gitignored local file:
+Without a local configuration, `provider-outage-recovery` is enabled. An explicit
+`enabled` list replaces the defaults; `{"enabled": []}` disables every feature.
+Existing configurations keep their selection. For manual configuration, copy
+the example to the gitignored local file:
 
 ```bash
 cp linux-features/features.example.json linux-features/features.json
@@ -388,6 +393,7 @@ cp linux-features/features.example.json linux-features/features.json
 ```json
 {
   "enabled": [
+    "provider-outage-recovery",
     "read-aloud",
     "ui-tweaks"
   ]

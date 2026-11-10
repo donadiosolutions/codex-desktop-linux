@@ -90,8 +90,8 @@ in {
     remoteMobileControl.enable = lib.mkEnableOption "the remote-mobile-control feature";
     linuxFeatures = lib.mkOption {
       type = (import ./linux-features.nix { inherit lib; }).optionType;
-      default = [ ];
-      description = "Disabled-by-default Linux features baked into the immutable package.";
+      default = (import ./linux-features.nix { inherit lib; }).defaultFeatureIds;
+      description = "Linux features baked into the immutable package. An explicit list replaces the manifest defaults; [] disables all public features.";
     };
     remoteControl = {
       enable = lib.mkEnableOption "a declarative Codex remote-control app-server";

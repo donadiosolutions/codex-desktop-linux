@@ -33,6 +33,7 @@ class Feature:
     requires: tuple[str, ...]
     conflicts: tuple[str, ...]
     local: bool = False
+    default_enabled: bool = False
 
 
 def _normalize_ids(value, *, field: str, manifest: pathlib.Path) -> tuple[str, ...]:
@@ -90,10 +91,10 @@ def discover_features(root: pathlib.Path) -> dict[str, Feature]:
                 f"{manifest}: feature id '{feature_id}' must match its directory name '{manifest.parent.name}'"
             )
         if "defaultEnabled" in data and not isinstance(data["defaultEnabled"], bool):
-            raise SelectionError(f"{manifest}: defaultEnabled must be a boolean (false when provided)")
-        if data.get("defaultEnabled") is True:
+            raise SelectionError(f"{manifest}: defaultEnabled must be a boolean")
+        if data.get("defaultEnabled") is True and (local or data.get("internal") is True):
             raise SelectionError(
-                f"{manifest}: defaultEnabled true is not allowed"
+                f"{manifest}: defaultEnabled true is not allowed for local or internal features"
             )
         if "internal" in data and not isinstance(data["internal"], bool):
             raise SelectionError(f"{manifest}: internal must be a boolean")
@@ -123,6 +124,7 @@ def discover_features(root: pathlib.Path) -> dict[str, Feature]:
             requires=_normalize_ids(data.get("requires"), field="requires", manifest=manifest),
             conflicts=_normalize_ids(data.get("conflicts"), field="conflicts", manifest=manifest),
             local=local,
+            default_enabled=data.get("defaultEnabled") is True,
         )
 
     for feature in features.values():
@@ -194,6 +196,8 @@ def read_current_selection(
     *,
     features_root: pathlib.Path | None = None,
 ) -> list[str]:
+    if not config_path.exists():
+        return [feature.id for feature in features.values() if feature.default_enabled]
     data = read_config_object(config_path)
     enabled = data.get("enabled", [])
     if not isinstance(enabled, list):

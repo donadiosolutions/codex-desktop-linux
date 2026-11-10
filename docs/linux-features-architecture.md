@@ -10,7 +10,11 @@ The manifest `id` must equal the declaring feature directory's final name:
 roots. Discovery checks the declaration path, not a symlink target's name, and
 reports mismatches without renaming directories or migrating private features.
 
-Features are always disabled by default. Enable them only in the gitignored
+Public repository features may declare `"defaultEnabled": true`; omission means
+`false`. Defaults apply only when the local `features.json` does not exist.
+An explicit `enabled` array replaces the defaults, including `[]` to disable all
+features. Existing configurations retain their selection. The example file is
+a template, not a fallback configuration. Enable features in the gitignored
 configuration:
 
 ```json
@@ -28,8 +32,8 @@ remains enabled for updater rebuilds because its validated snapshot is included
 in the custom package's minimal update-builder.
 
 Known retired IDs and their aliases are discarded during config loading. Other
-unknown enabled IDs, default-enabled manifests, unmet requirements, and
-conflicts are errors. Strict configuration reads (`strictConfig: true`),
+unknown enabled IDs, default-enabled local/internal manifests, unmet requirements,
+and conflicts are errors. Strict configuration reads (`strictConfig: true`),
 including native package plans, also reject duplicate enabled IDs and malformed
 settings. Non-strict reads warn and ignore malformed settings entries (or the
 whole malformed settings container) and deduplicate enabled IDs.
@@ -77,7 +81,7 @@ Manifest fields:
 |---|---|
 | `id` | Stable configuration ID matching the directory name |
 | `title`, `description` | User-facing wizard and documentation text |
-| `defaultEnabled` | Omitted means `false`; an explicit value must be boolean `false`, including local and internal features |
+| `defaultEnabled` | Omitted means `false`; explicit values must be booleans; `true` is allowed only for public repository features and applies without local config |
 | `internal` | Optional boolean for build-owned plumbing hidden from public feature selection; omission means `false`, and explicit `null` or non-boolean values are rejected |
 | `entrypoints.patchDescriptors` | Optional ASAR descriptor module |
 | `entrypoints.stageHook` | Last-resort app staging script |
@@ -148,9 +152,9 @@ linux-features/local/my-feature/
 └── test.js
 ```
 
-They use the same validation and disabled-by-default contract as repository
-features. Keep source and resources inside the feature directory, use a unique
-ID, and do not rely on generated `codex-app/` paths. Local features are included
+They use the same validation as repository features, but cannot declare
+`defaultEnabled: true`. Keep source and resources inside the feature directory,
+use a unique ID, and do not rely on generated `codex-app/` paths. Local features are included
 in the installed package/update-builder only when enabled.
 
 ## ASAR descriptors

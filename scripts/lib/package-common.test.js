@@ -309,7 +309,7 @@ test("update-builder carries the shared feature compatibility registry", (t) => 
   const builder = path.join(root, "builder");
 
   runPackageCommon(
-    `CODEX_LINUX_FEATURES_CONFIG=${JSON.stringify(path.join(repoRoot, "linux-features/features.example.json"))} stage_update_builder_linux_features_tree ${JSON.stringify(builder)}`,
+    `CODEX_LINUX_FEATURES_CONFIG=${JSON.stringify(path.join(repoRoot, "tests/fixtures/linux-features/disabled.json"))} stage_update_builder_linux_features_tree ${JSON.stringify(builder)}`,
     root,
   );
 
@@ -326,7 +326,7 @@ test("update-builder carries the shared feature compatibility registry", (t) => 
         encoding: "utf8",
         env: {
           ...process.env,
-          CODEX_LINUX_FEATURES_CONFIG: path.join(builder, "linux-features/features.example.json"),
+          CODEX_LINUX_FEATURES_CONFIG: path.join(repoRoot, "tests/fixtures/linux-features/disabled.json"),
         },
       },
     ),

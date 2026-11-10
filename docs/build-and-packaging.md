@@ -107,8 +107,9 @@ Useful diagnostics:
 
 ## Baseline ASAR invariant
 
-`linux-features/features.example.json` contains no enabled features. For that
-configuration, enabled-feature descriptors are empty; required core descriptors
+Use an explicit configuration containing `{"enabled": []}` for a feature-free
+build; `linux-features/features.example.json` includes the default recovery
+feature. With an empty selection, enabled-feature descriptors are empty; required core descriptors
 are still discovered independently. The installer skips ASAR extraction only
 when both sets are empty:
 

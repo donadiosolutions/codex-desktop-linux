@@ -10,6 +10,7 @@ const test = require("node:test");
 
 const {
   enabledFeatureIdsFromBuildInfo,
+  featuresJsonSummary,
   disabledLinuxFeatureCleanupHooks,
   discoverLinuxFeatureManifests,
   enabledLinuxFeaturesConfig,
@@ -51,7 +52,7 @@ test("internal accepts only omission or booleans for repository and local manife
   }
 });
 
-test("defaultEnabled accepts only omission or boolean false for repository, local, and internal features", (t) => {
+test("defaultEnabled accepts booleans for public features and keeps local/internal opt-in", (t) => {
   for (const origin of ["repo", "local", "internal"]) {
     for (const scenario of manifestCases.defaultEnabled) {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), `codex-feature-default-${origin}-${scenario.label}-`));
@@ -63,19 +64,51 @@ test("defaultEnabled accepts only omission or boolean false for repository, loca
       fs.writeFileSync(path.join(featureDir, "feature.json"), JSON.stringify(manifest));
       fs.writeFileSync(path.join(featureDir, "README.md"), "# Default fixture\n");
       fs.writeFileSync(path.join(root, "features.json"), '{"enabled":[]}');
-      if (scenario.error) {
+      const error = scenario.error ?? (scenario.value === true && origin !== "repo"
+        ? "defaultEnabled true is not allowed" : null);
+      if (error) {
         assert.throws(() => discoverLinuxFeatureManifests({ featuresRoot: root }), (failure) => {
-          assert.ok(failure.message.includes(scenario.error), failure.message);
+          assert.ok(failure.message.includes(error), failure.message);
           assert.match(failure.message, /probe/);
           return true;
         });
       } else {
         const [feature] = discoverLinuxFeatureManifests({ featuresRoot: root });
-        assert.equal(feature.manifest.defaultEnabled, false);
+        assert.equal(feature.manifest.defaultEnabled, scenario.value === true);
         assert.deepEqual(loadEnabledLinuxFeatures({ featuresRoot: root }), []);
       }
     }
   }
+});
+
+test("missing local config uses public defaults; explicit selections override them exactly", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-feature-default-selection-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const [id, defaultEnabled, requires] of [
+    ["default-on", true, ["dependency"]], ["dependency", false, []], ["opt-in", false, []],
+  ]) {
+    const dir = path.join(root, id);
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, "feature.json"), JSON.stringify({ id, defaultEnabled, requires }));
+    fs.writeFileSync(path.join(dir, "README.md"), `# ${id}\n`);
+  }
+  // An example is documentation, not local configuration or a source of defaults.
+  fs.writeFileSync(path.join(root, "features.example.json"), '{"enabled":["opt-in"]}');
+  for (const strictConfig of [false, true]) {
+    assert.deepEqual(linuxFeaturesConfig({ featuresRoot: root, strictConfig }).enabled, ["dependency", "default-on"]);
+  }
+  assert.deepEqual(loadEnabledLinuxFeatures({ featuresRoot: root }).map((item) => item.id), ["dependency", "default-on"]);
+  assert.equal(featuresJsonSummary({ featuresRoot: root }).find((item) => item.id === "default-on").defaultEnabled, true);
+  const configPath = path.join(root, "features.json");
+  for (const enabled of [[], ["opt-in"]]) {
+    fs.writeFileSync(configPath, JSON.stringify({ enabled }));
+    assert.deepEqual(linuxFeaturesConfig({ featuresRoot: root, strictConfig: true }).enabled, enabled);
+    assert.deepEqual(loadEnabledLinuxFeatures({ featuresRoot: root }).map((item) => item.id), enabled);
+  }
+  fs.writeFileSync(configPath, '{"enabled":false}');
+  assert.throws(() => linuxFeaturesConfig({ featuresRoot: root, strictConfig: true }), /enabled array/);
+  assert.deepEqual(linuxFeaturesConfig({ featuresRoot: root }).enabled, []);
+  assert.throws(() => linuxFeaturesConfig({ featuresRoot: root, featuresConfigPath: path.join(root, "missing.json"), strictConfig: true }), /file does not exist/);
 });
 
 test("feature IDs match their declaring directory in public, local, and alternate roots", (t) => {
