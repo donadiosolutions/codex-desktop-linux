@@ -71,6 +71,7 @@ for (const [platform, ozone, nativeKWin, constrained] of [
     mascotSize: { width: 112, height: 87 }, layoutMode: "native", placement: "top-end",
     realtimeCaptionAboveMascotPx: 0,
     codexPetOverlayIsNativeKWin() { return nativeKWin; },
+    codexPetOverlayIsNativeHyprland() { return false; },
     codexPetOverlayKWinDrawBounds(value) { assert.equal(this, controller); assert.equal(value, display);
       return { x: 10, y: 20, width: 640, height: 480 }; },
     codexPetOverlayKWinLayoutOptions(options) { assert.equal(this, controller);

@@ -1352,12 +1352,6 @@ function applyLinuxRemoteMobileReasoningSummaryPatch(source) {
   }
   const functionHeader = turnStartPrefix.match(/async function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*)[,)]/u);
   const helperName = functionHeader?.[1];
-  if (helperName == null) {
-    console.warn(
-      "WARN: Could not find reasoning-summary turn-start helper - skipping Linux remote mobile summary patch",
-    );
-    return source;
-  }
   const callerPrefix =
     `(?<prefix>${helperName == null ? "\\}" : escapeRegExp(helperName)}\\((?<manager>[A-Za-z_$][\\w$]*),` +
       `[A-Za-z_$][\\w$]*,[A-Za-z_$][\\w$]*,[A-Za-z_$][\\w$]*,[A-Za-z_$][\\w$]*,` +
