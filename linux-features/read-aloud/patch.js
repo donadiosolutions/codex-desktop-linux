@@ -23,7 +23,6 @@ const ASSISTANT_RENDER_SHARED_PROPS = [
   "savedContentResponseId",
   "after",
   "compactAttachment",
-  "electronAfter",
   "autoReviewStats",
   "hookStats",
   "completedThreadGoal",
@@ -46,9 +45,11 @@ const ASSISTANT_RENDER_SHARED_PROPS = [
   "showTimestampWithoutActions",
   "timestampHoverOnly",
   "trailingActions",
+  "renderUsedSkillsDetails",
 ];
 const ASSISTANT_RENDER_LIVE_PROPS = [
   "turnId",
+  "isReadOnly",
   "showShimmer",
   "getVisualizeTurnTriggerType",
   "allowCopyWhileStreaming",

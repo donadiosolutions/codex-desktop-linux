@@ -61,7 +61,7 @@ function currentCopilotReasoningEffortDropdownFixture() {
 
 function currentCopilotReasoningSlashFixture() {
   return [
-    'function reasoningCommand(e){let j=e.requiresAuth??!0,M=(0,a.tn)(C),R=ready(T),P=M?.authMethod==="copilot";h=S.formatMessage({id:"composer.reasoningSlashCommand.title",defaultMessage:"Reasoning"});let H=j&&R&&!P&&!0;return g=[j,R,P],v={id:"reasoning",title:h,description:p,requiresEmptyComposer:!1,Icon:f,submenu:B,enabled:H,dependencies:g},(0,rq.r6)(v),null}',
+    'function reasoningCommand(e){let S=(0,R.tn)(I.hostId),A=S?.requiresAuth??!0,j=ready(T),T=S?.authMethod==="copilot";let L=A&&j&&!T;return v={id:"reasoning",title:h,description:p,requiresEmptyComposer:!1,Icon:f,submenu:B,enabled:L,dependencies:g},(0,rq.r6)(v),null}',
     "function permissionGate(){let A=O.length>0,j=!w&&!A;return{shouldAutoDenyPermissionRequest:j}}",
   ].join("");
 }
@@ -208,8 +208,8 @@ test("allows Copilot auth to use the current app effort controls", () => {
   assert.match(dropdownPatched, /reasoningEffortDisabled:tr/);
   assert.doesNotMatch(dropdownPatched, /authMethod==="copilot"/);
   assert.match(dropdownPatched, /let q=a&&b&&!0;/);
-  assert.match(slashPatched, /let H=j&&R&&!0\/\*codexLinuxCopilotReasoningEffortUi\*\/;/);
-  assert.doesNotMatch(slashPatched, /H=j&&R&&!P&&!0/);
+  assert.match(slashPatched, /let L=A&&j&&!0\/\*codexLinuxCopilotReasoningEffortUi\*\/;/);
+  assert.doesNotMatch(slashPatched, /L=A&&j&&!T/);
   assert.match(slashPatched, /A=O\.length>0,j=!w&&!A/);
   assert.equal(matchesCopilotReasoningEffortDropdownContract(dropdownPatched), true);
   assert.equal(matchesCopilotReasoningSlashContract(slashPatched), true);
@@ -238,8 +238,8 @@ test("dropdown gate that no longer reaches the dropdown is rejected byte-identic
 test("mismatched or unowned Copilot slash command gates warn and remain byte-identical", () => {
   const base = currentCopilotReasoningSlashFixture();
   const cases = [
-    [base.replace("H=j&&R&&!P&&!0;", "H=j&&R&&!z&&!0;"), /reasoning slash command auth gate/],
-    [base.replace("enabled:H,", "enabled:other,"), /reasoning slash command gate/],
+    [base.replace("L=A&&j&&!T;", "L=A&&j&&!z;"), /reasoning slash command auth gate/],
+    [base.replace("enabled:L,", "enabled:other,"), /reasoning slash command gate/],
     [base + base, /duplicate current compiled Copilot reasoning slash command gates/],
   ];
   for (const [source, warning] of cases) {
@@ -289,7 +289,7 @@ test("enabled feature descriptors patch rspack async chunks", () => {
       assert.deepEqual(warnings, []);
       assert.match(readAsset(extractedDir, "24191.a.js"), /codexLinuxCopilotReasoningEffortModelList\*\/\[\.\.\.e\]\.filter/);
       assert.match(readAsset(extractedDir, "104066.c.js"), /oy=\/\*codexLinuxCopilotReasoningEffortUi\*\//);
-      assert.match(readAsset(extractedDir, "589850.d.js"), /H=j&&R&&!0\/\*codexLinuxCopilotReasoningEffortUi\*\//);
+      assert.match(readAsset(extractedDir, "589850.d.js"), /L=A&&j&&!0\/\*codexLinuxCopilotReasoningEffortUi\*\//);
       assert.equal(readAsset(extractedDir, "258607.b.js"), asChunk(currentModelAndReasoningPersistenceFixture()));
     });
   });

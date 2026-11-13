@@ -54,7 +54,9 @@ const QUALIFICATION_WARNINGS_KEY = Symbol.for(QUALIFICATION_WARNINGS_SYMBOL_KEY)
 const ESTABLISHMENT_LOGGED_KEY = Symbol.for(ESTABLISHMENT_LOGGED_SYMBOL_KEY);
 
 function tempDirectory(t, prefix) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  // Watchbound reports physical event paths. TMPDIR may itself be a symlink
+  // (for example a disk-backed cache), so fixtures must emit physical paths too.
+  const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   return directory;
 }
@@ -332,6 +334,30 @@ test("the current OpenAI Parcel route hands the working tree to the Watchbound h
   assert.equal(partial.changed, 0);
   assert.equal(partial.source, `${helperOnly.source}${CURRENT_PARCEL_HELPER}` +
     `${CURRENT_GIT_ROUTE_PREFIX}${CURRENT_PARCEL_ROUTE}${CURRENT_GIT_ROUTE_SUFFIX}`);
+});
+
+test("signed 26.1111 directory pruning policy retains the correlated Watchbound handoff", (t) => {
+  const worker = currentWorkerSource().replace(
+    "pruneIgnoredDirectories:!0",
+    'pruneIgnoredDirectories:"darwin"===process.platform?"observed":"all"',
+  );
+  const candidate = currentBundlePair(t, { worker });
+  const first = patchWorker(candidate.extractedDir);
+  assert.equal(first.matched, 2, first.reason);
+  assert.equal(first.changed, 2);
+  const patched = readBundlePair(candidate).get("worker.js");
+  assert.ok(patched.includes('pruneIgnoredDirectories:"darwin"===process.platform?"observed":"all"'));
+  assert.ok(patched.includes(CURRENT_WATCHBOUND_ROUTE));
+  assert.equal(patchWorker(candidate.extractedDir).changed, 0);
+  for (const policy of ['"none"', '"darwin"===process.platform?"all":"observed"']) {
+    const invalid = currentBundlePair(t, { worker: worker.replace(
+      '"darwin"===process.platform?"observed":"all"', policy,
+    ) });
+    const before = readBundlePair(invalid);
+    const { value } = captureWarns(() => patchWorker(invalid.extractedDir));
+    assert.equal(value.matched, 0);
+    assert.deepEqual(readBundlePair(invalid), before);
+  }
 });
 
 test("correlates minified aliases instead of pinning their spellings", () => {

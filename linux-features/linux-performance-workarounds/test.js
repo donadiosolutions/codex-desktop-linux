@@ -63,7 +63,6 @@ test("linux-performance-workarounds remains an opt-in renderer-only feature", ()
   assert.deepEqual(
     descriptors.map(({ id, phase }) => [id, phase]),
     [
-      ["plugin-cli-streaming-hash", "extracted-app:pre-webview"],
       ["feature-enablement-dedup", "main-bundle"],
       ["sidebar-scroll", "webview-asset"],
       ["app-shell-tab-layout", "webview-asset"],
@@ -221,3 +220,22 @@ test(
     assert.ok(stylesheets.every((source) => matchesLinuxMarkdownAnimationPerformanceContract(source)));
   },
 );
+
+// The signed 26.1111 package provisions a dedicated Chrome extension host;
+// the previous whole-file CLI hashing workaround has no remaining owner.
+test("signed upstream Chrome host no longer provisions or hashes a plugin CLI", {
+  skip: process.env.CODEX_SIGNED_EXTRACTED_APP == null,
+}, () => {
+  const build = path.join(process.env.CODEX_SIGNED_EXTRACTED_APP, ".vite", "build");
+  const bundles = fs.readdirSync(build).filter(name => name.endsWith(".js"))
+    .map(name => fs.readFileSync(path.join(build, name), "utf8"));
+  assert.ok(bundles.length > 0);
+  const all = bundles.join("\n");
+  assert.doesNotMatch(all, /chrome_plugin_app_server_processes_stopped/u);
+  assert.doesNotMatch(all, /\.createHash\)\(["`]sha256["`]\)\.update\(await[^;{}]{0,200}\.readFile\(/u);
+  const hosts = bundles.filter(source => source.includes('"chrome_native_host_processes_stopped"'));
+  assert.equal(hosts.length, 1);
+  assert.match(hosts[0], /case"linux":return\{architecture:[\w$]+,filename:"extension-host",platform:"linux"\}/u);
+  assert.match(hosts[0], /"extension-host",[\w$]+\.platform,[\w$]+\.architecture,[\w$]+\.filename/u);
+  assert.ok(!descriptors.some(({ id }) => id === "plugin-cli-streaming-hash"));
+});

@@ -10,7 +10,7 @@ const PERSISTENCE_NEEDLES = ["setDefaultModelAndReasoningEffort:", ".setDefaultM
 const MODEL_LIST_NEEDLES = ['description:"medium effort"', "supportedReasoningEfforts"];
 const DROPDOWN_NEEDLES = ["reasoningEffortDisabled:", "?.disabledReason!=null"];
 const SLASH_NEEDLES = [
-  'id:"composer.reasoningSlashCommand.title"',
+  'id:"reasoning"',
   "requiresEmptyComposer",
   'authMethod==="copilot"',
 ];
@@ -195,7 +195,7 @@ function applyCopilotReasoningEffortDropdownPatch(source) {
 function analyzeCompiledCopilotReasoningSlashContract(source) {
   const clean = findAllMatches(source, new RegExp(
     `let (?<enabled>${JS_IDENT})=(?<requires>${JS_IDENT})&&(?<ready>${JS_IDENT})&&!` +
-      `(?<copilot>${JS_IDENT})&&!0;`,
+      `(?<copilot>${JS_IDENT});`,
   ));
   const patched = findAllMatches(source, new RegExp(
     `let (?<enabled>${JS_IDENT})=(?<requires>${JS_IDENT})&&(?<ready>${JS_IDENT})&&!0` +

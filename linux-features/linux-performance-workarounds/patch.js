@@ -1,7 +1,6 @@
 "use strict";
 
 const { extractedAppPatch, mainBundlePatch, webviewAssetPatch } = require("../../scripts/patches/descriptor.js");
-const { patchPluginCliHash } = require("./plugin-cli-hash.js");
 const { applyFeatureEnablementDedupPatch } = require("./feature-enablement.js");
 const {
   SIDEBAR_ASSET_NEEDLES,
@@ -14,13 +13,6 @@ const {
 } = require("./implementation.js");
 
 module.exports = [
-  extractedAppPatch({
-    id: "plugin-cli-streaming-hash",
-    phase: "extracted-app:pre-webview",
-    order: 20_080,
-    ciPolicy: "optional",
-    apply: patchPluginCliHash,
-  }),
   mainBundlePatch({
     id: "feature-enablement-dedup",
     order: 20_090,

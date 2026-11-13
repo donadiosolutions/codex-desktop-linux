@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const vm = require("node:vm");
 const {
   createPatchReport,
   enabledFeatureFailuresFromReport,
@@ -17,32 +18,19 @@ const {
   requiredPatchNamesForProfile,
 } = require("./runner.js");
 const { findMainProcessChunks } = require("./lib/assets.js");
-const {
-  findQuitLifecycleContract,
-} = require("./core/quit-confirmation-focus/patch.js");
+const { findMatchingBrace } = require("./lib/minified-js.js");
 
 const emptyConfig = path.join(__dirname, "..", "..", "tests", "fixtures", "linux-features", "disabled.json");
 
-test("the official Linux baseline registers the required quit compatibility patch", () => {
-  assert.deepEqual(
-    corePatchDescriptors().map(({ id, phase, ciPolicy }) => ({ id, phase, ciPolicy })),
-    [{
-      id: "quit-confirmation-focus",
-      phase: "main-bundle",
-      ciPolicy: "required-upstream",
-    }],
-  );
-  assert.deepEqual(allPatchPolicies({ featuresConfigPath: emptyConfig }), [{
-    name: "quit-confirmation-focus",
-    ciPolicy: "required-upstream",
-    phase: "main-bundle",
-  }]);
+test("the official Linux baseline needs no core compatibility patch", () => {
+  assert.deepEqual(corePatchDescriptors(), []);
+  assert.deepEqual(allPatchPolicies({ featuresConfigPath: emptyConfig }), []);
   assert.deepEqual(requiredPatchNamesForProfile("upstream-build", {
     featuresConfigPath: emptyConfig,
-  }), ["quit-confirmation-focus"]);
+  }), []);
 });
 
-test("the signed baseline needs one quit repair and retains the retired shell replacement", {
+test("the signed baseline owns quit approval and shell startup", {
   skip: process.env.CODEX_SIGNED_EXTRACTED_APP == null,
 }, () => {
   const mainProcess = findMainProcessChunks(process.env.CODEX_SIGNED_EXTRACTED_APP);
@@ -62,44 +50,64 @@ test("the signed baseline needs one quit repair and retains the retired shell re
     return owners[0].source;
   };
 
-  const quitOwners = chunks
-    .map((chunk) => ({ ...chunk, contract: findQuitLifecycleContract(chunk.source) }))
-    .filter(({ contract }) => contract != null);
-  assert.equal(quitOwners.length, 1, "Expected one signed before-quit owner tied to quit state");
-  assert.equal(
-    quitOwners[0].contract.approvalConsumed,
-    false,
-    "The signed before-quit owner must reproduce the missing approval consumption",
-  );
+  const owner = uniqueOwner([
+    "canQuitWithoutPrompt(){return this.allowQuitWithoutPrompt}",
+    "markQuitApproved(){this.allowQuitWithoutPrompt=!0}",
+    "hasPendingLocalGitReviewComments:",
+  ], "upstream quit coordinator");
+  const id = "[A-Za-z_$][\\w$]*";
+  const headers = [...owner.matchAll(new RegExp(
+    `function\\(\\{isWindows:${id},quitState:(?<state>${id}),windows:(?<windows>${id}),` +
+    `[^{}]+hasPendingLocalGitReviewComments:(?<pending>${id}),[^{}]+\\}\\)\\{`, "gu"))];
+  assert.equal(headers.length, 1, "Expected one current quit lifecycle owner");
+  const header = headers[0];
+  const open = header.index + header[0].length - 1;
+  const body = owner.slice(open, findMatchingBrace(owner, open) + 1);
+  const handlers = [...body.matchAll(new RegExp(`(?<electron>${id})\\.app\\.on\\("before-quit",(?<event>${id})=>\\{`, "gu"))];
+  assert.equal(handlers.length, 1);
+  const handler = handlers[0];
+  const handlerOpen = handler.index + handler[0].length - 1;
+  const handlerBody = body.slice(handlerOpen, findMatchingBrace(body, handlerOpen) + 1);
+  const { state, windows, pending } = header.groups;
+  const { electron, event } = handler.groups;
+  const quitting = handlerBody.match(new RegExp(`(${id})=!0,${windows}\\.markAppQuitting\\(\\)\\}$`, "u"))?.[1];
+  assert.ok(quitting, "Expected final accepted quit transition");
+  assert.ok(handlerBody.includes(`!${quitting}&&!${state}.canQuitWithoutPrompt()`));
+  assert.ok(handlerBody.includes(`${pending}()`));
+  assert.ok(handlerBody.includes(`${state}.markQuitApproved()`));
+  const formatter = handlerBody.match(new RegExp(`\\(0,(${id})\\.F\\$\\)`, "u"))?.[1];
+  const logger = handlerBody.match(new RegExp(`\\(0,(${id})\\.tZQ\\)`, "u"))?.[1];
+  const privacy = handlerBody.match(new RegExp(`${id}\\?\\?(${id})\\(\\{electronAppPath`, "u"))?.[1];
+  assert.ok(formatter && logger && privacy);
 
-  const quitPatch = corePatchDescriptors().find(({ id }) => id === "quit-confirmation-focus");
-  assert.ok(quitPatch, "Expected the required quit patch descriptor");
-  const originalWarn = console.warn;
-  console.warn = () => {};
-  let patchedChunks;
-  try {
-    patchedChunks = chunks.map((chunk) => ({
-      ...chunk,
-      source: quitPatch.apply(chunk.source),
-    }));
-  } finally {
-    console.warn = originalWarn;
-  }
-  const changed = patchedChunks.filter(({ source }, index) => source !== chunks[index].source);
-  assert.deepEqual(
-    changed.map(({ name }) => name),
-    [quitOwners[0].name],
-    "The required quit patch must change only the unique signed before-quit owner",
-  );
-  const patchedQuitOwners = patchedChunks
-    .map((chunk) => findQuitLifecycleContract(chunk.source))
-    .filter((contract) => contract != null);
-  assert.equal(patchedQuitOwners.length, 1, "Expected one patched signed before-quit owner");
-  assert.equal(
-    patchedQuitOwners[0].approvalConsumed,
-    true,
-    "The patched signed before-quit owner must consume the coordinator approval",
-  );
+  // Run the signed handler itself with Electron and application services stubbed.
+  const run = ({ approved = false, pendingComments = false, answer = 0,
+    alreadyQuitting = false, privacyRequest = false } = {}) => {
+    let prevented = 0, marked = 0, prompted = 0, approvals = 0;
+    const sandbox = {
+      process: { platform: privacyRequest ? "darwin" : "linux", env: {} },
+      [state]: { canQuitWithoutPrompt: () => approved, markQuitApproved: () => { approvals++; } },
+      [windows]: { markAppQuitting: () => { marked++; } },
+      [pending]: () => pendingComments,
+      [quitting]: alreadyQuitting,
+      [electron]: { app: { isPackaged: true, getAppPath: () => "/app", getName: () => "ChatGPT" },
+        dialog: { showMessageBoxSync: () => { prompted++; return answer; } } },
+      [formatter]: { F$: () => ({ formatMessage: () => "message" }) },
+      [logger]: { tZQ: () => ({ warning() {} }) },
+      [privacy]: () => ({ isPrivacySettingsTerminationRequest: () => privacyRequest }),
+    };
+    for (const match of handlerBody.matchAll(new RegExp(`formatMessage\\(\\{\\.\\.\\.(${id})|formatMessage\\((${id})\\)`, "gu"))) {
+      sandbox[match[1] ?? match[2]] = {};
+    }
+    vm.runInNewContext(`(${event}=>${handlerBody})`, sandbox)({ preventDefault() { prevented++; } });
+    return { prevented, marked, prompted, approvals };
+  };
+  assert.deepEqual(run(), { prevented: 0, marked: 1, prompted: 0, approvals: 0 });
+  assert.deepEqual(run({ approved: true, pendingComments: true }), { prevented: 0, marked: 1, prompted: 0, approvals: 0 });
+  assert.deepEqual(run({ pendingComments: true }), { prevented: 1, marked: 0, prompted: 1, approvals: 0 });
+  assert.deepEqual(run({ pendingComments: true, answer: 1 }), { prevented: 0, marked: 1, prompted: 1, approvals: 1 });
+  assert.deepEqual(run({ pendingComments: true, alreadyQuitting: true }), { prevented: 0, marked: 1, prompted: 0, approvals: 0 });
+  assert.deepEqual(run({ approved: true, privacyRequest: true }), { prevented: 1, marked: 0, prompted: 0, approvals: 0 });
 
   const shellOwner = uniqueOwner([
     "main app.whenReady resolved",
@@ -139,7 +147,7 @@ test("runner context exposes enabled feature IDs", () => {
   }
 });
 
-test("required core drift fails closed without changing unmatched application assets", () => {
+test("empty core registry preserves unmatched application assets", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "runner-baseline-"));
   try {
     const mainDir = path.join(root, ".vite", "build");
@@ -159,9 +167,7 @@ test("required core drift fails closed without changing unmatched application as
     });
     assert.deepEqual(fs.readFileSync(main), mainBefore);
     assert.deepEqual(fs.readFileSync(webview), webviewBefore);
-    assert.equal(report.patches.length, 1);
-    assert.equal(report.patches[0].name, "quit-confirmation-focus");
-    assert.equal(report.patches[0].status, "failed-required");
+    assert.deepEqual(report.patches, []);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

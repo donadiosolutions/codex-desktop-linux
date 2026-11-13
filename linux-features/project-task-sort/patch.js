@@ -2,20 +2,21 @@
 
 const identifier = String.raw`[A-Za-z_$][\w$]*`;
 // The timestamp selector is compiled inline into the project task sorter:
-// `timestamp:function(task,mode){switch(task.kind){case"local":…;case"remote":…}}(task,mode)`.
+// `timestamp:function(task,mode){if("local"===task.kind)return …}(task,mode)`.
 const comparatorPattern = new RegExp(
-  String.raw`function(?: ${identifier})?\((${identifier}),(${identifier})\)\{switch\(\1\.kind\)\{case"local":((?:(?!case"|switch\(|function\b)[^]){0,800}?);case"remote":return\(\("updated_at"===\2\?\1\.task\.updated_at\?\?\1\.task\.created_at:\1\.task\.created_at\?\?\1\.task\.updated_at\)\?\?0\)\*1e3\}\}`,
+  String.raw`function(?: ${identifier})?\((${identifier}),(${identifier})\)\{if\("local"===\1\.kind\)return ((?:(?!function\b)[^]){0,800}?)\}(?=\(${identifier},${identifier}\))`,
   "g",
 );
 
 function currentLocalTimestamp(task, mode) {
-  return `if(null==${task}.summary)return ${task}.at;` +
-    `return"updated_at"===${mode}?${task}.summary.recencyAt??${task}.summary.updatedAt:${task}.summary.createdAt`;
+  return `null==${task}.summary?${task}.at:"updated_at"===${mode}?` +
+    `${task}.summary.recencyAt??${task}.summary.updatedAt:${task}.summary.createdAt`;
 }
 
 function patchedLocalTimestamp(task, mode) {
-  return currentLocalTimestamp(task, mode) +
-    `??(/^local:[\\da-f]{8}-[\\da-f]{4}-7[\\da-f]{3}-[89ab][\\da-f]{3}-[\\da-f]{12}$/i.test(${task}.key)?Number.parseInt(${task}.key.slice(6).replaceAll("-","").slice(0,12),16):${task}.summary.recencyAt??${task}.summary.updatedAt)`;
+  return `null==${task}.summary?${task}.at:"updated_at"===${mode}?` +
+    `${task}.summary.recencyAt??${task}.summary.updatedAt:${task}.summary.createdAt??` +
+    `(/^local:[\\da-f]{8}-[\\da-f]{4}-7[\\da-f]{3}-[89ab][\\da-f]{3}-[\\da-f]{12}$/i.test(${task}.key)?Number.parseInt(${task}.key.slice(6).replaceAll("-","").slice(0,12),16):${task}.summary.recencyAt??${task}.summary.updatedAt)`;
 }
 
 function comparatorContracts(source) {
@@ -66,7 +67,7 @@ const descriptors = [
     phase: "webview-asset",
     order: 20_900,
     ciPolicy: "optional",
-    assetNeedles: ['case"remote":return(("updated_at"===', 'case"local":if(null=='],
+    assetNeedles: ['if("local"===', 'summary.recencyAt'],
     assetMatch: matchesProjectTaskSortContract,
     missingDescription: "unique project task timestamp comparator",
     skipDescription: "project task creation timestamp feature patch",
