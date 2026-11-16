@@ -1,16 +1,17 @@
 "use strict";
 
 const identifier = String.raw`[A-Za-z_$][\w$]*`;
-// The timestamp selector is compiled inline into the project task sorter:
-// `timestamp:function(task,mode){if("local"===task.kind)return …}(task,mode)`.
+// The timestamp selector is compiled inline into the project task sorter.
+// The current release has a local-only selector; remote task timestamps are
+// no longer handled by this function.
 const comparatorPattern = new RegExp(
-  String.raw`function(?: ${identifier})?\((${identifier}),(${identifier})\)\{if\("local"===\1\.kind\)return ((?:(?!function\b)[^]){0,800}?)\}(?=\(${identifier},${identifier}\))`,
+  String.raw`function(?: ${identifier})?\((${identifier}),(${identifier})\)\{if\("local"===\1\.kind\)return ((?:\{\d+\}|[^{}]){1,1200}?)\}`,
   "g",
 );
 
 function currentLocalTimestamp(task, mode) {
-  return `null==${task}.summary?${task}.at:"updated_at"===${mode}?` +
-    `${task}.summary.recencyAt??${task}.summary.updatedAt:${task}.summary.createdAt`;
+  return `null==${task}.summary?${task}.at:` +
+    `"updated_at"===${mode}?${task}.summary.recencyAt??${task}.summary.updatedAt:${task}.summary.createdAt`;
 }
 
 function patchedLocalTimestamp(task, mode) {
@@ -67,7 +68,7 @@ const descriptors = [
     phase: "webview-asset",
     order: 20_900,
     ciPolicy: "optional",
-    assetNeedles: ['if("local"===', 'summary.recencyAt'],
+    assetNeedles: ["timestamp:function", "summary.recencyAt??", "summary.createdAt"],
     assetMatch: matchesProjectTaskSortContract,
     missingDescription: "unique project task timestamp comparator",
     skipDescription: "project task creation timestamp feature patch",

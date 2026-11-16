@@ -198,7 +198,7 @@ test("launcher hook shell syntax is valid", () => {
 // alias, double-quoted strings and `null==x` comparisons as in the signed bundle.
 const READY = 'async function boot(){let eT=Date.now();if(await ea.app.whenReady(),ew("main app.whenReady resolved",eT),!1){}return eT}';
 const FETCH = 'class Fetcher{constructor(){this.options={applicationNetwork:ea.net}}async performDesktopFetch(){let o={},n="GET",i=null,l="https://chatgpt.com/wham/usage",h={aborted:!1,addEventListener(){},removeEventListener(){}},m=!0,v=null,s="follow",C=()=>null,d=!1,e;if(null==i){let t={method:n,headers:o,body:C(),redirect:null==v?s:"error",signal:h,credentials:m?"include":"same-origin"};(d||!m&&(0,Pv.$o)(l,n))&&(t.credentials="omit"),e=await this.options.applicationNetwork.fetch(l,t)}else e=await this.performProgressRequest({body:C(),headers:o,method:n,onUploadProgress:i,resolvedUrl:l,redirect:null==v?void 0:"error",signal:h,useSessionCookies:m});return e}';
-const REQUEST = 'performProgressRequest({body:e,headers:t,method:r,onUploadProgress:n,resolvedUrl:i,redirect:s,signal:a,useSessionCookies:o}){return new Promise((l,c)=>{let d=this.options.applicationNetwork.request({method:r,url:i,redirect:s,headers:t,useSessionCookies:o}),u=-1,h=(e,t)=>{e!==u&&(u=e,n({loaded:e,total:t}))};d.on("upload-progress",h);let p=()=>{d.off("upload-progress",h)},m=()=>{p(),a.removeEventListener("abort",g)},g=()=>{m(),d.abort(),c(new DOMException("The operation was aborted","AbortError"))};if(a.addEventListener("abort",g,{once:!0}),a.aborted)return void g();d.on("error",e=>{m(),c(e)}),d.on("response",e=>{p();let t=d.getUploadProgress();t.started&&h(t.current,t.total);let r=[];e.on("data",e=>{r.push(e)}),e.on("error",e=>{m(),c(e)}),e.on("end",()=>{m();let t=Buffer.concat(r),n=new Headers;for(let[t,r]of Object.entries(e.headers))for(let e of Array.isArray(r)?r:[r])n.append(t,e);l(new Response(0===t.length?null:t,{status:e.statusCode,statusText:e.statusMessage,headers:n}))})});let f=e instanceof ArrayBuffer?Buffer.from(e):e;d.end(f)})}}';
+const REQUEST = 'performProgressRequest({body:e,headers:t,method:r,onUploadProgress:n,resolvedUrl:i,redirect:s,signal:a,useSessionCookies:o}){return new Promise((l,c)=>{let d=this.options.applicationNetwork.request({method:r,url:i,redirect:s,headers:t,useSessionCookies:o}),u=-1,h=(e,t)=>{e!==u&&(u=e,n({loaded:e,total:t}))};d.on("upload-progress",h);let p=()=>{d.removeListener("upload-progress",h)},m=()=>{p(),a.removeEventListener("abort",f)},f=()=>{m(),d.abort(),c(new DOMException("The operation was aborted","AbortError"))};if(a.addEventListener("abort",f,{once:!0}),a.aborted)return void f();d.on("error",e=>{m(),c(e)}),d.on("response",e=>{p();let t=d.getUploadProgress();t.started&&h(t.current,t.total);let r=[];e.on("data",e=>{r.push(e)}),e.on("error",e=>{m(),c(e)}),e.on("end",()=>{m();let t=Buffer.concat(r),n=new Headers;for(let[t,r]of Object.entries(e.headers))for(let e of Array.isArray(r)?r:[r])n.append(t,e);l(new Response(0===t.length?null:t,{status:e.statusCode,statusText:e.statusMessage,headers:n}))})});let _=e instanceof ArrayBuffer?Buffer.from(e):e;d.end(_)})}}';
 
 function chunk(body) {
   return `exports.ids=[916],exports.modules={35575(e,t,r){"use strict";r.d(t,{boot:()=>boot,Fetcher:()=>Fetcher});var ea=r(4482),ew=()=>{},Pv={$o:()=>true};${body}}};`;
@@ -351,7 +351,7 @@ test("leaves an incomplete existing proxy helper set untouched", () => {
 test("routes current authenticated proxy desktop fetch shape through ClientRequest", async () => {
   const patched = applyPatchTwiceWithoutWarnings(applyAuthenticatedProxyPatch, CURRENT);
   assert.match(patched, /if\(null==i&&!codexLinuxProxyAuthEntry\(\)\)\{let t=/);
-  assert.match(patched, /codexLinuxAttachProxyAuthToRequest\(d\);let u=-1,h=\(e,t\)=>\{if\(n==null\)return;/);
+  assert.match(patched, /codexLinuxAttachProxyAuthToRequest\(d\);let u=-1,h=\(e,t\)=>\{null!=n&&e!==u/);
 
   let fetchCalls = 0;
   const plain = loadChunk(patched, {
@@ -397,7 +397,6 @@ test("routes current authenticated proxy desktop fetch shape through ClientReque
         request() {
           requestCalls += 1;
           const handlers = {};
-          let progressListenerRemoved = false;
           return {
             abort() {},
             end() {
@@ -424,15 +423,15 @@ test("routes current authenticated proxy desktop fetch shape through ClientReque
             getUploadProgress() {
               return { started: true, current: 2, total: 10 };
             },
-            on(event, handler) {
-              handlers[event] = handler;
-              return this;
-            },
-            off(event, handler) {
+            removeListener(event, handler) {
               if (handlers[event] === handler) {
                 delete handlers[event];
                 if (event === "upload-progress") uploadProgressCleanupCalls += 1;
               }
+              return this;
+            },
+            on(event, handler) {
+              handlers[event] = handler;
               return this;
             },
           };
@@ -475,13 +474,13 @@ test("authenticated-proxy current contracts fail closed when missing, duplicate,
 
 test("authenticated-proxy patched request contracts fail closed when damaged or duplicated", () => {
   const patched = applyAuthenticatedProxyPatch(CURRENT);
-  const patchedOwner = 'let d=this.options.applicationNetwork.request({method:r,url:i,redirect:s,headers:t,useSessionCookies:o});codexLinuxAttachProxyAuthToRequest(d);let u=-1,h=(e,t)=>{if(n==null)return;e!==u&&(u=e,n({loaded:e,total:t}))};d.on("upload-progress",h);';
+  const patchedOwner = "let d=this.options.applicationNetwork.request({method:r,url:i,redirect:s,headers:t,useSessionCookies:o});codexLinuxAttachProxyAuthToRequest(d);let u=-1,h=(e,t)=>{null!=n&&e!==u&&(u=e,n({loaded:e,total:t}))};d.on(\"upload-progress\",h)";
   assert.ok(patched.includes(patchedOwner));
 
   const variants = {
     mismatched: patched.replace("n({loaded:e,total:t})", "wrong({loaded:e,total:t})"),
-    truncated: patched.replace("(u=e,n({loaded:e,total:t}))};", "(u=e"),
-    partial: patched.replace("if(n==null)return;", ""),
+    truncated: patched.replace("(u=e,n({loaded:e,total:t}))}", "(u=e"),
+    partial: patched.replace("null!=n&&", ""),
     duplicate: patched.replace(patchedOwner, patchedOwner + patchedOwner),
     unready: patched.replace("(codexLinuxInstallProxyAuthHandler(ea),await ea.app.whenReady())", "await ea.app.whenReady()"),
   };

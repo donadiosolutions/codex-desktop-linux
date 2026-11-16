@@ -29,18 +29,20 @@ const REQUEST_PATTERN = new RegExp(
   `let (?<request>${JS_IDENT})=(?<owner>this\\.options\\.applicationNetwork)\\.request\\(` +
     `\\{method:(?<method>${JS_IDENT}),url:(?<url>${JS_IDENT}),redirect:(?<redirect>[^,{}]{1,120}),` +
     `headers:(?<headers>${JS_IDENT}),useSessionCookies:(?<cookies>${JS_IDENT})\\}\\),` +
-    `(?<last>${JS_IDENT})=-1,(?<progressHandler>${JS_IDENT})=\\((?<current>${JS_IDENT}),(?<total>${JS_IDENT})\\)=>\\{` +
-    `\\k<current>!==\\k<last>&&\\(\\k<last>=\\k<current>,(?<callback>${JS_IDENT})\\(\\{loaded:\\k<current>,total:\\k<total>\\}\\)\\)\\};` +
-    `\\k<request>\\.on\\("upload-progress",\\k<progressHandler>\\);`,
+    `(?<last>${JS_IDENT})=-1,(?<progressHandler>${JS_IDENT})=\\((?<loaded>${JS_IDENT}),(?<total>${JS_IDENT})\\)=>` +
+    `\\{\\k<loaded>!==\\k<last>&&\\(\\k<last>=\\k<loaded>,(?<callback>${JS_IDENT})` +
+    `\\(\\{loaded:\\k<loaded>,total:\\k<total>\\}\\)\\)\\};` +
+    `\\k<request>\\.on\\("upload-progress",\\k<progressHandler>\\)` ,
   "g",
 );
 const PATCHED_REQUEST_PATTERN = new RegExp(
   `let (?<request>${JS_IDENT})=this\\.options\\.applicationNetwork\\.request\\(` +
     `\\{method:${JS_IDENT},url:${JS_IDENT},redirect:[^,{}]{1,120},headers:${JS_IDENT},useSessionCookies:${JS_IDENT}\\}\\);` +
-    `codexLinuxAttachProxyAuthToRequest\\(\\k<request>\\);let (?<last>${JS_IDENT})=-1,(?<progressHandler>${JS_IDENT})=` +
-    `\\((?<current>${JS_IDENT}),(?<total>${JS_IDENT})\\)=>\\{if\\((?<callback>${JS_IDENT})==null\\)return;` +
-    `\\k<current>!==\\k<last>&&\\(\\k<last>=\\k<current>,\\k<callback>\\(\\{loaded:\\k<current>,total:\\k<total>\\}\\)\\)\\};` +
-    `\\k<request>\\.on\\("upload-progress",\\k<progressHandler>\\);`,
+    `codexLinuxAttachProxyAuthToRequest\\(\\k<request>\\);let (?<last>${JS_IDENT})=-1,` +
+    `(?<progressHandler>${JS_IDENT})=\\((?<loaded>${JS_IDENT}),(?<total>${JS_IDENT})\\)=>` +
+    `\\{null!=(?<callback>${JS_IDENT})&&\\k<loaded>!==\\k<last>&&` +
+    `\\(\\k<last>=\\k<loaded>,\\k<callback>\\(\\{loaded:\\k<loaded>,total:\\k<total>\\}\\)\\)\\};` +
+    `\\k<request>\\.on\\("upload-progress",\\k<progressHandler>\\)`,
   "g",
 );
 
@@ -98,9 +100,10 @@ function applyAuthenticatedProxyPatch(currentSource) {
     .replace(REQUEST_PATTERN, (...args) => {
       const groups = args.at(-1);
       return `let ${groups.request}=${groups.owner}.request({method:${groups.method},url:${groups.url},redirect:${groups.redirect},headers:${groups.headers},useSessionCookies:${groups.cookies}});` +
-        `codexLinuxAttachProxyAuthToRequest(${groups.request});let ${groups.last}=-1,${groups.progressHandler}=(${groups.current},${groups.total})=>{if(${groups.callback}==null)return;` +
-        `${groups.current}!==${groups.last}&&(${groups.last}=${groups.current},${groups.callback}({loaded:${groups.current},total:${groups.total}}))};` +
-        `${groups.request}.on("upload-progress",${groups.progressHandler});`;
+        `codexLinuxAttachProxyAuthToRequest(${groups.request});let ${groups.last}=-1,${groups.progressHandler}=(${groups.loaded},${groups.total})=>` +
+        `{null!=${groups.callback}&&${groups.loaded}!==${groups.last}&&(${groups.last}=${groups.loaded},` +
+        `${groups.callback}({loaded:${groups.loaded},total:${groups.total}}))};` +
+        `${groups.request}.on("upload-progress",${groups.progressHandler})`;
     });
 
   // Chunk files are CommonJS scripts; function declarations at the top are

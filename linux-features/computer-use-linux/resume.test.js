@@ -45,11 +45,6 @@ function signedChunks() {
   }));
 }
 
-function hasCurrentRspackConfigFlow() {
-  if (!process.env.CODEX_SIGNED_EXTRACTED_APP) return false;
-  return signedChunks().some(({ source }) => source.includes("async function rG(") && source.includes("async function sG("));
-}
-
 function trustedServicesConstant(chunks, exportName) {
   // Resolve the cross-chunk constant export used as the trusted-services key.
   const entry = only(chunks.find(({ name }) => name === "early-bootstrap.js").source,
@@ -73,17 +68,36 @@ function resumeHarness(source, trustedServicesKey, chunks) {
   const buildSource = owner(source, builder.index);
   const resumeSource = owner(source, call.index);
   const selection = call[4];
-  const cache = only(resumeSource, new RegExp(`=(${IDENT})\\?await (${IDENT})\\((${IDENT})\\):null,${IDENT}=\\1\\?(${IDENT})\\(\\):`, "g"));
-  const select = only(resumeSource, new RegExp(`\\?\\.selection\\?\\?await (${IDENT})\\(`, "g"));
+  const local = only(resumeSource, new RegExp(
+    `(${IDENT})="local"===(${IDENT})\\.hostConfig\\.kind`,
+    "g",
+  ));
+  const cache = only(resumeSource, new RegExp(
+    `(${IDENT})=${local[1]}\\?await (${IDENT})\\(${local[2]},\\{waitForReconcile:!1\\}\\):null`,
+    "g",
+  ));
+  const features = only(resumeSource, new RegExp(
+    `(${IDENT})=${local[1]}\\?(${IDENT})\\(\\):${IDENT}\\.desktopFeatureAvailability`,
+    "g",
+  ));
+  const posture = only(resumeSource, new RegExp(
+    `(${IDENT})=${features[1]}\\.browserUseTinysky\\?${cache[1]}:null`,
+    "g",
+  ));
+  const select = only(resumeSource, new RegExp(
+    `${posture[1]}\\?\\.selection\\?\\?await (${IDENT})\\(`,
+    "g",
+  ));
   const config = only(resumeSource, new RegExp(
-    `let ${IDENT}=await (${IDENT})\\(\\{\\.\\.\\.(${IDENT}),selection:${selection}\\}\\)`,
+    `let ${IDENT}=await (${IDENT})\\(\\{\\.\\.\\.(${IDENT}),selection:${selection},` +
+    `verifyBrowserService:${local[1]}&&null==${cache[1]}\\}\\)`,
     "g",
   ));
   const principal = only(resumeSource, new RegExp(
-    `(${IDENT})=${cache[1]}\\?await ${cache[3]}\\.getAuthenticatedPrincipal\\(\\)\\.catch\\(\\(\\)=>null\\):null`,
+    `(${IDENT})=${local[1]}\\?await ${local[2]}\\.getAuthenticatedPrincipal\\(\\)\\.catch\\(\\(\\)=>null\\):null`,
     "g",
   ));
-  const identity = only(resumeSource, new RegExp(`=${cache[1]}\\?(${IDENT})\\(${principal[1]}\\)\\?\\?(${IDENT}):null`, "g"));
+  const identity = only(resumeSource, new RegExp(`=${local[1]}\\?(${IDENT})\\(${principal[1]}\\)\\?\\?(${IDENT}):null`, "g"));
   const env = only(resumeSource, new RegExp(
     `Object\\.assign\\(${IDENT}\\.env,\\{\\[(${IDENT})\\.${IDENT}\\]:${IDENT},\\[\\1\\.${IDENT}\\]:(${IDENT})\\(\\)\\.env\\[(${IDENT})\\]\\?\\?"",`, "g"));
   const accessKeys = only(resumeSource, new RegExp(
@@ -133,7 +147,7 @@ function resumeHarness(source, trustedServicesKey, chunks) {
     [fileUrls[1]]: { pathToFileURL: url.pathToFileURL },
     [platforms[1]]: { linux: "linux" },
     [cache[2]]: async () => cached,
-    [cache[4]]: () => ({ browserUseTinysky: true }),
+    [features[2]]: () => ({ browserUseTinysky: true }),
     [select[1]]: () => {
       if (connectionKind === "local") throw Error("Unexpected fallback instead of cached selection");
       return cached.selection;
@@ -176,7 +190,7 @@ function resumeHarness(source, trustedServicesKey, chunks) {
 }
 
 test("official per-thread CUA overrides carry the trusted root when resuming chats", {
-  skip: !process.env.CODEX_SIGNED_EXTRACTED_APP || hasCurrentRspackConfigFlow(),
+  skip: !process.env.CODEX_SIGNED_EXTRACTED_APP,
 }, async () => {
   const chunks = signedChunks();
   const owners = chunks.filter(({ source }) => source.includes("cuaReplSurfaces:"));

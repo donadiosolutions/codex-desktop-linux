@@ -11,12 +11,12 @@ test without it. Every descriptor needs reproduction evidence and a required
 regression test. Remove the patch, its tests, and this record when upstream
 resolves the blocker.
 
-The current signed stable package, 26.1111.21308, requires no core patch.
-Its quit coordinator consumes approval before prompting for pending Git review
-comments, records confirmed approval, and marks accepted quits before draining.
-`../runner.test.js` exercises the signed handler's approval, cancellation, and
-privacy-request behavior. The obsolete `quit-confirmation-focus` repair has
-been removed.
+The current signed stable package requires no core patches. Its unique
+`before-quit` owner now reads `canQuitWithoutPrompt()`, records local approval
+through `markQuitApproved()`, and reaches the existing `markAppQuitting()`
+transition without a downstream repair. `../runner.test.js` binds that native
+contract to unique semantic anchors in the current signed ASAR and executes
+the signed handler to cover approval, cancellation, and privacy requests.
 
 Upstream still owns shell-environment startup after awaited app readiness; no
 core shell-startup patch is required.

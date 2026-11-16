@@ -54,11 +54,12 @@ test("the signed baseline owns quit approval and shell startup", {
     "canQuitWithoutPrompt(){return this.allowQuitWithoutPrompt}",
     "markQuitApproved(){this.allowQuitWithoutPrompt=!0}",
     "hasPendingLocalGitReviewComments:",
+    '.app.on("before-quit",',
   ], "upstream quit coordinator");
   const id = "[A-Za-z_$][\\w$]*";
   const headers = [...owner.matchAll(new RegExp(
-    `function\\(\\{isWindows:${id},quitState:(?<state>${id}),windows:(?<windows>${id}),` +
-    `[^{}]+hasPendingLocalGitReviewComments:(?<pending>${id}),[^{}]+\\}\\)\\{`, "gu"))];
+    `function\\(\\{[^{}]*quitState:(?<state>${id}),windows:(?<windows>${id}),` +
+    `[^{}]*hasPendingLocalGitReviewComments:(?<pending>${id}),[^{}]+\\}\\)\\{`, "gu"))];
   assert.equal(headers.length, 1, "Expected one current quit lifecycle owner");
   const header = headers[0];
   const open = header.index + header[0].length - 1;
@@ -75,6 +76,16 @@ test("the signed baseline owns quit approval and shell startup", {
   assert.ok(handlerBody.includes(`!${quitting}&&!${state}.canQuitWithoutPrompt()`));
   assert.ok(handlerBody.includes(`${pending}()`));
   assert.ok(handlerBody.includes(`${state}.markQuitApproved()`));
+  const approvalGate = `!${state}.canQuitWithoutPrompt()`;
+  const pendingCheck = `${pending}()`;
+  const localApproval = `${state}.markQuitApproved()`;
+  const quittingTransition = `${windows}.markAppQuitting()`;
+  for (const marker of [approvalGate, pendingCheck, localApproval, quittingTransition]) {
+    assert.equal(handlerBody.split(marker).length - 1, 1);
+  }
+  assert.ok(handlerBody.indexOf(approvalGate) < handlerBody.indexOf(pendingCheck));
+  assert.ok(handlerBody.indexOf(pendingCheck) < handlerBody.indexOf(localApproval));
+  assert.ok(handlerBody.indexOf(localApproval) < handlerBody.indexOf(quittingTransition));
   const formatter = handlerBody.match(new RegExp(`\\(0,(${id})\\.F\\$\\)`, "u"))?.[1];
   const logger = handlerBody.match(new RegExp(`\\(0,(${id})\\.tZQ\\)`, "u"))?.[1];
   const privacy = handlerBody.match(new RegExp(`${id}\\?\\?(${id})\\(\\{electronAppPath`, "u"))?.[1];

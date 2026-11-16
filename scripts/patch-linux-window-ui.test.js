@@ -49,10 +49,7 @@ test("best-effort feature drift stays non-fatal without hiding changed outputs",
 });
 
 test("official Linux baseline has no required compatibility descriptors", () => {
-  assert.deepEqual(
-    corePatchDescriptors().map(({ id, ciPolicy, phase }) => ({ id, ciPolicy, phase })),
-    [],
-  );
+  assert.deepEqual(corePatchDescriptors(), []);
   assert.equal(featurePatchDescriptors({
     featuresConfigPath: path.join(__dirname, "..", "tests", "fixtures", "linux-features", "disabled.json"),
   }).length, 0);
