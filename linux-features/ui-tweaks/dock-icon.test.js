@@ -36,14 +36,14 @@ const currentAppInfoSource = [
 ].join("");
 
 const currentRuntimeSource = [
-  "function t5e({buildFlavor:i,repoRoot:h,isMacOS:_,isDevMode:b,settingsStore:f,disposables:T,errorReporter:E}){",
+  "function t5e({buildFlavor:i,repoRoot:h,isMacOS:_,isDevMode:b,settingsStore:f,disposables:T,errorReporter:E,onWindowRegistered:v}){",
   "let x=_?function({buildFlavor:i,repoRoot:h,isDevMode:b,settingsStore:f,disposables:T,errorReporter:E}){",
-  'let F=f_(i),I=b?process.env.CODEX_ELECTRON_DEV_DOCK_ICONS_PATH:void 0,D=[...d.app.isPackaged?[process.resourcesPath]:[],(0,g.join)(h,"electron","src","icons")],O=null,G=!1,',
+  'let F=f_(i),u={"app-default":{light:"icon-chatgpt.png",dark:"icon-chatgpt.png",bundle:F.appDefaultBundle,label:"app-default"},"codex-system":{light:F.light,dark:F.dark,bundle:F.codexBundle,label:"codex"},"space-system":{light:F.spaceLight,dark:F.spaceDark,bundle:F.spaceBundle,label:"space"}},I=b?process.env.CODEX_ELECTRON_DEV_DOCK_ICONS_PATH:void 0,D=[...d.app.isPackaged?[process.resourcesPath]:[],(0,g.join)(h,"electron","src","icons")],O=null,G=!1,',
   'j=()=>f.get(n.Xl.DOCK_ICON_PREFERENCE)??"app-default",L=e=>{if(G||null==O&&"app-default"!==e)return;',
   'if("app-default"===e&&i!==o.i.Dev&&!I){let e=d.app.dock;null!=e&&Reflect.apply(e.setIcon.bind(e),e,[null]);return}',
-  'let r=d.nativeImage.createEmpty();if(!r.isEmpty()){if("app-default"!==e){let{width:e,height:t}=r.getSize(),n=Math.round(e/128);r=r.crop({x:n,y:n,width:e-2*n,height:t-2*n})}d.app.dock?.setIcon(r)}},',
-  'R=()=>L(j()),V=e=>()=>{},B=(e,t)=>{};return T.add(()=>{G=!0}),(async function(e){if(26>Number.parseInt(process.getSystemVersion(),10))return V(e);return()=>{}})(B).then(e=>{}),R(),R',
-  '}({buildFlavor:i,repoRoot:h,isDevMode:b,settingsStore:f,disposables:T,errorReporter:E}):()=>{};return x}',
+  'let S=D.map(t=>(0,g.join)(t,"app-default"!==e&&O?.dark===!0?u[e].dark:u[e].light)).find(t=>(0,y.existsSync)(t))??D.map(t=>(0,g.join)(t,u["app-default"].light)).find(t=>(0,y.existsSync)(t));if(null==S)return;let r=d.nativeImage.createFromPath(S);if(!r.isEmpty()){if("app-default"!==e){let{width:e,height:t}=r.getSize(),n=Math.round(e/128);r=r.crop({x:n,y:n,width:e-2*n,height:t-2*n})}d.app.dock?.setIcon(r)}},',
+  'R=()=>L(j()),V=e=>{e({dark:d.nativeTheme.shouldUseDarkColorsForSystemIntegratedUI,style:"regular"});return()=>{}},B=e=>{O=e;L(j())};return T.add(()=>{G=!0}),(async function(e){if(26>Number.parseInt(process.getSystemVersion(),10))return V(e);return()=>{}})(B).then(e=>{}),R(),R',
+  '}({buildFlavor:i,repoRoot:h,isDevMode:b,settingsStore:f,disposables:T,errorReporter:E}):()=>{};return{updateDockIcon:x,onWindowRegistered:e=>{z?.registerWindow(e),v?.(e)}}}',
 ].join("");
 
 const currentTraySource =
@@ -236,6 +236,74 @@ test("ui-tweaks keeps the Dock cleanup hook staged while the nested tweak is dis
   });
 });
 
+// Run the patched unified owner, keeping resource selection real and replacing
+// only Electron, filesystem availability, and the detached desktop-sync process.
+function linuxDockRuntime(source, { preference = "codex-system", dark = false } = {}) {
+  const windows = [];
+  const applied = [];
+  const resources = new Set(["icon-chatgpt.png", "icon-codex-light.png", "icon-codex-dark-color.png"]
+    .map(name => path.join("/resources/dock-icon", name)));
+  const sandbox = {
+    process: { platform: "linux", resourcesPath: "/resources", env: {} },
+    d: {
+      app: { isPackaged: true },
+      nativeTheme: { shouldUseDarkColorsForSystemIntegratedUI: dark },
+      BrowserWindow: { getAllWindows: () => windows },
+      nativeImage: { createFromPath: file => ({ file, isEmpty: () => false, toPNG: () => Buffer.from(file) }) },
+    },
+    g: path,
+    y: { existsSync: file => resources.has(file) },
+    n: { Xl: { DOCK_ICON_PREFERENCE: "dock" } },
+    o: { i: { Dev: "dev" } },
+    U9: null,
+    z: null,
+    setImmediate,
+    require: name => {
+      assert.equal(name, "node:fs");
+      return { existsSync: () => false };
+    },
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox);
+  const owner = sandbox.t5e({
+    buildFlavor: "prod", repoRoot: "/repo", isMacOS: false, isDevMode: false,
+    settingsStore: { get: () => preference }, disposables: { add() {} }, errorReporter: {},
+  });
+  return {
+    addWindow() {
+      const window = {
+        icons: [], isDestroyed: () => false,
+        setIcon(image) { this.icons.push(image.file); applied.push(image.file); },
+      };
+      windows.push(window);
+      owner.onWindowRegistered(window);
+      return window;
+    },
+    update: () => owner.updateDockIcon(),
+    applied,
+  };
+}
+
+test("Linux Space preference applies the staged Community icon at runtime", async () => {
+  for (const [dark, expected] of [[false, "icon-codex-light.png"], [true, "icon-codex-dark-color.png"]]) {
+    const runtime = linuxDockRuntime(applyDockIconMainPatch(currentMainSource), { preference: "space-system", dark });
+    runtime.addWindow();
+    runtime.update();
+    await new Promise(setImmediate);
+    assert.equal(runtime.applied.at(-1), path.join("/resources/dock-icon", expected));
+  }
+});
+
+test("new Linux windows receive the saved Dock preference without a settings change", async () => {
+  const runtime = linuxDockRuntime(applyDockIconMainPatch(currentMainSource));
+  const first = runtime.addWindow();
+  await new Promise(setImmediate);
+  assert.equal(first.icons.at(-1), "/resources/dock-icon/icon-codex-light.png");
+  const second = runtime.addWindow();
+  await new Promise(setImmediate);
+  assert.equal(second.icons.at(-1), "/resources/dock-icon/icon-codex-light.png");
+});
+
 test("main patch extends the unified Dock owner and synchronizes Linux windows and tray", () => {
   const patched = applyDockIconMainPatch(currentMainSource);
   assert.notEqual(patched, currentMainSource);
@@ -325,6 +393,8 @@ test("main patch rejects drift at every official-package insertion point byte-id
     'L=e=>{if(G||null==O&&"app-default"!==e)return;',
     'if("app-default"===e&&i!==o.i.Dev&&!I){',
     "d.app.dock?.setIcon(r)",
+    '"space-system":{light:F.spaceLight,dark:F.spaceDark,bundle:F.spaceBundle,label:"space"}',
+    "onWindowRegistered:e=>{z?.registerWindow(e),v?.(e)}",
     "(async function(e){if(26>Number.parseInt(process.getSystemVersion(),10))return V(e);",
     "i=new d.Tray(n.defaultIcon",
     "return(U9=a,await a.waitForReady()&&U9===a)",
@@ -335,6 +405,8 @@ test("main patch rejects drift at every official-package insertion point byte-id
     '"linux"===process.platform?codexLinuxDockIconResourcePath(',
     'if("linux"===process.platform)return',
     "globalThis.codexLinuxDockIconImage=",
+    '"space-system":{light:"linux"===process.platform?F.light:F.spaceLight',
+    ',"linux"===process.platform&&setImmediate(x)}',
     'codexLinuxDockIconResourcePath("sync-desktop-icon.sh")',
     'i=new d.Tray("linux"===process.platform&&globalThis.codexLinuxDockIconImage',
   ];

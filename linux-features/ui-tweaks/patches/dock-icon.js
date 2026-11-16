@@ -100,6 +100,12 @@ function currentMainContract(source) {
         `(?<inset>${id})=Math\\.round\\(\\k<width>/128\\);\\k<image>=\\k<image>\\.crop\\(` +
         `\\{x:\\k<inset>,y:\\k<inset>,width:\\k<width>-2\\*\\k<inset>,height:\\k<height>-2\\*\\k<inset>\\}\\)\\}` +
         `(?<electron>${id})\\.app\\.dock\\?\\.setIcon\\(\\k<image>\\)\\}`, "g")),
+    space: oneMatch(source, new RegExp(
+      `"space-system":\\{light:(?<theme>${id})\\.spaceLight,dark:\\k<theme>\\.spaceDark,` +
+        `bundle:\\k<theme>\\.spaceBundle,label:"space"\\}`, "g")),
+    windowRegistration: oneMatch(source, new RegExp(
+      `onWindowRegistered:(?<window>${id})=>\\{(?<context>${id})\\?\\.registerWindow\\(\\k<window>\\),` +
+        `(?<callback>${id})\\?\\.\\(\\k<window>\\)\\}`, "g")),
     observer: oneMatch(source, new RegExp(
       `\\(async function\\((?<callback>${id})\\)\\{if\\(26>Number\\.parseInt\\(process\\.getSystemVersion\\(\\),10\\)\\)` +
         `return (?<fallback>${id})\\(\\k<callback>\\);`, "g")),
@@ -112,7 +118,10 @@ function currentMainContract(source) {
     sameAliases(groups.appInfo.path, groups.roots.path) &&
     sameAliases(groups.owner.repo, groups.roots.repo) &&
     sameAliases(groups.guard.arg, groups.defaultGate.arg, groups.applyTail.arg) &&
-    contract.observer.index > contract.owner.index && contract.observer.index < contract.owner.index + 10_000;
+    contract.space.index > contract.owner.index && contract.space.index < contract.guard.index &&
+    contract.observer.index > contract.owner.index && contract.observer.index < contract.owner.index + 10_000 &&
+    contract.windowRegistration.index > contract.observer.index &&
+    contract.windowRegistration.index < contract.owner.index + 15_000;
   return aliasesAgree ? { contract, groups } : null;
 }
 
@@ -126,7 +135,12 @@ function patchedMainContract(source) {
     'codexLinuxDockIconResourcePath("sync-desktop-icon.sh")',
     '"linux"===process.platform&&globalThis.codexLinuxDockIconImage',
   ];
-  return required.every((needle) => source.split(needle).length === 2) &&
+  const space = new RegExp(
+    `"space-system":\\{light:"linux"===process\\.platform\\?(?<theme>${id})\\.light:\\k<theme>\\.spaceLight,` +
+      `dark:"linux"===process\\.platform\\?\\k<theme>\\.dark:\\k<theme>\\.spaceDark,`, "g");
+  const windowRefresh = new RegExp(`,"linux"===process\\.platform&&setImmediate\\(${id}\\)\\}`, "g");
+  return oneMatch(source, space) != null && oneMatch(source, windowRefresh) != null &&
+    required.every((needle) => source.split(needle).length === 2) &&
     source.split('if("darwin"!==process.platform&&"linux"!==process.platform)return null').length === 2;
 }
 
@@ -147,6 +161,14 @@ function applyCurrentDockIconMainPatch(source, current) {
     [contract.guard, `${guard.apply}=${guard.arg}=>{if(${guard.disposed}||null==${guard.appearance}&&"app-default"!==${guard.arg}&&"linux"!==process.platform)return;`],
     [contract.defaultGate, contract.defaultGate[0].replace("&&", '&&"linux"!==process.platform&&')],
     [contract.applyTail, `if(${tail.image}.isEmpty())return;if("linux"!==process.platform&&"app-default"!==${tail.arg}){let{width:${tail.width},height:${tail.height}}=${tail.image}.getSize(),${tail.inset}=Math.round(${tail.width}/128);${tail.image}=${tail.image}.crop({x:${tail.inset},y:${tail.inset},width:${tail.width}-2*${tail.inset},height:${tail.height}-2*${tail.inset}})}if(${linux}){let codexLinuxIconSelection="app-default"===${tail.arg}?"chatgpt":${tail.electron}.nativeTheme.shouldUseDarkColorsForSystemIntegratedUI?"codex-dark":"codex-light";globalThis.codexLinuxDockIconImage=${tail.image};for(let codexLinuxWindow of ${tail.electron}.BrowserWindow.getAllWindows())codexLinuxWindow.isDestroyed()||codexLinuxWindow.setIcon(${tail.image});null!=${trayState}?.tray&&!${trayState}.tray.isDestroyed()&&${trayState}.tray.setImage(${tail.image});let codexLinuxSyncScript=${dockIconResourceHelper}("sync-desktop-icon.sh");if(require("node:fs").existsSync(codexLinuxSyncScript))try{let codexLinuxChild=require("node:child_process").spawn(codexLinuxSyncScript,[codexLinuxIconSelection],{detached:!0,stdio:["pipe","ignore","ignore"]});codexLinuxChild.on("error",()=>{}),codexLinuxChild.stdin.on("error",()=>{}),codexLinuxChild.stdin.end(${tail.image}.toPNG()),codexLinuxChild.unref()}catch{}return}${tail.electron}.app.dock?.setIcon(${tail.image})`],
+    [contract.space, contract.space[0].replace(
+      `light:${groups.space.theme}.spaceLight,dark:${groups.space.theme}.spaceDark`,
+      `light:${linux}?${groups.space.theme}.light:${groups.space.theme}.spaceLight,` +
+        `dark:${linux}?${groups.space.theme}.dark:${groups.space.theme}.spaceDark`,
+    )],
+    [contract.windowRegistration, contract.windowRegistration[0].replace(
+      /\}$/, `,${linux}&&setImmediate(${groups.owner.update})}`,
+    )],
     [contract.observer, contract.observer[0].replace("{if(", `{if(${linux})return ${groups.observer.fallback}(${groups.observer.callback});if(`)],
     [contract.tray, contract.tray[0].replace(
       `${groups.tray.iconInfo}.defaultIcon`,
