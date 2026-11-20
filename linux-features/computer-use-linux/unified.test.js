@@ -59,6 +59,21 @@ test("unified prerequisites, native feature flag, and other platforms retain the
   assert.deepEqual(surfaces(result, "win32", { legacy: true }), ["browser", "computer"]);
   assert.equal(patch(result), result);
 });
+test("the current unified builder carries upstream confirmation policy fields through the bridge", () => {
+  const policyEnvironment =
+    '[policyKey]:JSON.stringify(policy),[deleteKey]:[n?.env[deleteKey],policyKey].filter(Boolean).join(","),';
+  const current = selector
+    .replace("deferTools:d,surfaces", "deferTools:d,omitCuaConfirmationPolicyBySku:policy,surfaces")
+    .replace("deferTools:features.deferCuaTools,surfaces", "deferTools:features.deferCuaTools,omitCuaConfirmationPolicyBySku:features.omitCuaConfirmationPolicyBySku,surfaces")
+    .replace("deferTools:selection.desktopFeatureAvailability.deferCuaTools,surfaces", "deferTools:selection.desktopFeatureAvailability.deferCuaTools,omitCuaConfirmationPolicyBySku:selection.desktopFeatureAvailability.omitCuaConfirmationPolicyBySku,surfaces")
+    .replace("...n?.env,CUA_REPL_ENABLED_SURFACES", `...n?.env,${policyEnvironment}CUA_REPL_ENABLED_SURFACES`);
+  const patched = unified(current);
+  assert.notEqual(patched, current);
+  assert.ok(patched.includes(policyEnvironment));
+  assert.doesNotThrow(() => new vm.Script(patched));
+  assert.equal(unified(patched), patched);
+});
+
 test("unified selector drift and ambiguous owners fail the build", () => {
   for (const changed of [
     selector.replace("null!=u.paths.serviceAppPath", "u.paths.serviceAppPath"),

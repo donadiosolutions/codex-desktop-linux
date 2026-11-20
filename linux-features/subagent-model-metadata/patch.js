@@ -22,7 +22,9 @@ function block(source, pattern) {
 
 function prepare(source) {
   const summary = block(source, `getThreadSummaryFromThread\\((${IDENT}),${IDENT}=\\1\\)\\{`);
-  const activation = block(source, `function ${IDENT}\\((${IDENT})\\)\\{(?=return\\{id:\\1\\.conversationId,)`);
+  const activation = block(source,
+    `function ${IDENT}\\((${IDENT})\\)\\{(?=return\\{id:\\1\\.conversationId,|` +
+    `let (${IDENT})=${IDENT}\\(\\)\\((?:${IDENT}|\\(0,${IDENT}\\.${IDENT}\\))\\(\\1\\)\\);return\\{id:\\2\\.conversationId,)`);
   const hydration = block(source, `async hydrateCollabThreads\\((${IDENT})\\)\\{`);
   const turn = one(source,
     `(${IDENT})===(?:${IDENT}(?:\\.${IDENT})?|\\(0,${IDENT}\\.${IDENT}\\))\\((${IDENT})\\)&&\\((?:/\\*${markers[3]}\\*/)?` +
@@ -97,29 +99,38 @@ function patchApp(extractedDir) {
     .filter((name) => name.endsWith(".js"))
     .map((name) => ({ name, source: fs.readFileSync(path.join(build, name), "utf8") }))
     .filter(({ source }) => source.includes("async hydrateCollabThreads(")) : [];
-  if (targets.length !== 1) {
-    const reason = `Expected one subagent conversation-store bundle, found ${targets.length}`;
+  // The desktop and its separate app-server host each carry the store. A
+  // duplicate within either process is ambiguous and must leave both intact.
+  const worker = targets.filter(({ name }) => name === "app-server-host.js");
+  const desktop = targets.filter(({ name }) => name !== "app-server-host.js");
+  if (desktop.length !== 1 || worker.length > 1) {
+    const reason = `Expected one desktop conversation store and at most one worker store, found ${desktop.length} desktop and ${worker.length} worker`;
     console.warn(`WARN: ${reason}`);
     return { matched: 0, changed: 0, reason };
   }
-  const [{ name, source }] = targets;
-  if (!prepare(source)) {
-    const reason = "Subagent conversation-store contract is incomplete or ambiguous";
-    console.warn(`WARN: ${reason}`);
-    return { matched: 0, changed: 0, reason };
+  const pending = [];
+  for (const { name, source } of targets) {
+    const patched = applySubagentModelMetadataPatch(source);
+    if (!prepare(patched)?.complete) {
+      const reason = `Subagent conversation-store contract is incomplete or ambiguous in ${name}`;
+      return { matched: 0, changed: 0, reason };
+    }
+    if (patched !== source) pending.push({ name, patched });
   }
-  const patched = applySubagentModelMetadataPatch(source);
-  if (!prepare(patched)?.complete) {
-    return { matched: 0, changed: 0, reason: "Subagent metadata patch validation failed" };
+  for (const { name, patched } of pending) {
+    fs.writeFileSync(path.join(build, name), patched);
   }
-  if (patched !== source) fs.writeFileSync(path.join(build, name), patched);
-  return { matched: 1, changed: Number(patched !== source), targets: [`.vite/build/${name}`] };
+  return {
+    matched: targets.length,
+    changed: pending.length,
+    targets: targets.map(({ name }) => `.vite/build/${name}`),
+  };
 }
 
 const descriptors = [{
   id: "conversation-store", phase: "extracted-app:pre-webview", order: 20_960,
   ciPolicy: "optional", enforceWhenEnabled: true, apply: patchApp,
-  status: (result) => result.matched !== 1
+  status: (result) => result.matched === 0
     ? { status: "skipped-optional", reason: result.reason }
     : result.changed ? "applied" : "already-applied",
 }];

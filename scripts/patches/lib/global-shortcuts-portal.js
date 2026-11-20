@@ -466,20 +466,24 @@ function installPortalBackend(source) {
   // Accepted quit (will-quit): upstream disposes the shortcut owners and then
   // drains asynchronously. Stop the portal session before that disposal and
   // make the drain wait for the helper to release its session.
-  const quitLifecycle = new RegExp(`function(?: ${IDENT})?\\(\\{(?:${IDENT}:${IDENT},)*hotkeyWindowLifecycleManager:(?<hotkey>${IDENT}),globalDictationLifecycleManager:(?<dictation>${IDENT}),(?:${IDENT}:${IDENT},)*flushAndDisposeContext:${IDENT},(?:${IDENT}:${IDENT},)*disposables:${IDENT}(?:,${IDENT}:${IDENT})*\\}\\)\\{`, "u");
+  const quitLifecycle = new RegExp(`function(?: ${IDENT})?\\(\\{(?:${IDENT}:${IDENT},)*?(?:hotkeyWindowLifecycleManager:(?<hotkey>${IDENT}),)?globalDictationLifecycleManager:(?<dictation>${IDENT}),(?:${IDENT}:${IDENT},)*flushAndDisposeContext:${IDENT},(?:${IDENT}:${IDENT},)*disposables:${IDENT}(?:,${IDENT}:${IDENT})*\\}\\)\\{`, "u");
   const quitHeader = uniqueAnchor(quitLifecycle, "accepted application quit lifecycle");
   const quitOpen = quitHeader.index + quitHeader[0].length - 1;
   const quitClose = findMatchingBrace(patched, quitOpen);
   if (quitClose === -1) throw new Error("accepted application quit lifecycle is incomplete");
   const quitBody = patched.slice(quitOpen, quitClose + 1);
   const willQuit = new RegExp(`\\.on\\(${literal("will-quit")},`, "u").exec(quitBody);
-  const quitDisposal = `${quitHeader.groups.hotkey}.dispose(),${quitHeader.groups.dictation}.dispose(),Promise.allSettled([`;
-  const quitDisposals = quitBody.split(quitDisposal).length - 1;
-  if (willQuit == null || quitDisposals < 1 || quitBody.indexOf(quitDisposal) < willQuit.index) {
+  const { hotkey, dictation } = quitHeader.groups;
+  const hotkeyDisposal = hotkey == null ? "" : hotkey + ".dispose(),";
+  const quitDisposal = hotkeyDisposal + dictation + ".dispose(),Promise.allSettled([";
+  const disposalPrefix = hotkey == null ? `${IDENT}\\.preventDefault\\(\\),${IDENT}=!0,` : "";
+  const disposalPattern = new RegExp(`(${disposalPrefix})${escapeRegExp(quitDisposal)}`, "gu");
+  const quitDisposals = [...quitBody.matchAll(disposalPattern)];
+  if (willQuit == null || quitDisposals.length < 1 || quitDisposals[0].index < willQuit.index) {
     throw new Error("application shutdown before shortcut disposal matched 0 times");
   }
-  patched = patched.slice(0, quitOpen) + quitBody.replaceAll(quitDisposal,
-    `codexLinuxGlobalShortcutsQuitStopped=codexLinuxGlobalShortcutsPortalShutdown(),${quitDisposal}codexLinuxGlobalShortcutsQuitStopped,`) +
+  patched = patched.slice(0, quitOpen) + quitBody.replace(disposalPattern,
+    (_match, prefix) => `${prefix}codexLinuxGlobalShortcutsQuitStopped=codexLinuxGlobalShortcutsPortalShutdown(),${quitDisposal}codexLinuxGlobalShortcutsQuitStopped,`) +
     patched.slice(quitClose + 1);
   // Capture suspension: the first nested suspend pauses the portal session and
   // stops unregistering Electron accelerators that a portal registration owns.
@@ -494,10 +498,24 @@ function installPortalBackend(source) {
   uniqueAnchor(activation, "Wayland registration adapter");
   patched = replaceUnique(patched, activation,
     (match, item, generation) => `${match}if(codexLinuxGlobalShortcutsUsesWayland()&&null!=${item}.linuxCommandId&&${item}.hotkey.includes("+"))return codexLinuxGlobalShortcutsActivate(${item},${generation});`, "Wayland registration adapter");
-  const capture = new RegExp(`beginCapture\\(\\)\\{if\\(this\\.origin\\.isDestroyed\\(\\)\\)return null;let (${IDENT})=${escapeRegExp(electron)}\\.BrowserWindow\\.fromWebContents\\(this\\.origin\\);return ${notNull("\\1")}&&\\1\\.isFocused\\(\\)\\?new (${IDENT})\\(this\\.origin,\\1\\):null\\}`, "u");
+  const capture = new RegExp(
+    `beginCapture\\(\\)\\{if\\(this\\.origin\\.isDestroyed\\(\\)\\)return null;let (?<window>${IDENT})=` +
+    `(?:(?<getOwner>this\\.getFocusedOwnerWindow\\(\\));return null==\\k<window>\\?null:new (?<focusedCapture>${IDENT})\\(this\\.origin,\\k<window>\\)\\}` +
+    `(?=getFocusedOwnerWindow\\(\\)\\{let (?<focusedWindow>${IDENT})=${escapeRegExp(electron)}\\.BrowserWindow\\.getFocusedWindow\\(\\);return \\k<focusedWindow>\\?\\.webContents===this\\.origin\\?\\k<focusedWindow>:null\\})|` +
+    `${escapeRegExp(electron)}\\.BrowserWindow\\.fromWebContents\\(this\\.origin\\);` +
+    `return ${notNull("\\k<window>")}&&\\k<window>\\.isFocused\\(\\)\\?new (?<capture>${IDENT})\\(this\\.origin,\\k<window>\\):null\\})`,
+    "u",
+  );
   uniqueAnchor(capture, "shortcut capture readiness");
-  patched = replaceUnique(patched, capture,
-    (_match, _window, Capture) => `async beginCapture(){if(this.origin.isDestroyed())return null;let e=${electron}.BrowserWindow.fromWebContents(this.origin);if(null==e||!e.isFocused())return null;let t=new ${Capture}(this.origin,e);try{await codexLinuxGlobalShortcutsCaptureReady;if(this.origin.isDestroyed()||e.isDestroyed()||!e.isFocused()){t[Symbol.dispose]();return null}return t}catch(n){t[Symbol.dispose]();console.warn("[linux-global-shortcuts] Unable to prepare shortcut capture",n);return null}}`, "shortcut capture readiness");
+  patched = replaceUnique(patched, capture, (match, ...args) => {
+    const { getOwner, focusedCapture, capture: previousCapture } = args.at(-1);
+    const owner = getOwner ?? `${electron}.BrowserWindow.fromWebContents(this.origin)`;
+    const stillFocused = getOwner ? `${getOwner}===e` : "e.isFocused()";
+    return `async beginCapture(){if(this.origin.isDestroyed())return null;let e=${owner};if(null==e||!e.isFocused())return null;` +
+      `let t=new ${focusedCapture ?? previousCapture}(this.origin,e);try{await codexLinuxGlobalShortcutsCaptureReady;` +
+      `if(this.origin.isDestroyed()||e.isDestroyed()||!(${stillFocused})){t[Symbol.dispose]();return null}return t}catch(n){t[Symbol.dispose]();` +
+      `console.warn("[linux-global-shortcuts] Unable to prepare shortcut capture",n);return null}}`;
+  }, "shortcut capture readiness");
   const functions = [codexLinuxGlobalShortcutsUsesWayland, codexLinuxGlobalShortcutsNativePath,
     codexLinuxGlobalShortcutsLines, codexLinuxGlobalShortcutsRequested, codexLinuxGlobalShortcutsUnavailable,
     codexLinuxGlobalShortcutsPortalRegistration, codexLinuxGlobalShortcutsPortalPause, codexLinuxGlobalShortcutsPortalShutdown,

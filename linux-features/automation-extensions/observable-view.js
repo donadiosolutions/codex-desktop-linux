@@ -15,7 +15,8 @@ const CURRENT_PRIVATE_STORE_DELETE_METHOD = new RegExp(
   `async delete\\(\\{id:(${IDENT})\\}\\)\\{return this\\.#(${IDENT})\\(\\1,null\\)\\}` +
   `async #\\2\\((${IDENT}),(${IDENT})\\)\\{\\4\\?\\.assertCurrent\\(\\);` +
   `let\\{item:(${IDENT}),status:(${IDENT})\\}=this\\.habitatAutomationsService\\?await this\\.habitatAutomationsService\\.delete\\(\\3\\):` +
-  `\\{item:\\(0,(${IDENT})\\.(${IDENT})\\)\\(\\3\\),status:\\(0,\\7\\.(${IDENT})\\)\\(\\3\\)\\},`, "gu",
+  `\\{item:(?:(?<legacyRead>\\(0,(?<legacyStore>${IDENT})\\.${IDENT}\\)\\(\\3\\)),status:\\(0,\\k<legacyStore>\\.${IDENT}\\)\\(\\3\\)|` +
+  `(?<asyncRead>await (?<storage>${IDENT}\\.${IDENT}\\.automations)\\.getAutomation\\(\\3\\)),status:await \\k<storage>\\.deleteAutomation\\(\\3\\))\\},`, "gu",
 );
 const PATCHED_OUTPUT_HELPER = new RegExp(
   "function (" + IDENT + ")\\((" + IDENT + ")\\)\\{return\\{contentItems:" +
@@ -25,7 +26,7 @@ const PATCHED_OUTPUT_HELPER = new RegExp(
   "gu",
 );
 const STORE_VIEW_METHOD = new RegExp(
-  `async view\\(\\{id:(${IDENT})\\}\\)\\{return\\{item:(${IDENT})\\.(${IDENT})\\(\\1\\)\\}\\}`,
+  `async view\\(\\{id:(${IDENT})\\}\\)\\{return\\{item:((?:await ${IDENT}\\.${IDENT}\\.automations\\.getAutomation|${IDENT}\\.${IDENT})\\(\\1\\))\\}\\}`,
   "gu",
 );
 const CLASS_OPEN = new RegExp(
@@ -160,8 +161,8 @@ function observableViewBranch(argumentValue, host, outputFunction) {
     `}/*${OBSERVABLE_AUTOMATION_VIEW_MARKER}*/`;
 }
 
-function observableViewMethod(storeId, storeModule, readMethod = "kr") {
-  return `async view({id:${storeId}}){return{item:${storeModule}.${readMethod}(${storeId})}}`;
+function observableViewMethod(storeId, readExpression) {
+  return `async view({id:${storeId}}){return{item:${readExpression}}}`;
 }
 
 function currentAutomationOutputNeedle(e) {
@@ -226,7 +227,6 @@ function patchedAutomationViewContract(source) {
   if (linkedStore.store[0] !== observableViewMethod(
     linkedStore.store[1],
     linkedStore.store[2],
-    linkedStore.store[3],
   )) {
     return null;
   }
@@ -290,10 +290,10 @@ function applyObservableAutomationViewPatch(source) {
   const host = contract.handler[6];
   const viewBranch = observableViewBranch(argumentValue, host, outputFunction);
 
-  const storeId = contract.linkedStore.store[3];
-  const storeModule = contract.linkedStore.store[7];
-  const readMethod = contract.linkedStore.store[8];
-  const viewMethod = observableViewMethod(storeId, storeModule, readMethod);
+  const store = contract.linkedStore.store;
+  const { asyncRead, legacyRead } = store.groups;
+  const readExpression = asyncRead ?? legacyRead.replace(/^\(0,([^)]*)\)/u, "$1");
+  const viewMethod = observableViewMethod(store[3], readExpression);
 
   let patched = source
     .replace(outputNeedle, outputReplacement)

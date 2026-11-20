@@ -1246,6 +1246,18 @@ test("assistant render patch atomically adds buttons to the current two-call top
   assert.equal(matchesAssistantRuntimeContract(patched), true);
 });
 
+test("assistant render patch preserves response update turn IDs in the signed topology", () => {
+  const fixture = assistantRenderFixture();
+  const source = fixture.source
+    .replaceAll(",compactAttachment:M", "")
+    .replaceAll(",savedContentResponseId:E", ",responseUpdateTurnId:U,savedContentResponseId:E");
+  assert.equal(matchesAssistantRuntimeContract(source), true);
+  const patched = twice(applyAssistantRenderPatch, source);
+  assert.equal(patched.split("responseUpdateTurnId:U").length - 1, 2);
+  assert.equal(patched.split("codex-linux-read-aloud-button").length - 1, 2);
+  assert.equal(matchesAssistantRuntimeContract(patched), true);
+});
+
 test("assistant render contract rejects missing current skills and read-only props", () => {
   const fixture = assistantRenderFixture();
   for (const source of [
@@ -1512,6 +1524,18 @@ test("general settings patch mounts the read aloud section into the current Gene
   // Without the runtime the host element stays empty instead of throwing.
   const withoutRuntime = evaluateGeneralSettingsPage(patched, {});
   assert.doesNotThrow(() => withoutRuntime.props.children[1].props.ref({}));
+});
+
+test("general settings patch preserves the signed page overview and title", () => {
+  const source = generalSettingsFixture({ page: "s=(0,n.jsxs)(eG.P,{overview:t,title:t,children:[e,a]})" });
+  assert.equal(matchesGeneralSettingsPageContract(source), true);
+  const patched = twice(applyGeneralSettingsPatch, source);
+  const { props } = evaluateGeneralSettingsPage(patched, {});
+  assert.equal(props.overview, props.title);
+  assert.equal(props.title.props.slug, "general-settings");
+  assert.equal(props.children[0].type.name, "aR");
+  assert.equal(props.children[1].props.className, "codex-linux-read-aloud-settings-mount");
+  assert.equal(props.children[2].type, "Toys");
 });
 
 test("general settings mount composes with leading marked Linux page rows in either order", () => {

@@ -213,6 +213,31 @@ test("authenticated-proxy preserves the current signed fetch cache option", () =
   assert.doesNotThrow(() => new vm.Script(patched));
 });
 
+test("authenticated-proxy preserves the signed fetch preflight on both routes", async () => {
+  const source = CURRENT.replace("performDesktopFetch(){", "performDesktopFetch(f,signal){")
+    .replace("h={aborted:!1,addEventListener(){},removeEventListener(){}}", "h=signal")
+    .replace(
+      '&&(t.credentials="omit"),e=await',
+      '&&(t.credentials="omit"),h.throwIfAborted(),f?.(),e=await',
+    );
+  assert.ok(source !== CURRENT);
+  const patched = applyPatchTwiceWithoutWarnings(applyAuthenticatedProxyPatch, source);
+  for (const useProxy of [false, true]) {
+    const order = [];
+    const { Fetcher } = loadChunk(patched, {
+      process: { platform: "linux", env: useProxy ? proxyEnv() : {} },
+      electron: { net: { fetch() { order.push("fetch"); } } },
+    });
+    const fetcher = new Fetcher();
+    fetcher.performProgressRequest = () => order.push("request");
+    await fetcher.performDesktopFetch(
+      () => order.push("dispatch"),
+      { throwIfAborted: () => order.push("abort-check") },
+    );
+    assert.deepEqual(order, ["abort-check", "dispatch", useProxy ? "request" : "fetch"]);
+  }
+});
+
 function withWarnings(callback) {
   const warnings = [];
   const originalWarn = console.warn;

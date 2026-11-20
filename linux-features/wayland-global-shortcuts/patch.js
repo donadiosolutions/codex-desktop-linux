@@ -6,7 +6,8 @@ function applyWaylandGlobalShortcutsPatch(source) {
   try {
     let patched = source;
     for (const [id, key, callback] of [
-      ["hotkeyWindow", "e", "onPressed:\\(\\)=>\\{this\\.handleHotkeyWindowHotkeyPressed\\(\\)\\}"],
+      ["hotkeyWindow", IDENT, `(?:onPressed:\\(\\)=>\\{this\\.handleHotkeyWindowHotkeyPressed\\(\\)\\}|` +
+        `onPressed:\\(\\)=>\\{this\\.toggle\\(\\)\\.catch\\(${IDENT}=>\\{this\\.logger\\.warning\\("Failed to open Spotlight")`],
       ["openAvatarOverlay", IDENT, `onPressed:\\(\\)=>\\{${IDENT}\\(\\)\\?\\(null==${IDENT}\\|\\|"locked"!==${IDENT}\\.powerMonitor\\.getSystemIdleState\\(1\\)\\)&&\\(${IDENT}\\?\\?${IDENT}\\)\\(\\)\\.catch\\([\\s\\S]{0,200}?"Failed to open Quick Chat from global hotkey"`],
       ["appshots", "this\\.configuredHotkey", "onPressed:\\(\\)=>this\\.#[A-Za-z_$][\\w$]*\\(\\)"],
       ["realtimeVoice", IDENT, `onPressed:\\(\\)=>\\{"locked"!==${IDENT}\\.powerMonitor\\.getSystemIdleState\\(1\\)&&${IDENT}\\(\\)\\}`],

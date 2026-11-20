@@ -26,3 +26,17 @@ test("current active status preserves follower priority and recovers absent stre
   assert.equal(descriptor.assetMatch(damaged),false);
   assert.equal(descriptor.apply(damaged),damaged);
 });
+
+test("history ownership status recovers mobile-started turns without attached history", () => {
+  const source = 'function({latestTurnStatus:e,resumeState:t,historyAttached:n,threadRuntimeStatus:a}){return n?a?.type==="active"||"inProgress"===e?"active":"inactive":"needs_resume"===t?"needs-resume":"read-only"}';
+  assert.equal(descriptor.assetMatch(source), true);
+  const patched = descriptor.apply(source);
+  assert.equal(descriptor.apply(patched), patched);
+  const status = vm.runInNewContext(`(${patched})`);
+  assert.equal(status({ historyAttached: false, threadRuntimeStatus: { type: "active" } }), "active");
+  assert.equal(status({ historyAttached: false, latestTurnStatus: "inProgress" }), "active");
+  assert.equal(status({ historyAttached: false, resumeState: "needs_resume" }), "needs-resume");
+  assert.equal(status({ historyAttached: false }), "read-only");
+  assert.equal(status({ historyAttached: true }), "inactive");
+  assert.equal(descriptor.assetMatch(source + source), false);
+});

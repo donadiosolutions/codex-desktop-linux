@@ -4,6 +4,7 @@
 // `deferLoading:!0`. Keep automation_update eager so the model can update an
 // automation without first discovering the tool.
 const { escapeRegExp, findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
+const { rspackFactories } = require("./rspack-factories.js");
 
 const IDENT = "[A-Za-z_$][\\w$]*";
 const AUTOMATION_UPDATE_EAGER_TOOL_ASSET_NEEDLES = ["deferLoading:!0", "eagerToolNames:", "deferredToolNames:"];
@@ -124,7 +125,10 @@ function matchesAutomationPluginEnableContract(source) {
 
 function matchesCurrentAutomationToolOwner(source) {
   if (!source.includes("__webpack_modules__") || !source.includes("automation_update") || count(source, EAGER) !== 1) return false;
-  const factories = rspackFactories(source);
+  const factories = rspackFactories(source).map(factory => ({
+    ...factory,
+    body: source.slice(factory.open, factory.close + 1),
+  }));
   const owners = factories.flatMap(factory => {
     if (factory.require == null) return [];
     const namedDefinitions = [...factory.body.matchAll(new RegExp(
@@ -184,23 +188,6 @@ function matchesCurrentAutomationToolOwner(source) {
     const listPassed = mapperCall != null && listStart >= 0 && toolPosition > listStart &&
       mapperPosition - listStart < 30_000 && body.slice(listStart, mapperPosition).includes(`(0,${toolAlias}.${owner.exportName})()`);
     return hasToolReference && hasMappedCatalog && listPassed && count(mapperFactories[0].body, EAGER) === 1;
-  });
-}
-
-function rspackFactories(source) {
-  const starts = [...source.matchAll(new RegExp(`(?:^|,)((?:${IDENT})|function)\\(([^)]*)\\)\\{`, "gu"))];
-  return starts.flatMap(match => {
-    const open = match.index + match[0].lastIndexOf("{");
-    const close = findMatchingBrace(source, open);
-    if (close <= open) return [];
-    const params = match[2].split(",");
-    if (params.length < 2 || params.length > 3 || params.some(param => !new RegExp(`^${IDENT}$`).test(param))) return [];
-    const body = source.slice(open, close + 1);
-    const moduleId = match[1] === "function" ? null : match[1];
-    const exports = params[1];
-    const require = params[2] ?? null;
-    const exportsMap = [...body.matchAll(new RegExp(`(${IDENT})\\.d\\(${exports},\\{([^}]*)\\}`, "gu"))];
-    return [{ name: match[1], exports, require, moduleId, body, exportsMap }];
   });
 }
 

@@ -890,6 +890,57 @@ function syntheticBundle() {
   ].join("");
 }
 
+function hostWorkerBundle() {
+  return [
+    'function daemonModule(C){class Daemon{connect(){return new C.b({',
+    'hostConfig:this.options.hostConfig,websocketUrl:"ws://localhost/rpc",',
+    'createConnection:()=>nativeDaemonSocket()}).connect()}}}',
+    'const transport=function(e,t,s){switch(e.kind){case"stdio":return{transport:',
+    'function(e,t,r){let{isPackaged:n=!1,...i}=e.options;',
+    'return new worker.Stdio({...i,hostConfig:t,getConfigOverrides:async()=>{',
+    'let{overrides:e,windowsFrameworkRoot:t}=await r();return(0,worker.setRoot)(t),e}})}(e,t,s)};',
+    'case"websocket":break}let d=new worker.WebSocket({websocketUrl:e.url,hostConfig:t,',
+    'socksProxyUrl:e.socksProxyUrl});return{transport:d}};',
+    'globalThis.transport=transport;',
+  ].join("");
+}
+
+test("app-server host uses the in-scope WebSocket transport and retains local configuration", async () => {
+  const source = hostWorkerBundle();
+  const patched = applySharedAppServerSocketPatch(source);
+  assert.notEqual(patched, source);
+  assert.equal(applySharedAppServerSocketPatch(patched), patched);
+  const contexts = [];
+  const roots = [];
+  const context = {
+    process: { env: { CODEX_LINUX_APP_SERVER_BRIDGE_SOCKET: "/private/bridge.sock" } },
+    worker: {
+      Stdio: class { constructor(options) { this.options = options; } },
+      WebSocket: class {
+        constructor(options) { this.options = options; }
+        connect() { contexts.push(this.options); return this.options.createConnection(); }
+      },
+      setRoot(root) { roots.push(root); },
+    },
+  };
+  vm.runInNewContext(patched, context);
+  const host = { kind: "local", id: "local" };
+  const overrides = async () => ({ overrides: ["x=1"], windowsFrameworkRoot: "windows-root" });
+  const local = context.transport({ kind: "stdio", options: {} }, host, overrides).transport;
+  assert.equal(local.socketPath, "/private/bridge.sock");
+  assert.equal(local.supportsReconnect(), true);
+  assert.deepEqual(await local.getConfigOverrides(), ["x=1"]);
+  assert.deepEqual(roots, ["windows-root"]);
+  const proxy = {};
+  local.ensureAuthority = async () => {};
+  local.createProxyStream = () => proxy;
+  assert.equal(await local.connect(), proxy);
+  assert.equal(contexts[0].hostConfig, host);
+  assert.equal(contexts[0].websocketUrl, "ws://localhost/rpc");
+  const remote = { kind: "ssh", id: "remote" };
+  assert.equal(context.transport({ kind: "stdio", options: {} }, remote, overrides).transport.options.hostConfig, remote);
+});
+
 test("shared-app-server-socket stays disabled until explicitly enabled", () => {
   withFeatureConfig([], (featuresRoot) => {
     assert.deepEqual(loadLinuxFeaturePatchDescriptors({ featuresRoot }), []);
@@ -2135,48 +2186,36 @@ test("injected transport requires the captured config override callback", () => 
 });
 
 test(
-  "patch applies to exactly one current signed main-process chunk",
+  "descriptor patches the current signed app-server host worker idempotently",
   { skip: process.env.CODEX_SIGNED_EXTRACTED_APP == null },
   () => {
-    const buildDir = path.join(process.env.CODEX_SIGNED_EXTRACTED_APP, ".vite", "build");
-    const chunks = fs.readdirSync(buildDir)
-      .filter((name) => /^early-bootstrap(?:-\d+-[0-9a-f]{16})?\.js$/.test(name));
-    assert.ok(chunks.length > 0);
-    const results = [];
-    const originalWarn = console.warn;
-    console.warn = () => {};
+    const relative = path.join(".vite", "build", "app-server-host.js");
+    const trusted = path.join(process.env.CODEX_SIGNED_EXTRACTED_APP, relative);
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "shared-app-server-signed-"));
     try {
-      for (const name of chunks) {
-        const source = fs.readFileSync(path.join(buildDir, name), "utf8");
-        const patched = applySharedAppServerSocketPatch(source);
-        if (patched !== source) results.push({ name, patched });
-      }
+      const hostWorker = path.join(scratch, relative);
+      const original = fs.readFileSync(trusted, "utf8");
+      fs.mkdirSync(path.dirname(hostWorker), { recursive: true });
+      fs.writeFileSync(hostWorker, original);
+      assert.deepEqual(descriptors[0].apply(scratch), { status: "applied" });
+      const patched = fs.readFileSync(hostWorker, "utf8");
+      assert.notEqual(patched, original);
+      assert.equal(patched.split("class CodexLinuxSharedAppServerSocketTransport").length, 2);
+      assert.match(patched, /websocketUrl:"ws:\/\/localhost\/rpc",createConnection:\(\)=>this\.createProxyStream\(\)/);
+      assert.doesNotThrow(() => new vm.Script(patched));
+      assert.deepEqual(descriptors[0].apply(scratch), { status: "already-applied" });
+      assert.equal(fs.readFileSync(hostWorker, "utf8"), patched);
+      assert.equal(fs.readFileSync(trusted, "utf8"), original);
     } finally {
-      console.warn = originalWarn;
+      fs.rmSync(scratch, { recursive: true, force: true });
     }
-    assert.equal(results.length, 1);
-    const [{ patched }] = results;
-    const warnings = [];
-    console.warn = (...args) => warnings.push(args.join(" "));
-    try {
-      assert.equal(applySharedAppServerSocketPatch(patched), patched);
-    } finally {
-      console.warn = originalWarn;
-    }
-    assert.deepEqual(warnings, []);
-    assert.match(
-      patched,
-      /\.call\(this,\{WebSocket:[\w$]+\.[\w$]+,MessageCodec:[\w$]+\.[\w$]+,ConnectionAdapter:[\w$]+\.[\w$]+,keepAlive:[\w$]+\.[\w$]+,url:"ws:\/\/codex-app-server\/rpc",maximumFrameBytes:0x[0-9a-f]+,maximumFrameHeader:"x-codex-websocket-max-unfragmented-message-bytes",headers:\(0,[\w$]+\.[\w$]+\)\(\)\}\)/,
-    );
-    assert.match(patched, /return new CodexLinuxSharedAppServerSocketTransport\(process\.env\.CODEX_LINUX_APP_SERVER_BRIDGE_SOCKET,async\(\)=>\[/);
-    new vm.Script(patched, { filename: "patched-chunk.js" });
   },
 );
 
-test("descriptor is optional and targets the main bundle", () => {
+test("descriptor is optional and targets the extracted host worker", () => {
   assert.deepEqual(
     descriptors.map(({ id, phase, ciPolicy }) => [id, phase, ciPolicy]),
-    [["main-process-shared-app-server-socket", "main-bundle", "optional"]],
+    [["main-process-shared-app-server-socket", "extracted-app:pre-webview", "optional"]],
   );
 });
 

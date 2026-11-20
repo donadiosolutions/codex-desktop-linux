@@ -130,7 +130,6 @@ function patchedMainContract(source) {
     `var ${dockIconPatchMarker}=1`,
     `function ${dockIconResourceHelper}(`,
     '"linux"===process.platform?codexLinuxDockIconResourcePath(',
-    '"linux"===process.platform)return',
     "globalThis.codexLinuxDockIconImage=",
     'codexLinuxDockIconResourcePath("sync-desktop-icon.sh")',
     '"linux"===process.platform&&globalThis.codexLinuxDockIconImage',
@@ -139,7 +138,13 @@ function patchedMainContract(source) {
     `"space-system":\\{light:"linux"===process\\.platform\\?(?<theme>${id})\\.light:\\k<theme>\\.spaceLight,` +
       `dark:"linux"===process\\.platform\\?\\k<theme>\\.dark:\\k<theme>\\.spaceDark,`, "g");
   const windowRefresh = new RegExp(`,"linux"===process\\.platform&&setImmediate\\(${id}\\)\\}`, "g");
+  const observer = new RegExp(
+    `\\(async function\\((?<callback>${id})\\)\\{if\\("linux"===process\\.platform\\)return ` +
+      `(?<fallback>${id})\\(\\k<callback>\\);if\\(26>Number\\.parseInt\\(process\\.getSystemVersion\\(\\),10\\)\\)` +
+      `return \\k<fallback>\\(\\k<callback>\\);`, "g",
+  );
   return oneMatch(source, space) != null && oneMatch(source, windowRefresh) != null &&
+    oneMatch(source, observer) != null &&
     required.every((needle) => source.split(needle).length === 2) &&
     source.split('if("darwin"!==process.platform&&"linux"!==process.platform)return null').length === 2;
 }

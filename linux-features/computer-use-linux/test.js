@@ -124,6 +124,24 @@ test("Linux thread resume requests sibling tools only for local Desktop MCP", as
   }
 });
 
+test("Linux thread tools preserve the current async request and local-host guard", async () => {
+  const source = 'globalThis.read=host=>{let box={request:async e=>e},local=DesktopOnly(host);' +
+    'return{hasDesktopRuntime:!0,hasDeveloperInstructions:!0,isBrowserRuntime:!1,' +
+    'readDynamicTools:async e=>{let t=await box.request(e);return local?(0,api.wrap)(t):{kind:"dynamic",tools:t}},traceRequest:e=>e}}';
+  const descriptor = descriptors.find(({ id }) => id === "codex-app-thread-tools");
+  assert.equal(descriptor.assetMatch(source), true);
+  const patched = applyLinuxCodexAppThreadToolsPatch(source);
+  assert.notEqual(patched, source);
+  const context = vm.createContext({ DesktopOnly: name => name === "local", api: { wrap: tools => ({ tools }) } });
+  vm.runInContext(patched, context);
+  for (const host of ["local", "remote"]) {
+    const result = await context.read(host).readDynamicTools({ featureOverrides: { apps: true } });
+    assert.equal(result.tools.featureOverrides.apps, true);
+    assert.equal(result.tools.featureOverrides.thread_tools, host === "local" ? true : undefined);
+  }
+  assert.equal(applyLinuxCodexAppThreadToolsPatch(patched), patched);
+});
+
 test("Linux thread tools reject a Desktop MCP guard outside the request object", () => {
   const sources = [
     "function unrelated(){return{hasDesktopRuntime:!0,usesDesktopMcp:Zue(o),other:!0}}function remote(){return{readDynamicTools:e=>c.request(e),traceRequest(e){return e}}}",

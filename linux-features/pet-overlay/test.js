@@ -650,6 +650,36 @@ for (const variant of ["missing", "duplicate", "foreign-owner"]) test(`native dr
   assert.match(warnings.join("\n"), /Pet overlay patch is incomplete/);
 });
 
+test("native draw patch preserves an optional default pet anchor side effect", () => {
+  const fixture = nestedAvatarOverlayBundleFixture();
+  const source = fixture
+    .replace("display:e,displays:l,anchor:t", "display:e,displays:l,platform:g,anchor:t")
+    .replace('constrainNativeDrawWindowToDisplay:"win32"===process.platform,',
+      'constrainNativeDrawWindowToDisplay:"win32"===g,')
+    .replace("({display:e,displays:a.screen.getAllDisplays(),anchor:t",
+      "({display:e,displays:a.screen.getAllDisplays(),platform:process.platform,anchor:t")
+    .replace("return n}({display:e,displays:a.screen.getAllDisplays()",
+      "let b=47;return null!=b&&(n.defaultPetAnchorY=b),n}({display:e,displays:a.screen.getAllDisplays()");
+  assert.notEqual(source, fixture);
+  const patched = applyPetOverlayPatch(source);
+  assert.notEqual(patched, source);
+  assert.match(patched, /null!=b&&\(n\.defaultPetAnchorY=b\),this\.codexPetOverlayKWinLayout\(e,n\)/);
+  assert.doesNotThrow(() => new vm.Script(patched));
+});
+
+test("compositor drag patch accepts renderer-owned window lookup and direct movement intent", () => {
+  const source = currentAvatarOverlayBundleFixture()
+    .replace("startDrag(e,t,n=!1){let r=this.window;", "startDrag(e,t,n=!1){let r=this.getWindowForRenderer(e);")
+    .replace("moveDrag(e,t){let n=this.window;", "moveDrag(e,t){let n=this.getWindowForRenderer(e);")
+    .replace("r.recordMovementIntent(),", "r.hasMovementIntent=!0,")
+    .replace("endDrag(e,t,n=!1,r=`released`){let n=this.window;", "endDrag(e,t,n=!1,r=`released`){let n=this.getWindowForRenderer(e);");
+  const patched = applyPetOverlayPatch(source);
+  assert.notEqual(patched, source);
+  assert.match(patched, /codexPetOverlayBeginCompositorDrag\(r,t\)/);
+  assert.match(patched, /codexPetOverlayMoveCompositorDrag\(n,t\)/);
+  assert.match(patched, /codexPetOverlayEndKWinDrag\(i,/);
+});
+
 test("patches the current expanded drag completion as a syntactically complete callback", () => {
   const patched = applyPatchTwice(currentAvatarOverlayBundleFixture());
 

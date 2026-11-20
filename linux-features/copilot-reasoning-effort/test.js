@@ -118,6 +118,15 @@ test("binds Copilot persistence to the current model-and-reasoning service", () 
   }
 });
 
+test("accepts the persistence writer that selects conversation or current scope", () => {
+  const source = currentModelAndReasoningPersistenceFixture()
+    .replace('()=>eK(t,n,"current",a)', '()=>eK(t,n,l?"conversation":"current",a)');
+  assert.equal(matchesCopilotModelAndReasoningPersistenceContract(source), true);
+  assert.equal(matchesCopilotModelAndReasoningPersistenceContract(
+    source.replace('()=>eK(t,n,l?', '()=>other(t,n,l?'),
+  ), false);
+});
+
 test("descriptors find their owners by content needles, not chunk names", () => {
   assert.deepEqual(descriptors.map((descriptor) => descriptor.id), [
     "persistence-contract",

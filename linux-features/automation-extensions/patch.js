@@ -16,6 +16,40 @@ const {
 
 const { applyObservableAutomationViewPatch } = require("./observable-view.js");
 const { applyAutomationPluginPipePatch } = require("./plugin-pipe.js");
+const { rspackFactories } = require("./rspack-factories.js");
+
+const SCHEDULE_ANCHOR = "hasMultipleTimeValues:Array.isArray(";
+const SCHEDULE_MARKER = "function codexLinuxNormalizeRruleNumbers(";
+const WRAPPED_FACTORY_PREFIX = "export const __webpack_modules__={X(e,t,n){";
+const WRAPPED_FACTORY_SUFFIX = "}};";
+
+function wrappedSchedule(source, anchor) {
+  const position = source.indexOf(anchor);
+  if (position === -1 || source.indexOf(anchor, position + anchor.length) !== -1) return null;
+  const owner = rspackFactories(source).find(({ open, close }) => open < position && position < close);
+  if (owner == null) return null;
+  const { open, close } = owner;
+  // Present the existing schedule matcher with its expected factory spelling.
+  const wrapped = WRAPPED_FACTORY_PREFIX + source.slice(open + 1, close) + WRAPPED_FACTORY_SUFFIX;
+  return { wrapped, open, close };
+}
+
+function matchesSchedule(source) {
+  if (matchesAutomationScheduleContract(source)) return true;
+  const contract = wrappedSchedule(source, source.includes(SCHEDULE_MARKER) ? SCHEDULE_MARKER : SCHEDULE_ANCHOR);
+  return contract != null && matchesAutomationScheduleContract(contract.wrapped);
+}
+
+function applySchedule(source) {
+  if (matchesAutomationScheduleContract(source)) return applyAutomationScheduleMultiTimePatch(source);
+  const contract = wrappedSchedule(source, SCHEDULE_ANCHOR);
+  if (contract == null) return source;
+  const { wrapped, open, close } = contract;
+  const patched = applyAutomationScheduleMultiTimePatch(wrapped);
+  if (patched === wrapped) return source;
+  const body = patched.slice(WRAPPED_FACTORY_PREFIX.length, -WRAPPED_FACTORY_SUFFIX.length);
+  return source.slice(0, open + 1) + body + source.slice(close);
+}
 
 // Both owners live in rspack webview chunks with content-hashed names, so
 // they are located by stable content needles plus a unique semantic contract.
@@ -26,10 +60,10 @@ module.exports = [
     order: 20_100,
     ciPolicy: "optional",
     assetNeedles: AUTOMATION_SCHEDULE_ASSET_NEEDLES,
-    assetMatch: matchesAutomationScheduleContract,
+    assetMatch: matchesSchedule,
     missingDescription: "automation schedule bundle",
     skipDescription: "RRULE multi-time patch",
-    apply: applyAutomationScheduleMultiTimePatch,
+    apply: applySchedule,
   }),
   webviewAssetPatch({
     id: "eager-automation-update",

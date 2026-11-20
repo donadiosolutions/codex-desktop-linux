@@ -1,5 +1,8 @@
 "use strict";
 
+const fs = require("node:fs");
+const path = require("node:path");
+const { findMainProcessChunks } = require("../../scripts/patches/lib/assets.js");
 const { readSocketPath } = require("./socket-path.js");
 const { escapeRegExp, findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
 
@@ -142,7 +145,7 @@ async function connectSharedSocket({
   }
 }
 
-function sharedTransportClassSource(symbols) {
+function sharedTransportClassSource(symbols, connectMethod) {
   return (
     "class CodexLinuxSharedAppServerSocketTransport{" +
     "kind=`websocket`;proxyStreams=new Set;authority=null;authorityError=null;authorityReady=null;lockIdentity=null;ownerStartTime=null;socketIdentity=null;adoptedAuthority=!1;disposed=!1;" +
@@ -166,11 +169,78 @@ function sharedTransportClassSource(symbols) {
     "async ensureAuthority(){if(this.disposed)throw Error(`shared app-server socket transport is disposed`);if(this.authorityReady)return this.authorityReady;let e=(async()=>{if(this.authority&&this.authority.exitCode==null&&this.authority.signalCode==null){if(this.authorityError)throw this.authorityError;return}if(this.adoptedAuthority=!1,await this.adoptCanonicalAuthority())return;process.env.CODEX_LINUX_ADOPT_CANONICAL_APP_SERVER===`1`&&this.usePrivateFallback();return this.startAuthority()})();this.authorityReady=e;try{return await e}finally{this.authorityReady===e&&(this.authorityReady=null)}}" +
     "async startAuthority(){let e=process.env.CODEX_CLI_PATH;if(!e)throw Error(`shared app-server socket requires CODEX_CLI_PATH`);this.authorityError=null;let t=await this.getConfigOverrides();if(this.disposed)throw Error(`shared app-server socket transport was disposed during startup`);if(!Array.isArray(t)||t.some(e=>typeof e!==`string`))throw Error(`shared app-server socket received invalid config overrides`);await this.acquireOwnership();if(this.disposed){this.releaseOwnedPaths(!0);throw Error(`shared app-server socket transport was disposed during startup`)}let r;try{r=require(`node:child_process`).spawn(e,[...t.flatMap(e=>[`-c`,e]),...this.authorityArgs()],{env:process.env,stdio:`ignore`}),this.authority=r}catch(e){this.releaseOwnedPaths();throw e}try{this.recordAuthorityIdentity(r),await new Promise((e,t)=>{let i=!1,a,o=()=>{clearTimeout(a),clearTimeout(u),r.off(`error`,s),r.off(`exit`,l),r.off(`close`,l)},c=(n,u)=>{if(i)return;i=!0,o(),n?t(n):e(u)},s=e=>{this.authorityError=e,c(e)},l=()=>c(Error(`shared app-server authority exited before socket creation`)),h=()=>{if(i)return;try{let s=this.readSocketPath(),e=s.identity;if(s.target){this.socketIdentity={dev:e.dev,ino:e.ino};return c(null)}}catch(e){if(e?.code!==`ENOENT`)return c(e)}a=setTimeout(h,100),a.unref?.()},u=setTimeout(()=>c(Error(`shared app-server socket creation timed out`)),1e4);r.once(`error`,s),r.once(`exit`,l),r.once(`close`,l),h(),u.unref?.()}),this.publishAttachedCliRecord(r,e),r.on(`error`,e=>{this.authorityError=e;for(let t of this.proxyStreams)t.destroy(e)}),r.once(`exit`,()=>{this.authority===r&&(this.authority=null,this.releaseOwnedPaths(!0))})}catch(e){this.authority=null;(await this.stopAuthority(r))&&this.releaseOwnedPaths();throw e}}" +
     "createProxyStream(){let c=process.env.CODEX_CLI_PATH;if(!c)throw Error(`shared app-server socket requires CODEX_CLI_PATH`);let e=require(`node:child_process`).spawn(c,[`app-server`,`proxy`,`--sock`,this.socketPath],{env:process.env,stdio:[`pipe`,`pipe`,`pipe`]}),t=e.stdin,n=e.stdout,r=e.stderr;if(t==null||n==null||r==null)throw e.kill(),Error(`shared app-server proxy stdio was unavailable`);let i=``;r.on(`data`,e=>{i=`${i}${e.toString(`utf8`)}`.slice(-4000)});let a=new(require(`node:stream`).Duplex)({read(){n.resume()},write(e,n,r){t.write(e,n,r)},final(e){t.end(),e()},destroy(t,n){e.kill(),n(t)}});Object.assign(a,{setKeepAlive:()=>a,setNoDelay:()=>a,setTimeout:()=>a});let o=e=>a.destroy(e);t.on(`error`,o),n.on(`data`,e=>{a.push(e)||n.pause()}),n.on(`end`,()=>a.push(null)),e.on(`error`,o),e.on(`close`,(e,n)=>{t.removeListener(`error`,o),e===0?a.push(null):a.destroy(Error(`shared app-server proxy exited (${e??n??`unknown`}): ${i.trim()}`))}),this.proxyStreams.add(a),a.once(`close`,()=>this.proxyStreams.delete(a));return a}" +
-    `connect(){return (${connectSharedSocket.toString()}).call(this,{WebSocket:${symbols.webSocketClass},MessageCodec:${symbols.codecClass},ConnectionAdapter:${symbols.adapterClass},keepAlive:${symbols.keepAlive},url:${symbols.webSocketUrl},maximumFrameBytes:${symbols.maximumFrameBytes},maximumFrameHeader:${symbols.maximumFrameHeader},headers:${symbols.headersFunction ? `(0,${symbols.headersFunction})()` : "undefined"}})}}`
+    (connectMethod ?? `connect(){return (${connectSharedSocket.toString()}).call(this,{WebSocket:${symbols.webSocketClass},MessageCodec:${symbols.codecClass},ConnectionAdapter:${symbols.adapterClass},keepAlive:${symbols.keepAlive},url:${symbols.webSocketUrl},maximumFrameBytes:${symbols.maximumFrameBytes},maximumFrameHeader:${symbols.maximumFrameHeader},headers:${symbols.headersFunction ? `(0,${symbols.headersFunction})()` : "undefined"}})}`) + "}"
   );
 }
 
+const HOST_TRANSPORT_FACTORY = new RegExp(
+  'function\\((?<request>' + IDENT + '),(?<host>' + IDENT + ')(?:,' + IDENT + ')*\\)' +
+    '\\{switch\\(\\k<request>\\.kind\\)\\{[^{}]{0,250}case"stdio":return\\{transport:' +
+    'function\\((?<options>' + IDENT + '),(?<localHost>' + IDENT + '),(?<overrides>' + IDENT + ')\\)' +
+    '\\{let\\{isPackaged:' + IDENT + '=!1,\\.\\.\\.' + IDENT + '\\}=\\k<options>\\.options;',
+  "g",
+);
+const HOST_CONFIG_OVERRIDE = new RegExp(
+  'getConfigOverrides:(async\\(\\)=>\\{let\\{overrides:(' + IDENT + '),windowsFrameworkRoot:(' + IDENT +
+    ')\\}=await (' + IDENT + ')\\(\\);return\\(0,' + MEMBER + '\\)\\(\\3\\),\\2\\})',
+  "g",
+);
+const SHARED_CLASS_MARKER = "class CodexLinuxSharedAppServerSocketTransport";
+
+function hostTransportPatch(source) {
+  const factories = [...source.matchAll(HOST_TRANSPORT_FACTORY)];
+  if (factories.length !== 1) return null;
+  const [factory] = factories;
+  const insertion = factory.index + factory[0].length;
+  const outerOpen = source.indexOf("{switch(", factory.index);
+  const localOpen = source.indexOf("{let{isPackaged:", outerOpen);
+  const localEnd = findMatchingBrace(source, localOpen);
+  const outerEnd = findMatchingBrace(source, outerOpen);
+  if (localEnd < insertion || outerEnd <= localEnd) return null;
+
+  // Resolve the WebSocket constructor used by this factory's remote case.
+  // The local daemon's constructor alias belongs to a separate rspack module.
+  const remoteWebSocket = new RegExp(
+    'new (' + MEMBER + ')\\(\\{websocketUrl:(' + IDENT + ')\\.url,hostConfig:' +
+      escapeRegExp(factory.groups.host) + ',socksProxyUrl:\\2\\.socksProxyUrl',
+    "g",
+  );
+  const webSockets = [...source.slice(localEnd + 1, outerEnd).matchAll(remoteWebSocket)];
+  if (webSockets.length !== 1) return null;
+  const localSource = source.slice(insertion, localEnd);
+  const markerCount = source.split(SHARED_CLASS_MARKER).length - 1;
+  const originalReturn = localSource.lastIndexOf("return new ");
+  if (originalReturn < 0) return null;
+  const existingBranch = localSource.slice(0, originalReturn);
+  const originalTransport = localSource.slice(originalReturn);
+  const overrides = [...originalTransport.matchAll(HOST_CONFIG_OVERRIDE)];
+  if (overrides.length !== 1 || overrides[0][4] !== factory.groups.overrides) return null;
+
+  const host = factory.groups.localHost;
+  const transport = webSockets[0][1];
+  const connectMethod =
+    'async connect(){await this.ensureAuthority();return new ' + transport +
+    '({hostConfig:' + host + ',websocketUrl:"ws://localhost/rpc",' +
+    'createConnection:()=>this.createProxyStream()}).connect()}';
+  const classSource = sharedTransportClassSource(null, connectMethod);
+  const branch =
+    'if(process.env.CODEX_LINUX_APP_SERVER_BRIDGE_SOCKET&&' +
+    host + '.kind==="local"&&' + host + '.id==="local"){' +
+    classSource +
+    'return new CodexLinuxSharedAppServerSocketTransport(' +
+    'process.env.CODEX_LINUX_APP_SERVER_BRIDGE_SOCKET,' + overrides[0][1] + ')}';
+
+  if (markerCount === 1 && existingBranch === branch) return source;
+  if (markerCount !== 0 || existingBranch !== "") return null;
+  return source.slice(0, insertion) + branch + source.slice(insertion);
+}
+
 function applySharedAppServerSocketPatch(source) {
+  if (source.includes('case"stdio":return{transport:function(')) {
+    const patched = hostTransportPatch(source);
+    if (patched == null) console.warn("WARN: Could not find one app-server host WebSocket transport and local config callback");
+    return patched ?? source;
+  }
   const markerCount = source.split("class CodexLinuxSharedAppServerSocketTransport").length - 1;
   const symbols = findTransportSymbols(source);
   if (markerCount === 1 && symbols != null) return source;
@@ -242,13 +312,47 @@ function applySharedAppServerSocketPatch(source) {
   return source.slice(0, factoryStart) + classSource + patchedFactory + source.slice(factoryEnd);
 }
 
+function applySharedAppServerSocketAppPatch(extractedDir) {
+  const hostPath = path.join(extractedDir, ".vite", "build", "app-server-host.js");
+  if (fs.existsSync(hostPath)) {
+    const source = fs.readFileSync(hostPath, "utf8");
+    const patched = hostTransportPatch(source);
+    if (patched == null) {
+      return { status: "skipped-optional", reason: "App-server host WebSocket transport or local config callback changed" };
+    }
+    if (patched === source) return { status: "already-applied" };
+    fs.writeFileSync(hostPath, patched, "utf8");
+    return { status: "applied" };
+  }
+
+  const main = findMainProcessChunks(extractedDir);
+  const matches = [];
+  for (const chunk of main?.chunks ?? []) {
+    const file = path.join(main.buildDir, chunk);
+    const source = fs.readFileSync(file, "utf8");
+    if (findTransportSymbols(source) == null) continue;
+    const patched = applySharedAppServerSocketPatch(source);
+    if (patched !== source || source.includes(SHARED_CLASS_MARKER)) {
+      matches.push({ file, changed: patched !== source, patched });
+    }
+  }
+  if (matches.length !== 1) {
+    return { status: "skipped-optional", reason: "Expected one main-process shared socket transport" };
+  }
+  const [match] = matches;
+  if (!match.changed) return { status: "already-applied" };
+  fs.writeFileSync(match.file, match.patched, "utf8");
+  return { status: "applied" };
+}
+
 const descriptors = [
   {
     id: "main-process-shared-app-server-socket",
-    phase: "main-bundle",
+    phase: "extracted-app:pre-webview",
     order: 140,
     ciPolicy: "optional",
-    apply: applySharedAppServerSocketPatch,
+    apply: applySharedAppServerSocketAppPatch,
+    status: (result) => result,
   },
 ];
 

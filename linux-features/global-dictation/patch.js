@@ -85,9 +85,12 @@ function unsupportedPlatformCases(message) {
 }
 
 function hotkeyRegistration(registerFunction, gesture, optionsPattern) {
+  const pressedGesture = gesture === "primary"
+    ? `(?:${literal(gesture)}|this\\.hasSharedHotkey\\(\\)\\?${literal("shared")}:${literal(gesture)})`
+    : literal(gesture);
   return new RegExp(
     `${escapeRegexLiteral(registerFunction)}\\((?<accelerator>${IDENT}),\\{(?<callbacks>(?:(?!\\},\\{(?:ownership:|bareModifierTrigger:))[\\s\\S]){0,1200}?` +
-      `shortcutGestures\\.press\\(${literal(gesture)},[\\s\\S]{0,300}?` +
+      `shortcutGestures\\.press\\(${pressedGesture},[\\s\\S]{0,300}?` +
       `shortcutGestures\\.release\\(${literal(gesture)}\\)[\\s\\S]{0,300}?` +
       `shortcutGestures\\.cancelPress\\(${literal(gesture)}\\)[\\s\\S]{0,120}?)\\},` +
       `\\{${optionsPattern}\\}\\)`,

@@ -291,3 +291,17 @@ test("signed webview chunks satisfy every remote-control UI contract", { skip: !
     }
   }
 });
+
+test("aliased Statsig config fallback keeps its original non-Linux behavior", () => {
+  const { runInNewContext } = require("node:vm");
+  const patch = featurePatches.find(({ id }) => id === "remote-connections-visibility");
+  const source = 'let g="4114442250";function f(e,t){if(!0===e?.["features.remote_connections"])return!0;let n=e?.features;return null==n||"object"!=typeof n||Array.isArray(n)?t:Object.getOwnPropertyDescriptor(n,"remote_connections")?.value===!0||t}';
+  const patched = patch.apply(source);
+  assert.notEqual(patched, source);
+  assert.equal(patch.apply(patched), patched);
+  for (const [platform, want] of [["Linux", true], ["Mac", false]]) {
+    const fallback = runInNewContext(`${patched};f`, { navigator: { userAgent: platform } });
+    assert.equal(fallback({}, false), want);
+    assert.equal(fallback({ features: { remote_connections: true } }, false), true);
+  }
+});

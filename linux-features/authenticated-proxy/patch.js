@@ -17,12 +17,16 @@ const PATCHED_READY_PATTERN = new RegExp(
 );
 const FETCH_TAIL =
   `\\{let ${JS_IDENT}=\\{method:${JS_IDENT},(?:cache:${JS_IDENT},)?headers:${JS_IDENT},body:${JS_IDENT}\\(\\),` +
-  `redirect:[^,{}]{1,120},signal:${JS_IDENT},credentials:(?<credentialsFlag>${JS_IDENT})\\?"include":"same-origin"\\};` +
+  `redirect:[^,{}]{1,120},signal:(?<signal>${JS_IDENT}),credentials:(?<credentialsFlag>${JS_IDENT})\\?"include":"same-origin"\\};` +
   `\\(${JS_IDENT}\\|\\|!\\k<credentialsFlag>&&\\(0,${JS_IDENT}\\.${JS_IDENT}\\)\\(${JS_IDENT},${JS_IDENT}\\)\\)&&\\(${JS_IDENT}\\.credentials="omit"\\),` +
+  `(?:(?<preflight>\\k<signal>\\.throwIfAborted\\(\\),${JS_IDENT}\\?\\.\\(\\)),)?` +
   `${JS_IDENT}=await this\\.options\\.applicationNetwork\\.fetch\\(`;
 const FETCH_GATE = new RegExp(`if\\(null==(${JS_IDENT})\\)(?=${FETCH_TAIL})`, "g");
+const NO_PROXY_AUTH = "!codexLinuxProxyAuthEntry()";
+const NO_PROXY_AUTH_PATTERN = "!codexLinuxProxyAuthEntry\\(\\)";
+const FETCH_AUTH_TEST = `(?:${NO_PROXY_AUTH_PATTERN}|\\(${NO_PROXY_AUTH_PATTERN}\\|\\|\\(${JS_IDENT}\\.throwIfAborted\\(\\),${JS_IDENT}\\?\\.\\(\\),!1\\)\\))`;
 const PATCHED_FETCH_GATE = new RegExp(
-  `if\\(null==(${JS_IDENT})&&!codexLinuxProxyAuthEntry\\(\\)\\)(?=${FETCH_TAIL})`,
+  `if\\(null==(${JS_IDENT})&&(?<condition>${FETCH_AUTH_TEST})\\)(?=${FETCH_TAIL})`,
   "g",
 );
 const REQUEST_PATTERN = new RegExp(
@@ -63,6 +67,13 @@ function count(source, pattern) {
   return [...source.matchAll(pattern)].length;
 }
 
+// The signed non-progress path reports dispatch immediately before issuing the
+// request. Keep that notification when proxy authentication takes the
+// ClientRequest path instead.
+function proxyFetchCondition(preflight) {
+  return preflight == null ? NO_PROXY_AUTH : `(${NO_PROXY_AUTH}||(${preflight},!1))`;
+}
+
 function applyAuthenticatedProxyPatch(currentSource) {
   const helpers = HELPER_NEEDLES.filter((needle) => currentSource.includes(needle)).length;
   const ready = count(currentSource, READY_PATTERN);
@@ -79,13 +90,15 @@ function applyAuthenticatedProxyPatch(currentSource) {
   }
 
   const fetches = count(currentSource, FETCH_GATE);
-  const patchedFetches = count(currentSource, PATCHED_FETCH_GATE);
+  const patchedFetches = [...currentSource.matchAll(PATCHED_FETCH_GATE)];
   const requests = count(currentSource, REQUEST_PATTERN);
   const patchedRequests = count(currentSource, PATCHED_REQUEST_PATTERN);
   const pristine = helpers === 0 && ready === 1 && patchedReady === 0 &&
-    fetches === 1 && patchedFetches === 0 && requests === 1 && patchedRequests === 0;
+    fetches === 1 && patchedFetches.length === 0 && requests === 1 && patchedRequests === 0;
   const complete = helpers === HELPER_NEEDLES.length && ready === 0 && patchedReady === 1 &&
-    fetches === 0 && patchedFetches === 1 && requests === 0 && patchedRequests === 1;
+    fetches === 0 && patchedFetches.length === 1 &&
+    patchedFetches[0].groups.condition === proxyFetchCondition(patchedFetches[0].groups.preflight) &&
+    requests === 0 && patchedRequests === 1;
   if (complete) return currentSource;
   if (!pristine) {
     console.warn(
@@ -96,7 +109,8 @@ function applyAuthenticatedProxyPatch(currentSource) {
 
   let patchedSource = currentSource
     .replace(READY_PATTERN, (match, electron) => `(codexLinuxInstallProxyAuthHandler(${electron}),${match})`)
-    .replace(FETCH_GATE, (_match, progressVar) => `if(null==${progressVar}&&!codexLinuxProxyAuthEntry())`)
+    .replace(FETCH_GATE, (_match, progressVar, ...args) =>
+      `if(null==${progressVar}&&${proxyFetchCondition(args.at(-1).preflight)})`)
     .replace(REQUEST_PATTERN, (...args) => {
       const groups = args.at(-1);
       return `let ${groups.request}=${groups.owner}.request({method:${groups.method},url:${groups.url},redirect:${groups.redirect},headers:${groups.headers},useSessionCookies:${groups.cookies}});` +

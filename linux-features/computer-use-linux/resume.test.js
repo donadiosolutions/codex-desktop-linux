@@ -59,7 +59,8 @@ function trustedServicesConstant(chunks, exportName) {
 // external dependencies. No Electron, app-server, profile, or network is used.
 function resumeHarness(source, trustedServicesKey, chunks) {
   const builder = only(source, new RegExp(
-    `function (${IDENT})\\(\\{browserBackends:(${IDENT}),deferTools:${IDENT},surfaces:${IDENT},` +
+    `function (${IDENT})\\(\\{browserBackends:(${IDENT}),deferTools:${IDENT},` +
+    `(?:omitCuaConfirmationPolicyBySku:${IDENT},)?surfaces:${IDENT},` +
     `nodeRepl:${IDENT},accessBootstrapPath:(${IDENT})\\}`,
     "g",
   ));
@@ -116,6 +117,9 @@ function resumeHarness(source, trustedServicesKey, chunks) {
   const packageRoot = only(buildSource, new RegExp(
     `(${IDENT})\\(\\)\\.join\\((${IDENT})\\.env\\[(${IDENT})\\.(${IDENT})\\],"@oai/cua-repl"\\)`, "g"));
   const services = only(buildSource, new RegExp(`\\[(${IDENT})\\.(${IDENT})\\]:JSON\\.stringify\\(${IDENT}\\)`, "g"));
+  const deleteEnvKey = buildSource.match(new RegExp(
+    `\\[(${IDENT})\\]:\\[${IDENT}\\?\\.env\\[\\1\\],${IDENT}\\]\\.filter\\(Boolean\\)\\.join`,
+  ));
   const backends = only(buildSource, new RegExp(`\\[(${IDENT})\\.(${IDENT})\\]:${builder[2]}\\.join\\(","\\)`, "g"));
   const executable = only(buildSource, new RegExp(`command:${packageRoot[2]}\\.env\\[${packageRoot[3]}\\.(${IDENT})\\]`, "g"));
   const files = [null, oneAlias(buildSource, new RegExp(`\\(0,(${IDENT})\\.readFileSync\\)\\(new URL`, "g"))];
@@ -133,6 +137,7 @@ function resumeHarness(source, trustedServicesKey, chunks) {
       key === services[2] ? trustedServicesKey : accessConstants.get(key) ?? String(key),
   });
   const globals = {
+    ...(deleteEnvKey == null ? {} : { [deleteEnvKey[1]]: "NODE_REPL_ENV_DELETE" }),
     [packageRoot[1]]: () => path,
     [packageRoot[3]]: constants,
     [backends[1]]: constants,

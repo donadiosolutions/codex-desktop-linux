@@ -47,6 +47,36 @@ test("current signed observable view patch stays idempotent and parses", {
   assert.doesNotThrow(() => new vm.Script(patched));
 });
 
+test("signed-shaped async automation storage is awaited by both view routes", async () => {
+  const inline = fixture.handler.replace("async function Lw(", "async function(");
+  const asyncHost = fixture.host.replace("Lw(t,e,", inline + "(t,e,").replace(
+    "{item:(0,em.OeD)(e),status:(0,em.lgR)(e)}",
+    "{item:await ie._.automations.getAutomation(e),status:await ie._.automations.deleteAutomation(e)}",
+  );
+  const input = fixture.output + asyncHost;
+  const patched = applyObservableAutomationViewPatch(input);
+  assert.equal(applyObservableAutomationViewPatch(patched), patched);
+
+  const item = { kind: "heartbeat", name: "A", prompt: "P", rrule: "FREQ=DAILY", status: "PAUSED" };
+  const reads = [];
+  const context = vm.createContext({
+    eo: { TF: class {} }, em: { $Cz: () => ({}) },
+    ar: { n: "local" }, Lp: { safeParse: data => ({ success: true, data }) },
+    ie: { _: { automations: { async getAutomation(id) {
+      reads.push(id);
+      return id === "existing" ? item : null;
+    } } } },
+  });
+  vm.runInContext(patched + ";globalThis.Host=Lb", context);
+  const host = new context.Host();
+  const request = id => ({ hostId: "local", argumentsValue: { mode: "view", id } });
+  const found = await host.executeUpdateTool(request("existing"));
+  assert.deepEqual(JSON.parse(found.response.contentItems[1].text).snapshot, item);
+  const missing = await host.executeNativeUpdateTool(request("missing"), { assertCurrent() {} });
+  assert.equal(JSON.parse(missing.response.contentItems[1].text).viewStatus, "not_found");
+  assert.deepEqual(reads, ["existing", "missing"]);
+});
+
 test("current view rejects broken migration guards and incomplete native delegation", () => {
   assert.throws(() => applyObservableAutomationViewPatch(source.replace("isLocalMigrationActive", "unknownMigrationState")), /did not match/);
   const patched = applyObservableAutomationViewPatch(source);

@@ -124,7 +124,7 @@ function anonymousSyncCall(source, syncSource) {
   if (start < 0 || source.indexOf(syncSource, start + 1) >= 0) throw drift("ambiguous inline plugin synchronization");
   const prefix = source.slice(0, start).match(/([\w$]+)=await $/);
   const tail = source.slice(start + syncSource.length);
-  const match = tail.match(/^\(\{browserBackends:[\w$]+,deferTools:[\w$]+\.deferCuaTools,surfaces:[\w$]+,codexHome:[\w$]+,marketplaceName:[\w$]+,marketplaces:[\w$]+,nodeRepl:[\w$]+\?void 0:[\w$]+(?<context>,codexLinuxCuaContext:(?<selection>[\w$]+))?\}\)/);
+  const match = tail.match(/^\(\{browserBackends:[\w$]+,deferTools:[\w$]+\.deferCuaTools,(?:omitCuaConfirmationPolicyBySku:[\w$]+\.omitCuaConfirmationPolicyBySku,)?surfaces:[\w$]+,codexHome:[\w$]+,marketplaceName:[\w$]+,marketplaces:[\w$]+,nodeRepl:[\w$]+\?void 0:[\w$]+(?<context>,codexLinuxCuaContext:(?<selection>[\w$]+))?\}\)/);
   if (prefix == null || match == null) throw drift("changed inline plugin synchronization call");
   match.index = start + syncSource.length;
   match.groups = { ...match.groups, enabled: prefix[1] };
@@ -149,7 +149,9 @@ function lifecycleContract(source, builder, syncSource) {
     ), "expected one inline plugin synchronization builder call");
     const resume = uniqueMatch(source, new RegExp(
       `(?<![\\w$.#])${escapeRegExp(builder)}\\(\\{browserBackends:(?<selection>${ID})\\.browserBackends,` +
-      `deferTools:\\k<selection>\\.desktopFeatureAvailability\\.deferCuaTools,surfaces:\\k<selection>\\.cuaReplSurfaces,` +
+      `deferTools:\\k<selection>\\.desktopFeatureAvailability\\.deferCuaTools,` +
+      `(?:omitCuaConfirmationPolicyBySku:\\k<selection>\\.desktopFeatureAvailability\\.omitCuaConfirmationPolicyBySku,)?` +
+      `surfaces:\\k<selection>\\.cuaReplSurfaces,` +
       `nodeRepl:${ID}\\}(?<root>,\\k<selection>\\.${ROOT_KEY})?\\)`, "g"),
     "expected one thread configuration builder call");
     const daemon = daemonGuard(source, resume);
@@ -164,6 +166,7 @@ function lifecycleContract(source, builder, syncSource) {
   }
   const sync = owner.groups.name == null ? anonymousSyncCall(source, syncSource) : uniqueMatch(source, new RegExp(
     `(?<enabled>${ID})=await ${escapeRegExp(owner.groups.name)}\\(\\{browserBackends:${ID},deferTools:${ID}\\.deferCuaTools,` +
+    `(?:omitCuaConfirmationPolicyBySku:${ID}\\.omitCuaConfirmationPolicyBySku,)?` +
     `surfaces:${ID},codexHome:${ID},marketplaceName:${ID},marketplaces:${ID},nodeRepl:${ID}\\?void 0:${ID}` +
     `(?<context>,${CONTEXT_KEY}:(?<selection>${ID}))?\\}\\)`, "g"), "expected one cached plugin synchronization call");
   const syncOwner = enclosingFunction(source, sync.index);
@@ -176,7 +179,9 @@ function lifecycleContract(source, builder, syncSource) {
     "expected cached selection to belong to plugin initialization");
   const resume = uniqueMatch(source, new RegExp(
     `(?<![\\w$.#])${escapeRegExp(builder)}\\(\\{browserBackends:(?<selection>${ID})\\.browserBackends,` +
-    `deferTools:\\k<selection>\\.desktopFeatureAvailability\\.deferCuaTools,surfaces:\\k<selection>\\.cuaReplSurfaces,` +
+    `deferTools:\\k<selection>\\.desktopFeatureAvailability\\.deferCuaTools,` +
+    `(?:omitCuaConfirmationPolicyBySku:\\k<selection>\\.desktopFeatureAvailability\\.omitCuaConfirmationPolicyBySku,)?` +
+    `surfaces:\\k<selection>\\.cuaReplSurfaces,` +
     `nodeRepl:${ID}\\}(?<root>,\\k<selection>\\.${ROOT_KEY})?\\)`, "g"),
   "expected one thread configuration builder call");
   const resumeOwner = enclosingFunction(source, resume.index);
@@ -278,7 +283,7 @@ function applyUnifiedComputerUseModulePatch(source) {
   // its cached selection, then pass that context through both builder calls.
   const builder = uniqueMatch(source, new RegExp(
     `function (?<builder>[\\w$]+)\\(\\{browserBackends:(?<backends>[\\w$]+),deferTools:(?<defer>[\\w$]+),` +
-      `surfaces:(?<surfaces>[\\w$]+),nodeRepl:(?<nodeRepl>[\\w$]+),` +
+      `(?:omitCuaConfirmationPolicyBySku:[\\w$]+,)?surfaces:(?<surfaces>[\\w$]+),nodeRepl:(?<nodeRepl>[\\w$]+),` +
       `accessBootstrapPath:(?<accessBootstrapPath>[\\w$]+)\\}(?<rootParam>,(?<pluginRoot>[\\w$]+))?\\)\\{`,
     "g",
   ), "expected one native config builder");
@@ -296,7 +301,9 @@ function applyUnifiedComputerUseModulePatch(source) {
     `(?<audio>\\.\\.\\.${nodeRepl}\\?\\.env\\.SKY_[A-Z_]+==="1"\\?\\{` +
     `SKY_ENABLE_AUDIO:${surfaces}\\.includes\\("computer"\\)\\?"1":"0",` +
     `[^{}]*\\}:\\{\\},)`;
-  const environmentPrefix = `\\{\\.\\.\\.${nodeRepl}\\?\\.env,CUA_REPL_ENABLED_SURFACES:${surfaces}\\.join\\(","\\),`;
+  const environmentPrefix =
+    `\\{(?<prefix>\\.\\.\\.${nodeRepl}\\?\\.env,(?:[^{}]|\\{[^{}]*\\}){0,500}?)` +
+    `CUA_REPL_ENABLED_SURFACES:${surfaces}\\.join\\(","\\),`;
   const servicesEnvironment = `\\[(?<constants>[\\w$]+)\\.(?<constant>[\\w$]+)\\]:JSON\\.stringify\\((?<services>[\\w$]+)\\)`;
   const currentBanners = [...builderSource.matchAll(new RegExp(
     environmentPrefix + audioEnvironmentPattern + servicesEnvironment, "g"))];
@@ -394,7 +401,7 @@ function applyUnifiedComputerUseModulePatch(source) {
       index: builderOwner.start + banner.index,
       length: banner[0].length,
       replacement:
-        `{...${nodeRepl}?.env,CUA_REPL_ENABLED_SURFACES:${surfaces}.join(","),` +
+        `{${banner.groups.prefix}CUA_REPL_ENABLED_SURFACES:${surfaces}.join(","),` +
         "CODEX_LINUX_CUA_HOST_SOCKET:process.env.CODEX_LINUX_CUA_HOST_SOCKET," +
         `NODE_REPL_JS_BANNER:${bannerExpression(builderRoot)},` +
         banner.groups.audio +

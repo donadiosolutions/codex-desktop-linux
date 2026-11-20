@@ -29,6 +29,13 @@ test("inline exported automation factory stays linked to the eager tool catalog"
   assert.equal(matchesAutomationPluginEnableContract(source),true);
 });
 
+test("value exports stay linked across parenthesized rspack factories", () => {
+  const wrapFactory = factory => factory.replace(/^([\w$]+)\(/u, "$1:(function(") + ")";
+  const source = eager(chunk(...[owner, mapper, aggregate].map(wrapFactory)));
+  assert.equal(matchesAutomationPluginEnableContract(source), true);
+  assert.equal(applyAutomationPluginEnablePatch(source), source);
+});
+
 test("inline factory rejects detached exports, cache mismatches and duplicate owners",()=>{
   const cases=[
     chunk(owner.replace('VV:function','XX:function')),

@@ -153,6 +153,17 @@ test("current schedule owner gains multi-time parsing and summary labels inside 
   assert.equal(renderSchedule(patched, { freq: 3, byhour: [8], byminute: [30] }), "Daily at [08:30]");
 });
 
+test("multi-time schedule accepts parenthesized rspack factories", () => {
+  const factory = scheduleModule().replace("qKlE(e,t,n){", "qKlE:(function(e,t,n){") + ")";
+  const source = chunk("noop:(function(e,t){t.value=1})", factory);
+  const schedule = descriptors.find(({ id }) => id === "multi-time-rrule");
+  assert.equal(schedule.assetMatch(source), true);
+  const patched = schedule.apply(source);
+  assert.match(patched, /timeValues:codexLinuxRruleTimes\(/u);
+  assert.equal(schedule.apply(patched), patched);
+  assert.equal(renderSchedule(patched, { freq: 3, byhour: [17, 9], byminute: [0] }), "Daily at [09:00] and [17:00]");
+});
+
 test("schedule matcher rejects duplicate, partial, and incoherent owners", () => {
   const owner = scheduleModule();
   const cases = [

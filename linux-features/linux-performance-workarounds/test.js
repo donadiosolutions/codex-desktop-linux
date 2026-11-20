@@ -143,6 +143,14 @@ test("current Markdown animation workaround disables streaming fades", () => {
   assert.equal(applyLinuxMarkdownAnimationPerformancePatch(patched), patched);
 });
 
+test("Markdown workaround follows the motion fade variable and preserves image animation", () => {
+  const source = currentMarkdownStylesheetFixture()
+    .replace("animation:fade-in-HYTrVJ", "animation:var(--motion-fade-in)");
+  const patched = applyLinuxMarkdownAnimationPerformancePatch(source);
+  assert.equal(patched, applyLinuxMarkdownAnimationPerformancePatch(currentMarkdownStylesheetFixture()));
+  assert.equal(applyLinuxMarkdownAnimationPerformancePatch(patched), patched);
+});
+
 test("Markdown animation workaround fails closed without the image rule or with duplicates", () => {
   const source = currentMarkdownStylesheetFixture();
   for (const drifted of [

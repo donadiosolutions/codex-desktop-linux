@@ -16,9 +16,38 @@ const LINUX_COMPUTER_USE_CURSOR_BRIDGE_MARKER =
 const LINUX_CODEX_APP_THREAD_TOOLS_MARKER =
   "codexLinuxCodexAppThreadTools";
 
+const CURRENT_THREAD_TOOLS_REQUEST =
+  /(?<prefix>readDynamicTools:async (?<input>[\w$]+)=>\{let (?<result>[\w$]+)=await [\w$]+\.request\()\k<input>(?<suffix>\);return (?<local>[\w$]+)\?\(0,[\w$]+\.[\w$]+\)\(\k<result>\):\{kind:"dynamic",tools:\k<result>\}\},traceRequest:)/g;
+
+function matchesLinuxCodexAppThreadToolsContract(source) {
+  return (
+    source.includes("hasDesktopRuntime:!0,usesDesktopMcp:") &&
+    /readDynamicTools:e=>[\w$]+\.request\(e\),traceRequest(?:\(e\)\{|:e=>)/.test(source)
+  ) || (
+    source.includes("return{hasDesktopRuntime:!0,hasDeveloperInstructions:!0,isBrowserRuntime:!1,") &&
+    [...source.matchAll(CURRENT_THREAD_TOOLS_REQUEST)].length === 1
+  );
+}
+
 function applyLinuxCodexAppThreadToolsPatch(currentSource) {
   if (currentSource.includes(LINUX_CODEX_APP_THREAD_TOOLS_MARKER)) {
     return currentSource;
+  }
+
+  const currentRequests = [...currentSource.matchAll(CURRENT_THREAD_TOOLS_REQUEST)];
+  if (currentRequests.length === 1) {
+    const [request] = currentRequests;
+    const { prefix, input, local, suffix } = request.groups;
+    const guards = [...currentSource.matchAll(
+      /(?:let |,)(?<local>[\w$]+)=(?:\(0,[\w$]+\.[\w$]+\)|[\w$]+)\([\w$]+\);return\{hasDesktopRuntime:!0,hasDeveloperInstructions:!0,isBrowserRuntime:!1,/g,
+    )].filter(guard => guard.groups.local === local &&
+      guard.index < request.index &&
+      findMatchingBrace(currentSource, guard.index + guard[0].indexOf("return{") + "return".length) >= request.index + request[0].length);
+    if (guards.length === 1) {
+      const replacement = `${prefix}${local}?{...${input},featureOverrides:{...${input}.featureOverrides,thread_tools:!0}}:${input}/*${LINUX_CODEX_APP_THREAD_TOOLS_MARKER}*/${suffix}`;
+      return currentSource.slice(0, request.index) + replacement +
+        currentSource.slice(request.index + request[0].length);
+    }
   }
 
   const needleRegex =
@@ -305,4 +334,5 @@ module.exports = {
   isComputerUseUiEnabled,
   linuxComputerUseCursorBridgeRuntimeSource,
   matchesLinuxComputerUseHostPlatformContract,
+  matchesLinuxCodexAppThreadToolsContract,
 };

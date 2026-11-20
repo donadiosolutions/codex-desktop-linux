@@ -4,7 +4,7 @@ const { escapeRegExp, findMatchingBrace } = require("../../scripts/patches/lib/m
 
 const identifier = String.raw`[A-Za-z_$][\w$]*`;
 const order = String.raw`(?:\(0,${identifier}\.${identifier}\)|${identifier})`;
-const groupsArgument = String.raw`groups:${identifier}\(\{groups:${identifier},items:(?<items>${identifier})\}\)`;
+const groupsArgument = String.raw`groups:${order}\(\{groups:${identifier},(?:items:(?<items>${identifier})|hiddenTaskKeys:${identifier})\}\)`;
 const projectOrderArgument = String.raw`projectOrder:${order}\(${identifier},${identifier}\.${identifier}\.PROJECT_ORDER\)`;
 // Upstream compiles the unpinned project-group sorter inline:
 // `groups=function({groups:e,projectOrder:t}){return order(e,t)}({groups:filter({…,items}),projectOrder:read(get,keys.PROJECT_ORDER)})`.
@@ -28,8 +28,9 @@ function allMatches(source, pattern) {
 }
 
 // Bind the unpinned group sorter to the adjacent projectless sorter that
-// receives the same normalized sidebar items. Recency comes from upstream's
-// key resolver passed to that sorter, and the mode from the sidebar settings.
+// receives normalized sidebar items. The group filter now takes hidden task
+// keys, while older bundles passed the same items to both sorters.
+// Recency comes from the adjacent sorter and the mode from sidebar settings.
 function callContext(source, match) {
   const prefix = source.slice(Math.max(0, match.index - MODE_LOOKBEHIND), match.index);
   const modes = [...prefix.matchAll(new RegExp(
@@ -40,8 +41,9 @@ function callContext(source, match) {
   if (modes.length !== 1 || start == null) return null;
   const close = findMatchingBrace(source, tailStart + start[0].length - 1);
   if (close < 0) return null;
+  const items = match.groups.items == null ? identifier : escapeRegExp(match.groups.items);
   const resolver = source.slice(close + 1, close + 400).match(new RegExp(
-    String.raw`^\(\{explicitChatThreadKeys:${identifier},getRecencyAt:(${identifier}),items:${escapeRegExp(match.groups.items)},projectGroups:${identifier},projectlessThreadIds:new Set\(${identifier}\?\?\[\]\)\}\)`,
+    String.raw`^\(\{explicitChatThreadKeys:${identifier},getRecencyAt:(${identifier}),items:${items},projectGroups:${identifier},projectlessThreadIds:new Set\(${identifier}\?\?\[\]\)\}\)`,
   ));
   return resolver ? { mode: modes[0][1], recency: resolver[1] } : null;
 }

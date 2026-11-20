@@ -357,8 +357,9 @@ test("main patch captures every minified alias and preserves their contract rela
   assert.equal(applyDockIconMainPatch(patched), patched);
 });
 
-test("main patch ignores unrelated minified callback prefixes", () => {
-  const decoy = "a=n=>{if(n){r.close(),t();return}};";
+test("main patch ignores unrelated callbacks and Linux tray returns", () => {
+  const decoy = 'a=n=>{if(n){r.close(),t();return}};' +
+    'function installTray(){if(this.refreshMenu(),"linux"===process.platform)return void this.tray.on("click",()=>{this.onOpenMainWindow()})}';
   const source = decoy + currentMainSource;
   const patched = applyDockIconMainPatch(source);
   assert.notEqual(patched, source);

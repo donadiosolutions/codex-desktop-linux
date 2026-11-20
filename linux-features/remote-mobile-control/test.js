@@ -1117,7 +1117,7 @@ test("remote mobile control feature exposes opt-in main-bundle and webview patch
     }
     const byId = (id) => descriptors.find((descriptor) => descriptor.id === `feature:remote-mobile-control:${id}`);
     // Modules duplicated across chunks are patched in every copy.
-    for (const id of ["linux-remote-control-visibility", "linux-remote-control-enable-for-host-params", "linux-remote-control-copy"]) {
+    for (const id of ["linux-remote-control-visibility", "linux-remote-control-enable-for-host-params"]) {
       assert.equal(byId(id).assetMatch, undefined, id);
     }
     const hydration = byId("linux-remote-mobile-conversation-hydration");
@@ -3848,7 +3848,7 @@ test(
       const read = (name) => patchedAssets.get(name) ?? fs.readFileSync(path.join(assetsDir, name), "utf8");
       if (descriptor.assetMatch != null) names = names.filter((name) => descriptor.assetMatch(read(name), name, {}));
       assert.ok(names.length > 0, descriptor.id);
-      if (descriptor.assetMatch != null) assert.equal(names.length, 1, descriptor.id);
+      if (descriptor.assetMatch != null && descriptor.matchPolicy !== "all") assert.equal(names.length, 1, descriptor.id);
       for (const name of names) {
         const source = read(name);
         const result = captureWarns(() => descriptor.apply(source, {}));
@@ -3893,4 +3893,31 @@ test("inline exported status subscriptions preserve valid syntax and idempotence
  const patched=applyLinuxRemoteControlStatusReadGuardPatch(source);
  assert.notEqual(patched,source);assert.equal(applyLinuxRemoteControlStatusReadGuardPatch(patched),patched);
  assert.doesNotThrow(()=>new vm.Script(patched));
+});
+
+test("aliased Remote Control loader patches the exported rollout hook", () => {
+  const desc = remoteMobilePatchDescriptors.find(({ id }) => id === "linux-remote-control-load-gate");
+  const source = 'let h="1042620455",p="4114442250";let d={key:"features.remote_connections"},m={other:0,mC:function(){return(0,r.Zj)(h)}};';
+  assert.equal(desc.assetMatch(source), true);
+  const patched = desc.apply(source);
+  assert.notEqual(patched, source);
+  assert.equal(desc.assetMatch(patched), true);
+  assert.equal(desc.apply(patched), patched);
+  for (const [platform, gate, want] of [["Linux", false, true], ["Mac", false, false], ["Mac", true, true]]) {
+    const hook = vm.runInNewContext(`${patched};m.mC`, {
+      navigator: { userAgent: platform },
+      r: { Zj: (id) => { assert.equal(id, "1042620455"); return gate; } },
+    });
+    assert.equal(hook(), want);
+  }
+});
+
+test("remote terminal recovery recognizes parenthesized rspack factory functions", () => {
+  const source = syntheticRemoteTerminalStatusBundle()
+    .replace(/(EU9a|e9KY|sZJm)\(e,t,n\)\{/g, "$1:(function(e,t,n){")
+    .replace(/\}(?=,e9KY:|,sZJm:|\};$)/g, "})");
+  const patched = applyLinuxRemoteTerminalStatusRecoveryPatch(source);
+  assert.notEqual(patched, source);
+  assert.equal(applyLinuxRemoteTerminalStatusRecoveryPatch(patched), patched);
+  assert.doesNotThrow(() => new vm.Script(patched.replace(/export const /g, "var ")));
 });

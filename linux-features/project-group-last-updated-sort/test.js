@@ -175,6 +175,16 @@ test("current sidebar references use upstream recency without task objects", () 
   assert.deepEqual(groups.map(group => group.projectId), ["old", "new", "empty"]);
 });
 
+test("sidebar recency still drives sorting when group filtering takes hidden task keys", () => {
+  const source = currentProjectSource.replace(
+    "groups:q({groups:eu,items:V})",
+    "groups:(0,C.N1)({groups:eu,hiddenTaskKeys:H})",
+  );
+  const patched = applyPatchTwice(source);
+  assert.ok(patched.includes("groups:(0,C.N1)({groups:eu,hiddenTaskKeys:H})"));
+  assert.ok(patched.includes("PROJECT_ORDER),getRecencyAt:J,sortMode:Q})"));
+});
+
 test("missing or mismatched recency contract fails closed", () => {
   for (const source of [
     currentProjectSource.replace("getRecencyAt:J", "unknown:J"),

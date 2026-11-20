@@ -5,7 +5,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const { listWebviewAssetNames } = require("../../scripts/patches/lib/assets.js");
-const { applyCurrentRemoteTerminalStatusPatch, CURRENT_TERMINAL_MARKER } = require("./current-status.js");
+const { patchBreaksJavaScriptSyntax } = require("../../scripts/patches/lib/javascript-syntax.js");
+const {
+  applyCurrentRemoteTerminalStatusPatch,
+  matchesCurrentRemoteTerminalStatusContract,
+  CURRENT_TERMINAL_MARKER,
+} = require("./current-status.js");
 const { terminal } = require("./fixtures/current-status.js");
 
 test("signed current terminal status uses current request summary for waiting-on-input recovery", () => {
@@ -32,18 +37,18 @@ test("current terminal patch fails closed for missing, duplicate, or mismatched 
 });
 
 const SIGNED_APP = process.env.CODEX_SIGNED_EXTRACTED_APP;
-test("raw signed terminal asset matches the current fixture and patches exactly once", { skip: SIGNED_APP == null }, () => {
+test("raw signed terminal asset matches the current contract and patches exactly once", { skip: SIGNED_APP == null }, () => {
   const assetsDir = path.join(SIGNED_APP, "webview", "assets");
   const matches = listWebviewAssetNames(assetsDir, /\.js$/u)
     .map((name) => ({ name, source: fs.readFileSync(path.join(assetsDir, name), "utf8") }))
     .filter(({ source }) => source.includes("hasInProgressOwnedWork:") && source.includes("latestTurnHasSystemError:") && source.includes("isResponseInProgress:"));
   assert.equal(matches.length, 1);
   const { source: signed } = matches[0];
-  const fixtureFn = terminal.slice(0, terminal.indexOf("let h="));
-  assert.ok(signed.includes(fixtureFn));
+  assert.ok(matchesCurrentRemoteTerminalStatusContract(signed));
   assert.match(signed, /latestTurnHasSystemError:([A-Za-z_$][\w$]*)\?\.latestTurnError!=null/u);
   const patched = applyCurrentRemoteTerminalStatusPatch(signed);
   assert.equal(patched.split(CURRENT_TERMINAL_MARKER).length - 1, 1);
+  assert.equal(patchBreaksJavaScriptSyntax(signed, patched), false);
   assert.match(patched, /hasUserInputRequest:\["userInput","optionPicker","setupCodexStep"\]\.includes\(([A-Za-z_$][\w$]*)\?\.summary\.pendingRequest\?\.kind\)/u);
   assert.equal(applyCurrentRemoteTerminalStatusPatch(patched), patched);
 });

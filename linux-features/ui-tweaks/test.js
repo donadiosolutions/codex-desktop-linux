@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const zlib = require("node:zlib");
 
 require("./suggested-prompts.test.js");
 require("./dock-icon.test.js");
@@ -893,18 +894,42 @@ test("reasoning effort descriptor rejects missing, duplicate and mismatched loca
   }
 });
 
-test("reasoning effort labels apply to the signed official Simplified Chinese locale", {
-  skip: process.env.CODEX_SIGNED_EXTRACTED_APP ? false : "CODEX_SIGNED_EXTRACTED_APP is not set",
-}, () => {
-  const { findZhCnLocaleAsset } = require("./patches/reasoning-effort-labels.js");
-  const locale = findZhCnLocaleAsset(process.env.CODEX_SIGNED_EXTRACTED_APP);
-  assert.ok(locale.source.includes('"composer.mode.local.reasoning.none.label":"无"'));
-  const patched = applyEnglishReasoningLabels(locale.source, { warnOnMissingMarkers: true });
-  assert.notEqual(patched, locale.source);
-  for (const [key, label] of Object.entries(ENGLISH_REASONING_LABELS)) {
-    assert.ok(patched.includes(`"${key}":"${label}"`), key);
-  }
-  assert.equal(applyEnglishReasoningLabels(patched), patched);
+test("reasoning effort labels patch the compressed zh-CN catalog selected by the signed loader shape", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ui-tweaks-zh-cn-gzip-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const assets = path.join(root, "webview", "assets");
+  fs.mkdirSync(path.join(assets, "async"), { recursive: true });
+  fs.mkdirSync(path.join(assets, "locales"), { recursive: true });
+  fs.writeFileSync(path.join(assets, "loader.js"),
+    'let loaders={"../locales/zh-CN.json":function(){return i.e(547807).then(i.bind(i,"F4or"))}};');
+  const keysPath = "assets/locales/keys.f10c33ea71d5a779.json.codex-gzip";
+  const valuesPath = "assets/locales/zh-CN.keys.f10c33ea71d5a779.ea3e9265a7acd305.json.codex-gzip";
+  fs.writeFileSync(path.join(assets, "async", "547807.2dd5264152.js"),
+    'export const __rspack_esm_ids=[547807];export const __webpack_modules__={F4or(e,a,o){' +
+    'o.a(e,async function(e,s){try{async function t(e){let a=await fetch(o.p+e);' +
+    'return new Response(a.body.pipeThrough(new DecompressionStream("gzip"))).json()}o.r(a);' +
+    `let[e,c]=await Promise.all([t("${keysPath}"),t("${valuesPath}")]);` +
+    'a.default=Object.fromEntries(e.map((e,a)=>[e,c[a]])),s()}catch(e){s(e)}},1)}};');
+  const keys = [...Object.keys(ENGLISH_REASONING_LABELS), "unrelated"];
+  const values = keys.map(() => "保持");
+  const paths = [keysPath, valuesPath].map((name) => path.join(root, "webview", name));
+  const gzip = (value) => zlib.gzipSync(JSON.stringify(value));
+  fs.writeFileSync(paths[0], gzip(keys));
+  fs.writeFileSync(paths[1], gzip(values));
+
+  const result = applyEnglishReasoningLabelsToApp(root);
+  assert.deepEqual(result, { matched: 1, changed: 1, targets: [path.join("webview", valuesPath)] });
+  assert.deepEqual(fs.readFileSync(paths[0]), gzip(keys));
+  assert.deepEqual(JSON.parse(zlib.gunzipSync(fs.readFileSync(paths[1]))),
+    [...Object.values(ENGLISH_REASONING_LABELS), "保持"]);
+  assert.equal(applyEnglishReasoningLabelsToApp(root).changed, 0);
+
+  fs.writeFileSync(paths[0], gzip([...keys.slice(1), "different"]));
+  fs.writeFileSync(paths[1], gzip(values));
+  const { value, warnings } = withCapturedWarns(() => applyEnglishReasoningLabelsToApp(root));
+  assert.equal(value.changed, 0);
+  assert.match(warnings[0], /composer\.mode\.local\.reasoning\.none\.label/);
+  assert.deepEqual(fs.readFileSync(paths[1]), gzip(values));
 });
 
 test("reasoning effort label drift warns and leaves the asset unchanged", () => {

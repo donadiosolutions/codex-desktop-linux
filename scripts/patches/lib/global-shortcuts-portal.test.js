@@ -64,6 +64,26 @@ test("shared backend preserves pending update state before window cleanup", () =
   assert.equal(marked, true);
 });
 
+test("shared backend preserves the signed focused-window and quit contracts", () => {
+  const source = mainBundleFixture()
+    .replace("hotkeyWindowLifecycleManager:a,", "")
+    .replaceAll("a.dispose(),o.dispose(),Promise.allSettled([", "o.dispose(),Promise.allSettled([")
+    .replace(
+      "let e=c.BrowserWindow.fromWebContents(this.origin);return null!=e&&e.isFocused()?new CaptureSession(this.origin,e):null}",
+      "let e=this.getFocusedOwnerWindow();return null==e?null:new CaptureSession(this.origin,e)}" +
+      "getFocusedOwnerWindow(){let e=c.BrowserWindow.getFocusedWindow();return e?.webContents===this.origin?e:null}",
+    );
+  const patched = installPortalBackend(source);
+  assert.doesNotThrow(() => new vm.Script(patched));
+  assert.match(patched, /let e=this\.getFocusedOwnerWindow\(\);/);
+  assert.match(patched, /!\(this\.getFocusedOwnerWindow\(\)===e\)/);
+  assert.match(patched, /getFocusedOwnerWindow\(\)\{let e=c\.BrowserWindow\.getFocusedWindow\(\);return e\?\.webContents===this\.origin\?e:null\}/);
+  const disposal = "codexLinuxGlobalShortcutsQuitStopped=codexLinuxGlobalShortcutsPortalShutdown()," +
+    "o.dispose(),Promise.allSettled([codexLinuxGlobalShortcutsQuitStopped,";
+  assert.equal(patched.split(disposal).length - 1, 2);
+  assert.doesNotMatch(patched, /hotkeyWindowLifecycleManager|BrowserWindow\.fromWebContents/);
+});
+
 test("shared backend installs into the rspack module that owns the registration function", () => {
   const source = mainBundleFixture();
   const chunk = (owner, other) => `exports.ids=[916],exports.modules={11(e,t,r){"use strict";${owner}},22(e,t,r){"use strict";${other}}};`;

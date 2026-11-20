@@ -8,6 +8,7 @@ const {
   applyLinuxComputerUseFeaturePatch,
   applyLinuxComputerUseHostPlatformPatch,
   applyLinuxCodexAppThreadToolsPatch,
+  matchesLinuxCodexAppThreadToolsContract,
   matchesLinuxComputerUseHostPlatformContract,
 } = require("../../scripts/patches/impl/computer-use.js");
 
@@ -56,9 +57,8 @@ module.exports = [
     phase: "webview-asset",
     order: 20_136,
     ciPolicy: "optional",
-    assetNeedles: ["hasDesktopRuntime:!0,usesDesktopMcp:", "readDynamicTools:e=>"],
-    assetMatch: source => source.includes("hasDesktopRuntime:!0,usesDesktopMcp:") &&
-      /readDynamicTools:e=>[\w$]+\.request\(e\),traceRequest:e=>/.test(source),
+    assetNeedles: ["hasDesktopRuntime:!0,", "readDynamicTools:"],
+    assetMatch: matchesLinuxCodexAppThreadToolsContract,
     matchPolicy: "all",
     missingDescription: "local thread dynamic-tool request construction",
     skipDescription: "Linux Codex app thread-tools patch",

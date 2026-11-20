@@ -241,3 +241,31 @@ test("26.1027 imported calls and quoted literals retain the complete metadata co
   assert.equal(current.latestModel, ledger.model);
   assert.equal(current.latestReasoningEffort, ledger.reasoningEffort);
 });
+
+test("normalized summary forks keep the original configured model and patch both process owners", () => {
+  const signed = fs.readFileSync(path.join(__dirname, "fixture-current.js"), "utf8")
+    .replace("function vo(e){return{id:e.conversationId,", "function vo(input){let e=o()((0,n.Z)(input));return{id:e.conversationId,");
+  const patched = applyPatch(signed);
+  assert.notEqual(patched, signed);
+  assert.equal(applyPatch(patched), patched);
+  assert.match(patched, /latestModel:input\.model\?\?/, "read the model before summary normalization");
+  assert.match(patched, /latestReasoningEffort:input\.reasoningEffort\?\?/);
+
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-processes-"));
+  try {
+    const build = path.join(temp, ".vite", "build");
+    fs.mkdirSync(build, { recursive: true });
+    const main = path.join(build, "early-bootstrap-916-deadbeef.js");
+    const worker = path.join(build, "app-server-host.js");
+    fs.writeFileSync(main, signed);
+    fs.writeFileSync(worker, signed);
+    const { descriptors: [descriptor] } = require("./patch.js");
+    const result = descriptor.apply(temp);
+    assert.equal(result.changed, 2);
+    assert.equal(fs.readFileSync(main, "utf8"), patched);
+    assert.equal(fs.readFileSync(worker, "utf8"), patched);
+    assert.equal(descriptor.apply(temp).changed, 0);
+  } finally {
+    fs.rmSync(temp, { recursive: true });
+  }
+});

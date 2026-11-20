@@ -579,6 +579,17 @@ test("enables AppShots availability atom on Linux", () => {
   assert.equal(applyLinuxAppshotAvailabilityPatch(legacy), legacy);
 });
 
+test("signed Fedora 26.1117 selector drift exposes Linux AppShots", () => {
+  const root = path.resolve(__dirname, "../../.tmp/native-update/nov20.tpNmoNp6/signed-asar");
+  const source = fs.readFileSync(path.join(root, "webview/assets/async/911644.0d1746fd1d.js"), "utf8");
+  const descriptor = descriptors.find((item) => item.id === "linux-appshots-availability");
+  assert.equal(descriptor.assetMatch(source), true);
+  const patched = applyLinuxAppshotAvailabilityPatch(source);
+  assert.notEqual(patched, source);
+  assert.equal(patched.split("codexLinuxAppshotsPlatformAvailable").length - 1, 1);
+  assert.match(patched, /function f\(e\)\{return"linux"===e\/\*codexLinuxAppshotsPlatformAvailable\*\/\|\|"macOS"===e\|\|"windows"===e\}/);
+});
+
 test(
   "signed upstream webview exposes one AppShots availability owner",
   { skip: process.env.CODEX_SIGNED_EXTRACTED_APP == null },
