@@ -105,13 +105,21 @@ test("current inline refresh preserves cancellation and installs resume triggers
 
 test("settings sidebar retains access state while bypassing the aliased outbound tab gate", () => {
   const patch = descriptor("linux-remote-control-settings-ux");
-  const source = 'let f="782640499";function tabs(e,t,s){let o=[];s&&!e(c.P,f)&&o.push(p("access-other-devices",t));return o}';
-  const patched = patch.apply(source);
-  assert.notEqual(patched, source);
-  assert.equal(patch.apply(patched), patched);
-  const tabs = vm.runInNewContext(`${patched};tabs`, {
-    c: { P: "gate" }, p: (id) => id, navigator: { userAgent: "Linux" },
-  });
-  assert.equal(tabs(() => true, "linux", true).length, 1);
-  assert.equal(tabs(() => true, "linux", false).length, 0);
+  for (const negation of ["", "!"]) {
+    const source = 'let f="782640499";function tabs(e,t,s){let o=[];s&&' +
+      negation + 'e(c.P,f)&&o.push(p("access-other-devices",t));return o}';
+    const patched = patch.apply(source);
+    assert.notEqual(patched, source);
+    assert.equal(patch.apply(patched), patched);
+    for (const userAgent of ["Linux", "Macintosh"]) {
+      const tabs = vm.runInNewContext(`${patched};tabs`, {
+        c: { P: "gate" }, p: (id) => id, navigator: { userAgent },
+      });
+      for (const gate of [false, true]) {
+        assert.equal(tabs(() => gate, "local", false).length, 0);
+        assert.equal(tabs(() => gate, "local", true).length,
+          Number(userAgent === "Linux" || (negation === "!" ? !gate : gate)));
+      }
+    }
+  }
 });

@@ -47,7 +47,7 @@ function matchesCopilotModelAndReasoningPersistenceContract(source) {
   if (exportedMatches.length !== 1) return false;
 
   const match = exportedMatches[0];
-  const ownerRegion = source.slice(Math.max(0, match.index - 6_000), match.index + match[0].length);
+  const ownerRegion = source.slice(Math.max(0, match.index - 15_000), match.index + match[0].length);
   const defaultWrites = findAllMatches(
     ownerRegion,
     new RegExp(`\\.setDefaultModelConfig\\(${JS_IDENT},${JS_IDENT},${JS_IDENT}\\.profile\\)`),

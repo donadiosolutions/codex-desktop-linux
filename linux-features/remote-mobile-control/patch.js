@@ -622,10 +622,31 @@ function matchesLinuxRemoteControlLoadGateContract(source) {
   if (aliasedRemoteControlLoadGate(source) != null || aliasedRemoteControlLoadGate(source, true) != null) {
     return source.split(REMOTE_CONTROL_LOAD_GATE_MARKER).length <= 2;
   }
-  return [...source.matchAll(REMOTE_CONTROL_LOAD_GATE_NEEDLE)].length +
+  const directGates = [...source.matchAll(REMOTE_CONTROL_LOAD_GATE_NEEDLE)].length +
     [...source.matchAll(REMOTE_CONTROL_LOAD_GATE_PATCHED)].length +
     [...source.matchAll(REMOTE_CONTROL_LOAD_GATE_PATCHED_INLINE)].length +
-    [...source.matchAll(REMOTE_CONTROL_LOAD_GATE_PATCHED_NAMED)].length === 1;
+    [...source.matchAll(REMOTE_CONTROL_LOAD_GATE_PATCHED_NAMED)].length;
+  return directGates === 1 || (directGates === 0 && remoteControlConfigFallback(source) !== null);
+}
+
+const REMOTE_CONTROL_CONFIG_FALLBACK =
+  /function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{if\(!0===\2\?\.\["features\.remote_connections"\]\)return!0;let ([A-Za-z_$][\w$]*)=\2\?\.features;return null==\4\|\|"object"!=typeof \4\|\|Array\.isArray\(\4\)\?\3:Object\.getOwnPropertyDescriptor\(\4,"remote_connections"\)\?\.value===!0\|\|\3\}/gu;
+
+const REMOTE_CONTROL_CONFIG_LINUX_PREFIX =
+  `{if(${REMOTE_CONTROL_LOAD_GATE_LINUX})return!0;/*${REMOTE_CONTROL_LOAD_GATE_MARKER}*/`;
+
+function remoteControlConfigFallback(source) {
+  const markers = countText(source, REMOTE_CONTROL_LOAD_GATE_MARKER);
+  if (markers > 1) return null;
+  const pristine = markers === 1 ? source.replace(REMOTE_CONTROL_CONFIG_LINUX_PREFIX, "{") : source;
+  if (markers === 1 && pristine === source) return null;
+  const matches = [...pristine.matchAll(REMOTE_CONTROL_CONFIG_FALLBACK)];
+  if (matches.length !== 1) return null;
+  const [match] = matches;
+  const patched = pristine.slice(0, match.index) +
+    match[0].replace("{if(", `${REMOTE_CONTROL_CONFIG_LINUX_PREFIX}if(`) +
+    pristine.slice(match.index + match[0].length);
+  return markers === 0 || patched === source ? patched : null;
 }
 
 function applyLinuxRemoteControlLoadGatePatch(source) {
@@ -644,6 +665,8 @@ function applyLinuxRemoteControlLoadGatePatch(source) {
       const replacement = hook.replace("return", `return/*${REMOTE_CONTROL_LOAD_GATE_MARKER}*/${REMOTE_CONTROL_LOAD_GATE_LINUX}||`);
       return source.slice(0, index) + replacement + source.slice(index + hook.length);
     }
+    const configFallback = remoteControlConfigFallback(source);
+    if (configFallback !== null) return configFallback;
   }
   if (pristine.length === 0 && patched.length === 1 && markers === 2) return source;
   if (pristine.length !== 1 || patched.length !== 0 || markers !== 0) {
@@ -805,7 +828,7 @@ function applyLinuxRemoteControlOutboundTabGatePatch(source) {
   }
 
   const gates = [...source.matchAll(/([A-Za-z_$][\w$]*)=\(0,[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*\)\("782640499"\)/gu)];
-  const currentGate = /(?<state>[A-Za-z_$][\w$]*)&&!(?<getter>[A-Za-z_$][\w$]*)\((?<gate>[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*),(?<id>[A-Za-z_$][\w$]*)\)&&(?<items>[A-Za-z_$][\w$]*)\.push\((?<route>[A-Za-z_$][\w$]*)\("access-other-devices",(?<platform>[A-Za-z_$][\w$]*)\)\)/gu;
+  const currentGate = /(?<state>[A-Za-z_$][\w$]*)&&(?<negation>!?)(?<getter>[A-Za-z_$][\w$]*)\((?<gate>[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*),(?<id>[A-Za-z_$][\w$]*)\)&&(?<items>[A-Za-z_$][\w$]*)\.push\((?<route>[A-Za-z_$][\w$]*)\("access-other-devices",(?<platform>[A-Za-z_$][\w$]*)\)\)/gu;
   const current = [...source.matchAll(currentGate)].filter((match) =>
     source.includes(`let ${match.groups.id}="782640499"`),
   );
@@ -813,7 +836,7 @@ function applyLinuxRemoteControlOutboundTabGatePatch(source) {
     const match = current[0];
     const g = match.groups;
     return source.slice(0, match.index) +
-      `${g.state}&&/*${REMOTE_CONTROL_OUTBOUND_TAB_GATE_MARKER}*/(typeof navigator!=\`undefined\`&&navigator.userAgent.includes(\`Linux\`)||!${g.getter}(${g.gate},${g.id}))&&${g.items}.push(${g.route}("access-other-devices",${g.platform}))` +
+      `${g.state}&&/*${REMOTE_CONTROL_OUTBOUND_TAB_GATE_MARKER}*/(typeof navigator!=\`undefined\`&&navigator.userAgent.includes(\`Linux\`)||${g.negation}${g.getter}(${g.gate},${g.id}))&&${g.items}.push(${g.route}("access-other-devices",${g.platform}))` +
       source.slice(match.index + match[0].length);
   }
   if (gates.length !== 1) {

@@ -168,6 +168,7 @@ function resumeHarness(source, trustedServicesKey, chunks) {
     [env[3]]: "browserIdentity",
     [fallback[1]]: { "mcp_servers.cua_repl": { enabled: false } },
     [cleanup[1]]: () => {},
+    r8: "NODE_REPL_ENV_DELETE",
     URL,
     require: name => {
       assert.equal(name, "node:path");
@@ -205,7 +206,10 @@ test("official per-thread CUA overrides carry the trusted root when resuming cha
   assert.notEqual(patched, source);
   assert.equal(applyUnifiedComputerUsePatch(patched), patched);
   assert.doesNotThrow(() => new vm.Script(patched));
-  const builderStart = patched.search(new RegExp(`function ${IDENT}\\(\\{browserBackends:${IDENT},deferTools:`));
+  const builderStart = patched.search(new RegExp(
+    `function ${IDENT}\\(\\{browserBackends:${IDENT},deferTools:${IDENT},` +
+    `(?:omitCuaConfirmationPolicyBySku:${IDENT},)?surfaces:`,
+  ));
   const builderServices = only(owner(patched, builderStart),
     new RegExp(`\\[${IDENT}\\.(${IDENT})\\]:JSON\\.stringify\\(${IDENT}\\)`, "g"));
   const trustedServicesKey = trustedServicesConstant(chunks, builderServices[1]);

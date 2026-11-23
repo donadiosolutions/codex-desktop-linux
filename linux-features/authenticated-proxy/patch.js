@@ -7,12 +7,12 @@ const JS_IDENT = "[A-Za-z_$][\\w$]*";
 // network surface are one contract: the helpers are declared at the top of the
 // chunk that holds both, so every injected call resolves in that module scope.
 const READY_PATTERN = new RegExp(
-  `await (${JS_IDENT})\\.app\\.whenReady\\(\\)(?=,${JS_IDENT}\\("main app\\.whenReady resolved")`,
+  `await (${JS_IDENT})\\.app\\.whenReady\\(\\)(?=\\),${JS_IDENT}\\("main app\\.whenReady resolved"\\)|,${JS_IDENT}\\("main app\\.whenReady resolved")`,
   "g",
 );
 const PATCHED_READY_PATTERN = new RegExp(
   `\\(codexLinuxInstallProxyAuthHandler\\((${JS_IDENT})\\),await \\1\\.app\\.whenReady\\(\\)\\)` +
-    `(?=,${JS_IDENT}\\("main app\\.whenReady resolved")`,
+    `(?=\\),${JS_IDENT}\\("main app\\.whenReady resolved"\\)|,${JS_IDENT}\\("main app\\.whenReady resolved")`,
   "g",
 );
 const FETCH_TAIL =

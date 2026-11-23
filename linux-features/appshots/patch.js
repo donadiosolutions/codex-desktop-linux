@@ -15,14 +15,20 @@ const PATCHED_APPSHOT_AVAILABILITY = new RegExp(
     `"linux"===\\1\\/\\*${APPSHOT_AVAILABILITY_MARKER}\\*\\/\\|\\|` +
     `"macOS"===\\1\\|\\|"windows"===\\1\\}`,
 );
-const APP_SHOT_PLATFORM_GATE = /function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*)\)\{return"macOS"===\2\|\|"windows"===\2\}/g;
+const CURRENT_SIMPLE_APPSHOT_AVAILABILITY = new RegExp(
+  `function (${IDENT})\\((${IDENT})\\)\\{return"macOS"===\\2\\|\\|"windows"===\\2\\}`,
+  "g",
+);
+const PATCHED_SIMPLE_APPSHOT_AVAILABILITY = new RegExp(
+  `function ${IDENT}\\((${IDENT})\\)\\{return"linux"===\\1\\/\\*${APPSHOT_AVAILABILITY_MARKER}\\*\\/\\|\\|"macOS"===\\1\\|\\|"windows"===\\1\\}`,
+);
 
 function warn(message, patchName) {
   console.warn(`WARN: ${message} - skipping ${patchName}`);
 }
 
 function applyLinuxAppshotAvailabilityPatch(currentSource) {
-  if (PATCHED_APPSHOT_AVAILABILITY.test(currentSource)) {
+  if (PATCHED_APPSHOT_AVAILABILITY.test(currentSource) || PATCHED_SIMPLE_APPSHOT_AVAILABILITY.test(currentSource)) {
     return currentSource;
   }
   const matches = [...currentSource.matchAll(CURRENT_APPSHOT_AVAILABILITY)];
@@ -33,12 +39,11 @@ function applyLinuxAppshotAvailabilityPatch(currentSource) {
         `${prefix}"linux"===${platformVar}/*${APPSHOT_AVAILABILITY_MARKER}*/||"macOS"===${platformVar}||"windows"===${platformVar}}`,
     );
   }
-
-  const platformGates = [...currentSource.matchAll(APP_SHOT_PLATFORM_GATE)];
-  if (platformGates.length === 1 && currentSource.includes("requirements?.allowAppshots!==!1") && currentSource.includes('"2124127696"')) {
-    const gate = platformGates[0];
-    const replacement = gate[0].replace("return", `return"linux"===${gate[2]}/*${APPSHOT_AVAILABILITY_MARKER}*/||`);
-    return currentSource.slice(0, gate.index) + replacement + currentSource.slice(gate.index + gate[0].length);
+  const simple = [...currentSource.matchAll(CURRENT_SIMPLE_APPSHOT_AVAILABILITY)];
+  if (simple.length === 1 && currentSource.includes("requirements?.allowAppshots!==!1")) {
+    const [match] = simple;
+    const replacement = match[0].replace("return", `return"linux"===${match[2]}/*${APPSHOT_AVAILABILITY_MARKER}*/||`);
+    return currentSource.slice(0, match.index) + replacement + currentSource.slice(match.index + match[0].length);
   }
 
   warn("Could not find AppShots availability gate", "Linux AppShots availability patch");
@@ -49,8 +54,8 @@ function matchesLinuxAppshotAvailabilityContract(source) {
   CURRENT_APPSHOT_AVAILABILITY.lastIndex = 0;
   return [...source.matchAll(CURRENT_APPSHOT_AVAILABILITY)].length === 1 ||
     PATCHED_APPSHOT_AVAILABILITY.test(source) ||
-    source.includes("requirements?.allowAppshots!==!1") && source.includes('"2124127696"') &&
-      ([...source.matchAll(APP_SHOT_PLATFORM_GATE)].length === 1 || source.includes(`/*${APPSHOT_AVAILABILITY_MARKER}*/`));
+    source.includes("requirements?.allowAppshots!==!1") &&
+      ([...source.matchAll(CURRENT_SIMPLE_APPSHOT_AVAILABILITY)].length === 1 || PATCHED_SIMPLE_APPSHOT_AVAILABILITY.test(source));
 }
 
 function linuxAppshotWaylandHelperSource() {

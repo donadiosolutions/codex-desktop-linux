@@ -77,14 +77,15 @@ test("the signed baseline owns quit approval and shell startup", {
   assert.ok(handlerBody.includes(`${pending}()`));
   assert.ok(handlerBody.includes(`${state}.markQuitApproved()`));
   const approvalGate = `!${state}.canQuitWithoutPrompt()`;
-  const pendingCheck = `${pending}()`;
   const localApproval = `${state}.markQuitApproved()`;
   const quittingTransition = `${windows}.markAppQuitting()`;
-  for (const marker of [approvalGate, pendingCheck, localApproval, quittingTransition]) {
-    assert.equal(handlerBody.split(marker).length - 1, 1);
-  }
-  assert.ok(handlerBody.indexOf(approvalGate) < handlerBody.indexOf(pendingCheck));
-  assert.ok(handlerBody.indexOf(pendingCheck) < handlerBody.indexOf(localApproval));
+  assert.equal(handlerBody.split(approvalGate).length - 1, 1);
+  const pendingMatches = [...handlerBody.matchAll(new RegExp(`(?<![\\w$.])${pending}\\(\\)`, "g"))];
+  assert.equal(pendingMatches.length, 1);
+  assert.equal(handlerBody.split(localApproval).length - 1, 1);
+  assert.equal(handlerBody.split(quittingTransition).length - 1, 1);
+  assert.ok(handlerBody.indexOf(approvalGate) < pendingMatches[0].index);
+  assert.ok(pendingMatches[0].index < handlerBody.indexOf(localApproval));
   assert.ok(handlerBody.indexOf(localApproval) < handlerBody.indexOf(quittingTransition));
   const formatter = handlerBody.match(new RegExp(`\\(0,(${id})\\.F\\$\\)`, "u"))?.[1];
   const logger = handlerBody.match(new RegExp(`\\(0,(${id})\\.tZQ\\)`, "u"))?.[1];

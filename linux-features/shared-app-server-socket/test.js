@@ -2118,6 +2118,36 @@ test("patch rejects retired, duplicate, and mixed transport layouts", () => {
   }
 });
 
+test("current-shape idempotence rejects partial, duplicate, and mixed insertions", () => {
+  const current = hostWorkerBundle();
+  const patched = applySharedAppServerSocketPatch(current);
+  assert.notEqual(patched, current);
+  assert.equal(applySharedAppServerSocketPatch(patched), patched);
+  const branchStart = patched.indexOf("if(process.env.CODEX_LINUX_APP_SERVER_BRIDGE_SOCKET");
+  const branchEnd = patched.indexOf("return new worker.Stdio(", branchStart);
+  assert.ok(branchStart >= 0 && branchEnd > branchStart);
+  const branch = patched.slice(branchStart, branchEnd);
+  const cases = [
+    patched.replace("return new CodexLinuxSharedAppServerSocketTransport(", "return new IncompleteTransport("),
+    patched.replace("class CodexLinuxSharedAppServerSocketTransport", "class IncompleteTransport"),
+    `${patched}class CodexLinuxSharedAppServerSocketTransport{}`,
+    patched.slice(0, branchEnd) + branch + patched.slice(branchEnd),
+    current + patched,
+  ];
+  for (const source of cases) {
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(" "));
+    try {
+      assert.equal(applySharedAppServerSocketPatch(source), source);
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /one app-server host WebSocket transport and local config callback/i);
+  }
+});
+
 test("patch leaves unsupported bundle shapes unchanged with a warning", () => {
   const warnings = [];
   const originalWarn = console.warn;

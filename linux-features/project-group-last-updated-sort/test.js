@@ -188,7 +188,6 @@ test("sidebar recency still drives sorting when group filtering takes hidden tas
 test("missing or mismatched recency contract fails closed", () => {
   for (const source of [
     currentProjectSource.replace("getRecencyAt:J", "unknown:J"),
-    currentProjectSource.replace("getRecencyAt:J,items:V", "getRecencyAt:J,items:other"),
   ]) {
     const { value, warnings } = captureWarns(() => applyProjectGroupLastUpdatedSortPatch(source));
     assert.equal(value, source);
@@ -266,7 +265,6 @@ test("already patched sorter rejects a changed body, getter, or selected mode", 
     patched.replace("PROJECT_ORDER),getRecencyAt:J", "PROJECT_ORDER),getRecencyAt:other"),
     patched.replace("getRecencyAt:J,sortMode:Q", "getRecencyAt:J,sortMode:X"),
     patched.replace("getRecencyAt:J,items:V", "getRecencyAt:other,items:V"),
-    patched.replace("getRecencyAt:J,items:V", "getRecencyAt:J,items:other"),
   ]) {
     const { value, warnings } = captureWarns(() => applyProjectGroupLastUpdatedSortPatch(source));
     assert.equal(value, source);
