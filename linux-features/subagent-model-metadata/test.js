@@ -269,3 +269,34 @@ test("normalized summary forks keep the original configured model and patch both
     fs.rmSync(temp, { recursive: true });
   }
 });
+
+test("26.1120 patches the conversation stores in the app-server host and renderer async asset", () => {
+  const source = fs.readFileSync(path.join(__dirname, "fixture-current.js"), "utf8")
+    .replace("function vo(e){return{id:e.conversationId,", "function vo(input){let e=o()((0,n.Z)(input));return{id:e.conversationId,");
+  const patched = applyPatch(source);
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-renderer-"));
+  try {
+    const host = ".vite/build/app-server-host.js";
+    const renderer = "webview/assets/async/49792.fixture.js";
+    for (const file of [host, renderer]) {
+      fs.mkdirSync(path.dirname(path.join(temp, file)), { recursive: true });
+      fs.writeFileSync(path.join(temp, file), source);
+    }
+    const { descriptors: [descriptor] } = require("./patch.js");
+    assert.deepEqual(descriptor.apply(temp), { matched: 2, changed: 2, targets: [host, renderer] });
+    for (const file of [host, renderer]) {
+      assert.equal(fs.readFileSync(path.join(temp, file), "utf8"), patched);
+    }
+    assert.equal(descriptor.apply(temp).changed, 0);
+
+    fs.writeFileSync(path.join(temp, host), source);
+    fs.writeFileSync(path.join(temp, renderer), source);
+    fs.writeFileSync(path.join(temp, ".vite/build/desktop.js"), source);
+    assert.equal(descriptor.apply(temp).matched, 0);
+    for (const file of [host, renderer, ".vite/build/desktop.js"]) {
+      assert.equal(fs.readFileSync(path.join(temp, file), "utf8"), source);
+    }
+  } finally {
+    fs.rmSync(temp, { recursive: true });
+  }
+});

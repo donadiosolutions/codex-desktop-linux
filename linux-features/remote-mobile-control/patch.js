@@ -1240,39 +1240,41 @@ function applyCurrentRemoteMobileActiveStatusPatch(source) {
 }
 
 
-// Upstream discovers unknown conversations only on cloud hosts and only for
-// turn/started and turn/completed. Linux also discovers local-host
-// conversations (started from mobile) and buffers their item/started and
-// item/completed notifications until the thread is hydrated.
-function remoteMobileConversationHydrationGuardPattern({ patched = false, flags = "u" } = {}) {
+// Preserve upstream's cloud and outbound remote-control turn discovery.
+// Linux's local app server also discovers a thread on its first turn or item.
+function remoteMobileConversationHydrationGuardPattern(patched) {
   const I = DEVICE_KEY_IDENT;
   const marker = patched
     ? `/\\*${REMOTE_MOBILE_CONVERSATION_HYDRATION_MARKER}\\*/`
     : "";
-  const hostGuard = patched
-    ? '!this\\.manager\\.isCloudHost&&"local"!==this\\.manager\\.getHostId\\(\\)\\|\\|'
-    : "!this\\.manager\\.isCloudHost\\|\\|";
-  const methodGuard = patched
-    ? `"turn/started"!==(?<notification>${I})\\.method&&"turn/completed"!==\\k<notification>\\.method&&` +
-      `\\("local"!==this\\.manager\\.getHostId\\(\\)\\|\\|` +
-      `"item/started"!==\\k<notification>\\.method&&"item/completed"!==\\k<notification>\\.method\\)`
-    : `"turn/started"!==(?<notification>${I})\\.method&&"turn/completed"!==\\k<notification>\\.method`;
+  const localHost = '"local"===this\\.manager\\.getHostId\\(\\)';
+  const localItems = patched
+    ? `\\|\\|${localHost}&&\\("item/started"===\\k<notification>\\.method\\|\\|"item/completed"===\\k<notification>\\.method\\)`
+    : "";
+  const localHostAlternative = patched ? `\\|\\|${localHost}` : "";
   return new RegExp(
-    `return null!=(?<pending>${I})\\?\\(\\k<pending>\\.ignored\\.add\\((?<ignore>${I})\\),this\\.buffer\\.buffer\\((?<delivery>${I}),\\k<ignore>\\)\\):` +
-      `!\\(${marker}${hostGuard}${methodGuard}\\|\\|` +
-      `this\\.context\\.threadStore\\.conversations\\.has\\((?<conversation>${I})\\)\\|\\|` +
-      `this\\.context\\.threadStore\\.isConversationSuppressed\\(\\k<conversation>\\)\\)&&` +
-      `\\(this\\.beginDiscovery\\(\\k<conversation>,\\k<ignore>\\),this\\.buffer\\.buffer\\(\\k<delivery>,\\k<ignore>\\)\\)\\}`,
-    flags,
+    `(?<prefix>return null!=(?<pending>${I})\\?\\(\\k<pending>\\.ignored\\.add\\((?<ignore>${I})\\),` +
+    `this\\.buffer\\.buffer\\((?<delivery>${I}),\\k<ignore>\\)\\):)` +
+    `\\(${marker}(?<turnMethods>"turn/started"===(?<notification>${I})\\.method\\|\\|"turn/completed"===\\k<notification>\\.method)${localItems}\\)&&` +
+    `\\((?<upstreamHosts>!!this\\.manager\\.isCloudHost\\|\\|!!\\(0,${I}\\.${I}\\)\\(this\\.manager\\.getHostId\\(\\)\\))${localHostAlternative}\\)` +
+    `(?<suffix>&&\\(this\\.beginDiscovery\\((?<conversation>${I}),\\k<ignore>\\),this\\.buffer\\.buffer\\(\\k<delivery>,\\k<ignore>\\)\\)\\})`,
+    "gu",
   );
 }
 
+const REMOTE_MOBILE_BEGIN_DISCOVERY_GUARD = new RegExp(
+  `beginDiscovery\\((?<conversation>${DEVICE_KEY_IDENT}),${DEVICE_KEY_IDENT}\\)\\{if\\(this\\.pending\\.has\\(\\k<conversation>\\)\\|\\|` +
+  `this\\.context\\.threadStore\\.conversations\\.has\\(\\k<conversation>\\)\\|\\|` +
+  `this\\.context\\.threadStore\\.isConversationSuppressed\\(\\k<conversation>\\)\\)return;`,
+  "gu",
+);
+
 function remoteMobileConversationHydrationContract(source) {
   const pristineMatches = [
-    ...source.matchAll(remoteMobileConversationHydrationGuardPattern({ flags: "gu" })),
+    ...source.matchAll(remoteMobileConversationHydrationGuardPattern(false)),
   ];
   const patchedMatches = [
-    ...source.matchAll(remoteMobileConversationHydrationGuardPattern({ patched: true, flags: "gu" })),
+    ...source.matchAll(remoteMobileConversationHydrationGuardPattern(true)),
   ];
   const markerCount = source.split(REMOTE_MOBILE_CONVERSATION_HYDRATION_MARKER).length - 1;
   const state = markerCount === 0 && pristineMatches.length === 1 && patchedMatches.length === 0
@@ -1290,6 +1292,7 @@ function remoteMobileConversationHydrationContract(source) {
   if (classEnd === -1 || classEnd < match.index) return null;
   const lifecycle = source.slice(classStart, classEnd + 1);
   if (
+    [...lifecycle.matchAll(REMOTE_MOBILE_BEGIN_DISCOVERY_GUARD)].length !== 1 ||
     lifecycle.split("this.context.threadStore.hydrateActiveThread(").length - 1 !== 1 ||
     lifecycle.split("this.buffer.release(").length - 1 !== 1 ||
     lifecycle.split("Failed to discover thread from event").length - 1 !== 1
@@ -1313,16 +1316,11 @@ function applyLinuxRemoteMobileConversationHydrationPatch(source) {
   }
   if (contract.state === "patched") return source;
 
-  const { conversation, notification, pending, ignore, delivery } = contract.match.groups;
-  const replacement =
-    `return null!=${pending}?(${pending}.ignored.add(${ignore}),this.buffer.buffer(${delivery},${ignore})):` +
-    `!(/*${REMOTE_MOBILE_CONVERSATION_HYDRATION_MARKER}*/` +
-    '!this.manager.isCloudHost&&"local"!==this.manager.getHostId()||' +
-    `"turn/started"!==${notification}.method&&"turn/completed"!==${notification}.method&&` +
-    `("local"!==this.manager.getHostId()||"item/started"!==${notification}.method&&"item/completed"!==${notification}.method)||` +
-    `this.context.threadStore.conversations.has(${conversation})||` +
-    `this.context.threadStore.isConversationSuppressed(${conversation}))&&` +
-    `(this.beginDiscovery(${conversation},${ignore}),this.buffer.buffer(${delivery},${ignore}))}`;
+  const { prefix, turnMethods, notification, upstreamHosts, suffix } = contract.match.groups;
+  const localHost = '"local"===this.manager.getHostId()';
+  const localItems = `"item/started"===${notification}.method||"item/completed"===${notification}.method`;
+  const replacement = `${prefix}(/*${REMOTE_MOBILE_CONVERSATION_HYDRATION_MARKER}*/` +
+    `${turnMethods}||${localHost}&&(${localItems}))&&(${upstreamHosts}||${localHost})${suffix}`;
   return source.slice(0, contract.match.index) + replacement +
     source.slice(contract.match.index + contract.match[0].length);
 }

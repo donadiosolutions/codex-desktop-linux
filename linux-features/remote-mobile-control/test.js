@@ -422,7 +422,8 @@ function syntheticCurrentConversationHydrationBundle() {
   return [
     "function qz(e){return e.threadId??null}function Y(e){return e}function mz(){return[]}function Jnn(e){return e}function QB(){return{}}function Ztn(){}",
     "class NotificationBuffer{buffers=new Map;begin(e){this.buffers.has(e)||this.buffers.set(e,[])}buffer(e,t){let r=this.buffers.get(qz(e.notification.params));return r!=null&&(r.push({delivery:e,shouldIgnore:t}),!0)}bufferRequest(e){let r=this.buffers.get(qz(e.params));return r!=null&&(r.push({request:e}),!0)}release(e,t,n,r){let a=this.buffers.get(e);this.buffers.delete(e);for(let e of a??[])e.request?r(e.request):n(e.delivery,e.shouldIgnore)}discard(e){this.buffers.delete(e)}}",
-    "class HydrationLifecycle{manager;context;schedule;buffer=new NotificationBuffer;pending=new Map;constructor(e,t,n){this.manager=e,this.context=t,this.schedule=n}bufferNotification(e,t){let{notification:n}=e,r=qz(n.params);if(r==null)return!1;let i=Y(r),a=this.pending.get(i);return null!=a?(a.ignored.add(t),this.buffer.buffer(e,t)):!(!this.manager.isCloudHost||\"turn/started\"!==n.method&&\"turn/completed\"!==n.method||this.context.threadStore.conversations.has(i)||this.context.threadStore.isConversationSuppressed(i))&&(this.beginDiscovery(i,t),this.buffer.buffer(e,t))}bufferRequest(e,t,n){if(e.method===`item/tool/requestSetupCodexContextPicker`||e.method===`item/tool/call`&&Jnn(e.params)?.status!==`pending`||e.method===`mcpServer/elicitation/request`&&QB(e.params,t.isOpenAIFormElicitationsEnabled?.()??!0,n.parseUrl)==null)return!1;let r=qz(e.params);if(r==null)return!1;let i=Y(r),a=this.pending.get(i);return a==null?!this.context.threadStore.conversations.has(i)&&!this.context.threadStore.isConversationSuppressed(i)&&this.beginDiscovery(i,void 0):a.ignored.add(void 0),this.buffer.bufferRequest(e)}discard(e){this.pending.get(e)?.cancelRetry?.(),this.pending.delete(e),this.buffer.discard(e)}clear(){for(let e of this.pending.keys())this.discard(e)}beginDiscovery(e,t){let n={ignored:new Set([t]),cancelRetry:null};this.pending.set(e,n),this.buffer.begin(e),this.hydrate(e,n,!1)}hydrate(e,t,n){let r=()=>this.pending.get(e)===t&&!this.context.threadStore.isConversationSuppressed(e)&&Array.from(t.ignored).some(e=>!e?.());if(this.pending.get(e)===t){if(!r()){this.discard(e);return}this.context.threadStore.hydrateActiveThread(e,r).then(i=>{if(this.pending.get(e)===t){if(!r())this.discard(e);else if(i){this.pending.delete(e);let t=this.manager.getConversationOrThrow(e);this.buffer.release(e,mz(t,this.context.turnMergePolicy),({notification:e,automationCapability:t,receivedAtMs:n},r)=>this.manager.onNotification(e.method,e.params,t,r,n),e=>this.manager.onRequest(e),t=>Ztn(this.manager,{method:`serverRequest/resolved`,params:{threadId:e,requestId:t.id}},t))}else n?this.discard(e):t.cancelRetry=this.schedule(()=>this.hydrate(e,t,!0),1e3)}}).catch(n=>{this.pending.get(e)===t&&this.discard(e),this.manager.logger.debug(\"Failed to discover thread from event\",{safe:{},sensitive:{conversationId:e,error:n}})})}}}",
+    'const A={XO:hostId=>hostId.startsWith("remote-control:")};',
+    "class HydrationLifecycle{manager;context;schedule;buffer=new NotificationBuffer;pending=new Map;constructor(e,t,n){this.manager=e,this.context=t,this.schedule=n}bufferNotification(e,t){let{notification:n}=e,r=qz(n.params);if(r==null)return!1;let i=Y(r),a=this.pending.get(i);return null!=a?(a.ignored.add(t),this.buffer.buffer(e,t)):(\"turn/started\"===n.method||\"turn/completed\"===n.method)&&(!!this.manager.isCloudHost||!!(0,A.XO)(this.manager.getHostId()))&&(this.beginDiscovery(i,t),this.buffer.buffer(e,t))}bufferRequest(e,t,n){if(e.method===`item/tool/requestSetupCodexContextPicker`||e.method===`item/tool/call`&&Jnn(e.params)?.status!==`pending`||e.method===`mcpServer/elicitation/request`&&QB(e.params,t.isOpenAIFormElicitationsEnabled?.()??!0,n.parseUrl)==null)return!1;let r=qz(e.params);if(r==null)return!1;let i=Y(r),a=this.pending.get(i);return null!=a?a.ignored.add(void 0):this.beginDiscovery(i),this.buffer.bufferRequest(e)}discard(e){this.pending.get(e)?.cancelRetry?.(),this.pending.delete(e),this.buffer.discard(e)}clear(){for(let e of this.pending.keys())this.discard(e)}beginDiscovery(e,t){if(this.pending.has(e)||this.context.threadStore.conversations.has(e)||this.context.threadStore.isConversationSuppressed(e))return;let n={ignored:new Set([t]),cancelRetry:null};this.pending.set(e,n),this.buffer.begin(e),this.hydrate(e,n,!1)}hydrate(e,t,n){let r=()=>this.pending.get(e)===t&&!this.context.threadStore.isConversationSuppressed(e)&&Array.from(t.ignored).some(e=>!e?.());if(this.pending.get(e)===t){if(!r()){this.discard(e);return}this.context.threadStore.hydrateActiveThread(e,r).then(i=>{if(this.pending.get(e)===t){if(!r())this.discard(e);else if(i){this.pending.delete(e);let t=this.manager.getConversationOrThrow(e);this.buffer.release(e,mz(t,this.context.turnMergePolicy),({notification:e,automationCapability:t,receivedAtMs:n},r)=>this.manager.onNotification(e.method,e.params,t,r,n),e=>this.manager.onRequest(e),t=>Ztn(this.manager,{method:`serverRequest/resolved`,params:{threadId:e,requestId:t.id}},t))}else n?this.discard(e):t.cancelRetry=this.schedule(()=>this.hydrate(e,t,!0),1e3)}}).catch(n=>{this.pending.get(e)===t&&this.discard(e),this.manager.logger.debug(\"Failed to discover thread from event\",{safe:{},sensitive:{conversationId:e,error:n}})})}}}",
   ].join("");
 }
 
@@ -1223,45 +1224,49 @@ test("Linux remote-mobile hydration buffers local turn and item notifications in
   ]);
 });
 
-test("Linux remote-mobile hydration leaves durable discovery notification scope unchanged", () => {
+test("Linux remote-mobile hydration preserves cloud and outbound turn discovery", () => {
   const patched = applyLinuxRemoteMobileConversationHydrationPatch(
     syntheticCurrentConversationHydrationBundle(),
   );
   const context = { module: { exports: null } };
   vm.runInNewContext(`${patched};module.exports=HydrationLifecycle;`, context);
   const HydrationLifecycle = context.module.exports;
-  const hydration = new HydrationLifecycle({
-    isCloudHost: true,
-    getHostId: () => "durable",
-    logger: { debug() {} },
-  }, {
-    threadStore: {
-      conversations: new Map(),
-      hydrateActiveThread: () => new Promise(() => {}),
-      isConversationSuppressed: () => false,
-    },
-  }, () => () => {});
+  for (const hostId of ["durable", "remote-control:env"]) {
+    const hydration = new HydrationLifecycle({
+      isCloudHost: hostId === "durable",
+      getHostId: () => hostId,
+      logger: { debug() {} },
+    }, {
+      threadStore: {
+        conversations: new Map(),
+        hydrateActiveThread: () => new Promise(() => {}),
+        isConversationSuppressed: () => false,
+      },
+    }, () => () => {});
 
-  assert.equal(hydration.bufferNotification({
-    notification: { method: "item/completed", params: { threadId: "thread-durable" } },
-  }, undefined), false);
-  assert.equal(hydration.bufferNotification({
-    notification: { method: "turn/started", params: { threadId: "thread-durable" } },
-  }, undefined), true);
+    assert.equal(hydration.bufferNotification({
+      notification: { method: "item/completed", params: { threadId: "unknown" } },
+    }, undefined), false);
+    assert.equal(hydration.bufferNotification({
+      notification: { method: "turn/started", params: { threadId: "unknown" } },
+    }, undefined), true);
+  }
 });
 
 test("Linux remote-mobile hydration rejects missing, duplicate, and partial lifecycle drift", () => {
   const source = syntheticCurrentConversationHydrationBundle();
   const drifted = [
     source.replace("this.context.threadStore.hydrateActiveThread(", "this.context.threadStore.loadThread("),
+    source.replace("||this.context.threadStore.isConversationSuppressed(e))return;", ")return;"),
     source + source,
     source.replace(
-      ":!(!this.manager.isCloudHost",
-      ":!(/*codexLinuxRemoteMobileConversationHydration*/!this.manager.isCloudHost",
+      '):("turn/started"===',
+      '):(/*codexLinuxRemoteMobileConversationHydration*/"turn/started"===',
     ),
   ];
 
   for (const candidate of drifted) {
+    assert.notEqual(candidate, source);
     const { result, warnings } = captureWarnings(() =>
       applyLinuxRemoteMobileConversationHydrationPatch(candidate)
     );
@@ -1316,13 +1321,12 @@ test("hydration preserves request replay and discards notifications when their o
   assert.equal(lifecycle.buffer.buffers.size, 0);
 });
 
-test("hydration cannot discover Remote SSH, outbound, suppressed, or already loaded conversations", () => {
+test("hydration rejects SSH turns and suppressed or loaded local threads", () => {
   const patched = applyLinuxRemoteMobileConversationHydrationPatch(syntheticCurrentConversationHydrationBundle());
   const context = { module: { exports: null } };
   vm.runInNewContext(`${patched};module.exports=HydrationLifecycle;`, context);
   for (const [hostId, loaded, suppressed, method] of [
     ["remote-ssh:dev", false, false, "turn/started"],
-    ["remote-control:env", false, false, "item/completed"],
     ["local", true, false, "turn/started"],
     ["local", false, true, "turn/started"],
     ["local", false, false, "thread/name/updated"],

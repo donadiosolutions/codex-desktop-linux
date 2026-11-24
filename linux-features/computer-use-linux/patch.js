@@ -7,8 +7,6 @@ const {
   applyLinuxComputerUseAvatarCursorBridgePatch,
   applyLinuxComputerUseFeaturePatch,
   applyLinuxComputerUseHostPlatformPatch,
-  applyLinuxCodexAppThreadToolsPatch,
-  matchesLinuxCodexAppThreadToolsContract,
   matchesLinuxComputerUseHostPlatformContract,
 } = require("../../scripts/patches/impl/computer-use.js");
 
@@ -19,6 +17,7 @@ const {
 } = require("./settings.js");
 const { applyUnifiedComputerUsePatch } = require("./unified.js");
 const { applyNativeApplicationsPatch } = require("./native-applications.js");
+const { creationThreadTools, resumeThreadTools } = require("./thread-tools.js");
 
 module.exports = [
   mainBundlePatch({
@@ -58,11 +57,17 @@ module.exports = [
     order: 20_136,
     ciPolicy: "optional",
     assetNeedles: ["hasDesktopRuntime:!0,", "readDynamicTools:"],
-    assetMatch: matchesLinuxCodexAppThreadToolsContract,
-    matchPolicy: "all",
-    missingDescription: "local thread dynamic-tool request construction",
-    skipDescription: "Linux Codex app thread-tools patch",
-    apply: applyLinuxCodexAppThreadToolsPatch,
+    missingDescription: "local thread-start dynamic-tool request construction",
+    skipDescription: "Linux Codex app thread-start tools patch",
+    ...creationThreadTools,
+  }),
+  webviewAssetPatch({
+    id: "codex-app-resume-thread-tools",
+    order: 20_137,
+    assetNeedles: ["usesDesktopMcp:", "readDynamicTools:", 'requestedHistoryMode:"legacy"'],
+    missingDescription: "local cold-resume dynamic-tool request construction",
+    skipDescription: "Linux Codex app cold-resume tools patch",
+    ...resumeThreadTools,
   }),
   webviewAssetPatch({
     id: "ui-availability",

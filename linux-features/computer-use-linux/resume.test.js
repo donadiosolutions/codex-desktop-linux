@@ -60,8 +60,8 @@ function trustedServicesConstant(chunks, exportName) {
 function resumeHarness(source, trustedServicesKey, chunks) {
   const builder = only(source, new RegExp(
     `function (${IDENT})\\(\\{browserBackends:(${IDENT}),deferTools:${IDENT},` +
-    `(?:omitCuaConfirmationPolicyBySku:${IDENT},)?surfaces:${IDENT},` +
-    `nodeRepl:${IDENT},accessBootstrapPath:(${IDENT})\\}`,
+    `confirmationPolicyConfig:${IDENT}="\\{\\}",omitCuaConfirmationPolicyBySku:${IDENT},surfaces:${IDENT},` +
+    `nodeRepl:${IDENT},sharedPlugin:${IDENT}=!1\\}`,
     "g",
   ));
   const call = only(source, new RegExp(
@@ -74,7 +74,7 @@ function resumeHarness(source, trustedServicesKey, chunks) {
     "g",
   ));
   const cache = only(resumeSource, new RegExp(
-    `(${IDENT})=${local[1]}\\?await (${IDENT})\\(${local[2]},\\{waitForReconcile:!1\\}\\):null`,
+    `(${IDENT})=${local[1]}\\?await (${IDENT})\\(${local[2]},\\{waitForReconcile:${IDENT}\\.browserUseTinysky\\}\\):null`,
     "g",
   ));
   const features = only(resumeSource, new RegExp(
@@ -117,8 +117,9 @@ function resumeHarness(source, trustedServicesKey, chunks) {
   const packageRoot = only(buildSource, new RegExp(
     `(${IDENT})\\(\\)\\.join\\((${IDENT})\\.env\\[(${IDENT})\\.(${IDENT})\\],"@oai/cua-repl"\\)`, "g"));
   const services = only(buildSource, new RegExp(`\\[(${IDENT})\\.(${IDENT})\\]:JSON\\.stringify\\(${IDENT}\\)`, "g"));
-  const deleteEnvKey = buildSource.match(new RegExp(
-    `\\[(${IDENT})\\]:\\[${IDENT}\\?\\.env\\[\\1\\],${IDENT}\\]\\.filter\\(Boolean\\)\\.join`,
+  const deleteEnvKey = only(buildSource, new RegExp(
+    `\\[(${IDENT})\\]:\\[${IDENT}\\?\\.env\\[\\1\\],${IDENT},"CUA_REPL_CONFIRMATION_POLICY_CONFIG"\\]\\.filter\\(Boolean\\)\\.join`,
+    "g",
   ));
   const backends = only(buildSource, new RegExp(`\\[(${IDENT})\\.(${IDENT})\\]:${builder[2]}\\.join\\(","\\)`, "g"));
   const executable = only(buildSource, new RegExp(`command:${packageRoot[2]}\\.env\\[${packageRoot[3]}\\.(${IDENT})\\]`, "g"));
@@ -137,7 +138,7 @@ function resumeHarness(source, trustedServicesKey, chunks) {
       key === services[2] ? trustedServicesKey : accessConstants.get(key) ?? String(key),
   });
   const globals = {
-    ...(deleteEnvKey == null ? {} : { [deleteEnvKey[1]]: "NODE_REPL_ENV_DELETE" }),
+    [deleteEnvKey[1]]: "NODE_REPL_ENV_DELETE",
     [packageRoot[1]]: () => path,
     [packageRoot[3]]: constants,
     [backends[1]]: constants,
@@ -168,7 +169,6 @@ function resumeHarness(source, trustedServicesKey, chunks) {
     [env[3]]: "browserIdentity",
     [fallback[1]]: { "mcp_servers.cua_repl": { enabled: false } },
     [cleanup[1]]: () => {},
-    r8: "NODE_REPL_ENV_DELETE",
     URL,
     require: name => {
       assert.equal(name, "node:path");
@@ -180,7 +180,7 @@ function resumeHarness(source, trustedServicesKey, chunks) {
   vm.createContext(globals);
   const sharedResume = vm.runInContext(`${buildSource}\n(${resumeSource})`, globals);
   return async (selectionValue, { enabled = true, instructions = true, kind = "local", browserAccess = {} } = {}) => {
-    cached = { selection: selectionValue, cuaReplEnabled: enabled };
+    cached = { selection: selectionValue, cuaReplEnabled: enabled, confirmationPolicyConfig: "{}" };
     instructionsAvailable = instructions;
     connectionKind = kind;
     accessEnv = { ...browserAccess, browserIdentity: browserAccess.BROWSER_USE_ACCESS_PIPE_PATH };
@@ -208,7 +208,7 @@ test("official per-thread CUA overrides carry the trusted root when resuming cha
   assert.doesNotThrow(() => new vm.Script(patched));
   const builderStart = patched.search(new RegExp(
     `function ${IDENT}\\(\\{browserBackends:${IDENT},deferTools:${IDENT},` +
-    `(?:omitCuaConfirmationPolicyBySku:${IDENT},)?surfaces:`,
+    `confirmationPolicyConfig:${IDENT}="\\{\\}",omitCuaConfirmationPolicyBySku:${IDENT},surfaces:`,
   ));
   const builderServices = only(owner(patched, builderStart),
     new RegExp(`\\[${IDENT}\\.(${IDENT})\\]:JSON\\.stringify\\(${IDENT}\\)`, "g"));
@@ -223,6 +223,7 @@ test("official per-thread CUA overrides carry the trusted root when resuming cha
       }, { instructions });
       assert.equal(cua.enabled, true);
       assert.equal(cua.env.CUA_REPL_ENABLED_SURFACES, surfaces.join(","));
+      assert.equal(cua.env.CUA_REPL_CONFIRMATION_POLICY_CONFIG, "{}");
       assert.equal(cua.env.CODEX_LINUX_CUA_HOST_SOCKET, "/runtime/cua.sock");
       assert.equal(cua.env.NODE_REPL_JS_BANNER,
         'await import("@oai/cua/tinyskyAlt");await(await import("/trusted-plugin/scripts/native-client.mjs")).installLinuxComputerUse(cua);');

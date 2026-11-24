@@ -110,6 +110,7 @@ const WATCHBOUND_VERSION = "2.1.2";
 const DEFAULT_MAX_WATCHES = 8192;
 const DEFAULT_IGNORED_DIRECTORY_NAMES = [];
 const IDENTIFIER_PATTERN = "[A-Za-z_$][\\w$]*";
+const MEMBER_PATTERN = `${IDENTIFIER_PATTERN}\\.${IDENTIFIER_PATTERN}`;
 const LOCAL_FILE_WATCH_METHOD_PREFIX =
   `async startFileWatch\\((?<options>${IDENTIFIER_PATTERN})\\)\\{`;
 const LOCAL_FILE_WATCH_CURRENT_BODY =
@@ -121,13 +122,24 @@ const LOCAL_FILE_WATCH_METHOD =
   new RegExp(`${LOCAL_FILE_WATCH_METHOD_PREFIX}${LOCAL_FILE_WATCH_CURRENT_BODY}`, "gu");
 // The current signed package builds both the main process (numbered
 // `early-bootstrap-<n>-<hash>.js` chunks) and the Git worker (`worker.js`) with
-// rspack. Its minifier emits class declarations, double-quoted strings,
-// literal-first comparisons, and rspack interop getters such as `c1().join`.
+// rspack. The main bundle declares the local host directly. The worker exposes
+// its local host as an anonymous class via a rspack module export.
 const CURRENT_LOCAL_HOST_CLASS = new RegExp(
-  `class (?<localHostClass>${IDENTIFIER_PATTERN})\\{` +
-    `runsInsideWsl;processOwner;workspaceRoot=new ${IDENTIFIER_PATTERN}\\(this\\);` +
+  `(?:class ${IDENTIFIER_PATTERN}|` +
+    `(?<![\\w$])(?<hostModuleId>\\d+)\\(${IDENTIFIER_PATTERN},` +
+    `(?<hostModuleExports>${IDENTIFIER_PATTERN}),(?<hostModuleRequire>${IDENTIFIER_PATTERN})\\)\\{` +
+    '"use strict";var [^{};]{1,600};' +
+    "\\k<hostModuleRequire>\\.d\\(\\k<hostModuleExports>,\\{\\},\\{" +
+    `(?<hostExport>${IDENTIFIER_PATTERN}):class)` +
+    "(?<classBodyPrefix>\\{runsInsideWsl;processOwner;" +
+    `workspaceRoot=new ${IDENTIFIER_PATTERN}(?:\\.${IDENTIFIER_PATTERN})?\\(this\\);)` +
     'hostConfig=\\{id:"local",display_name:"Local",kind:"local"\\};' +
     'id="local";isLocal=!0;',
+  "gu",
+);
+const RSPACK_MODULE_HEADER = new RegExp(
+  `(?<![\\w$])\\d+\\(${IDENTIFIER_PATTERN},${IDENTIFIER_PATTERN},` +
+    `(?<moduleRequire>${IDENTIFIER_PATTERN})\\)\\{"use strict";`,
   "gu",
 );
 const PARCEL_WORKING_TREE_WATCH =
@@ -153,17 +165,18 @@ const CURRENT_PARCEL_EXTERNAL = new RegExp(
 );
 const CURRENT_GIT_ROUTE_PREFIX_PATTERN =
   'case"git":\\{let ' +
-  `(?<ignoreSource>${IDENTIFIER_PATTERN})=${IDENTIFIER_PATTERN}\\(\\),` +
+  `(?<ignoreSource>${IDENTIFIER_PATTERN})=\\(0,${MEMBER_PATTERN}\\)\\(\\),` +
   `(?<localHost>${IDENTIFIER_PATTERN})=new ` +
-  `(?<localHostClass>${IDENTIFIER_PATTERN})\\(\\k<ignoreSource>,[\\s\\S]{0,600}?\\);` +
+  `(?<hostImport>${IDENTIFIER_PATTERN})\\.(?<hostMember>${IDENTIFIER_PATTERN})` +
+  "\\(\\k<ignoreSource>,[\\s\\S]{0,600}?\\);" +
   // The current package exposes the ignore sources lazily and opts the repo
   // watcher into ignored-directory pruning; the Git ignore environment reader
   // is inlined by the current minifier.
   "return\\{git:\\{getWatchIgnoreSources:\\k<ignoreSource>\\?void 0:\\(\\)=>\\(\\{" +
-  `getEnvironment:async\\(\\)=>[\\s\\S]{1,2000}?,getWatchTargets:${IDENTIFIER_PATTERN},` +
+  `getEnvironment:async\\(\\)=>[\\s\\S]{1,2000}?,getWatchTargets:${MEMBER_PATTERN},` +
   'pruneIgnoredDirectories:"darwin"===process\\.platform\\?"observed":"all"\\}\\),' +
   `createExecutionHost:(?<executionConfig>${IDENTIFIER_PATTERN})=>\\{` +
-  `if\\(\\k<executionConfig>\\.id===\\k<localHost>\\.id&&!${IDENTIFIER_PATTERN}\\(\\k<executionConfig>\\)\\)` +
+  `if\\(\\k<executionConfig>\\.id===\\k<localHost>\\.id&&!\\(0,${MEMBER_PATTERN}\\)\\(\\k<executionConfig>\\)\\)` +
   "return \\k<localHost>;if\\(null==" +
   `(?<mainConnection>${IDENTIFIER_PATTERN})\\)throw Error\\(` +
   '"Git hosts require a main RPC connection"' +
@@ -1572,14 +1585,29 @@ function currentLocalHostClassForMethod(source, classMatches, methodMatches) {
   const [classMatch] = classMatches;
   const [methodMatch] = methodMatches;
   const classOpen =
-    classMatch.index + `class ${classMatch.groups?.localHostClass ?? ""}`.length;
+    classMatch.index + classMatch[0].indexOf(classMatch.groups.classBodyPrefix);
   if (source[classOpen] !== "{") return null;
   const classClose = findMatchingBrace(source, classOpen);
   return classClose >= 0 &&
     methodMatch.index > classOpen &&
     methodMatch.index < classClose
-    ? classMatch.groups?.localHostClass ?? null
+    ? classMatch.groups
     : null;
+}
+
+function routeUsesLocalHostClass(source, route, localHostClass) {
+  if (localHostClass?.hostModuleId == null ||
+      localHostClass.hostExport !== route.groups.hostMember) return false;
+  const moduleHeader = patternMatches(source.slice(0, route.index), RSPACK_MODULE_HEADER).at(-1);
+  if (moduleHeader == null) return false;
+  const moduleOpen = moduleHeader.index + moduleHeader[0].indexOf("{");
+  if (findMatchingBrace(source, moduleOpen) <= route.index) return false;
+  const hostImport = new RegExp(
+    `(?:var |,)${escapeRegExp(route.groups.hostImport)}=` +
+      `${escapeRegExp(moduleHeader.groups.moduleRequire)}\\(${localHostClass.hostModuleId}\\)(?=[,;])`,
+    "gu",
+  );
+  return countPattern(source.slice(moduleOpen, route.index), hostImport) === 1;
 }
 
 function classifyCurrentBundle(bundlePath, source, settings = normalizedSettings()) {
@@ -1611,12 +1639,12 @@ function classifyCurrentBundle(bundlePath, source, settings = normalizedSettings
     parcelHelperMatches.some((helper) =>
       helper.groups?.helperName === route.groups?.routeHelper &&
       route.groups?.metadataHelper === route.groups?.routeHelper &&
-      route.groups?.localHostClass === localHostClass
+      routeUsesLocalHostClass(source, route, localHostClass)
     )
   ).length;
   const correlatedCompletedRouteCount = completedRouteMatches.filter(
     (route) =>
-      route.groups?.localHostClass === localHostClass &&
+      routeUsesLocalHostClass(source, route, localHostClass) &&
       route.groups?.metadataHelper === route.groups?.routeHelper &&
       parcelHelperMatches.some(
         (helper) => helper.groups?.helperName === route.groups?.routeHelper,

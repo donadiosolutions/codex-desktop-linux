@@ -69,10 +69,11 @@ What it changes:
   desktop can authorize outbound control of another enrolled device.
 - Refreshes the remote Connections settings state every 5 seconds and
   immediately after focus, visibility, online, or resume signals.
-- Extends the current upstream event-discovery queue to buffer late
-  `turn/started`, `item/started`, `item/completed`, and `turn/completed` notifications for an unknown conversation, hydrates that
-  conversation once, and replays the queue in order after hydration. A
-  completed item is also restored when its local started state was absent.
+- Extends upstream's event-discovery queue to recognize unknown local threads
+  from `turn/started`, `item/started`, `item/completed`, or `turn/completed`.
+  The queue hydrates each conversation once and replays its events in order.
+  A completed item is also restored when its local started state was absent.
+  Cloud and outbound remote-control hosts retain upstream turn discovery.
   The upstream request queue, notification timestamps, automation capability,
   turn merge policy, retry, and discard lifecycle remain intact.
 - Keeps the current abortable Remote status subscriptions and their disposable

@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { findWebviewAssetsContaining } = require("../../scripts/patches/lib/assets.js");
 const { findMatchingBrace } = require("../../scripts/patches/lib/minified-js.js");
 const IDENT = "[A-Za-z_$][\\w$]*";
 const markers = ["codexLinuxSubagentSummary", "codexLinuxSubagentActivation",
@@ -94,15 +95,21 @@ function applySubagentModelMetadataPatch(source) {
 }
 
 function patchApp(extractedDir) {
-  const build = path.join(extractedDir, ".vite/build");
+  const buildDir = ".vite/build";
+  const build = path.join(extractedDir, buildDir);
+  const storeNeedle = "async hydrateCollabThreads(";
   const targets = fs.existsSync(build) ? fs.readdirSync(build)
     .filter((name) => name.endsWith(".js"))
-    .map((name) => ({ name, source: fs.readFileSync(path.join(build, name), "utf8") }))
-    .filter(({ source }) => source.includes("async hydrateCollabThreads(")) : [];
-  // The desktop and its separate app-server host each carry the store. A
-  // duplicate within either process is ambiguous and must leave both intact.
-  const worker = targets.filter(({ name }) => name === "app-server-host.js");
-  const desktop = targets.filter(({ name }) => name !== "app-server-host.js");
+    .map((name) => ({ name: `${buildDir}/${name}`, source: fs.readFileSync(path.join(build, name), "utf8") }))
+    .filter(({ source }) => source.includes(storeNeedle)) : [];
+  for (const asset of findWebviewAssetsContaining(extractedDir, [storeNeedle])) {
+    const name = `webview/assets/${asset}`;
+    targets.push({ name, source: fs.readFileSync(path.join(extractedDir, name), "utf8") });
+  }
+  // The desktop store can live in the renderer. A duplicate desktop store
+  // across either location is ambiguous and must leave every copy intact.
+  const worker = targets.filter(({ name }) => name === `${buildDir}/app-server-host.js`);
+  const desktop = targets.filter(({ name }) => name !== `${buildDir}/app-server-host.js`);
   if (desktop.length !== 1 || worker.length > 1) {
     const reason = `Expected one desktop conversation store and at most one worker store, found ${desktop.length} desktop and ${worker.length} worker`;
     console.warn(`WARN: ${reason}`);
@@ -118,12 +125,12 @@ function patchApp(extractedDir) {
     if (patched !== source) pending.push({ name, patched });
   }
   for (const { name, patched } of pending) {
-    fs.writeFileSync(path.join(build, name), patched);
+    fs.writeFileSync(path.join(extractedDir, name), patched);
   }
   return {
     matched: targets.length,
     changed: pending.length,
-    targets: targets.map(({ name }) => `.vite/build/${name}`),
+    targets: targets.map(({ name }) => name),
   };
 }
 

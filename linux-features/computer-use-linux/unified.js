@@ -19,7 +19,7 @@ function uniqueMatch(source, pattern, description) {
   return matches[0];
 }
 
-function requireUsages(source, name, expected) {
+function countUsages(source, name, ignoreCalls = false) {
   // Include bare references as well as calls so an added alias/export fails
   // closed. Property accesses such as constants.Aa and private class members
   // such as #Aa are different bindings.
@@ -75,14 +75,18 @@ function requireUsages(source, name, expected) {
       let next = index;
       while (/\s/u.test(source[next] ?? "")) next += 1;
       const property = source[start - 1] === "." || source[start - 1] === "#" || source[next] === ":";
-      if (token === name && !property) uses += 1;
+      if (token === name && !property && (!ignoreCalls || source[next] !== "(")) uses += 1;
       previousToken = token;
       continue;
     }
     previousToken = char;
     index += 1;
   }
-  if (uses !== expected) throw drift(`unexpected ${name} consumers`);
+  return uses;
+}
+
+function requireUsages(source, name, expected) {
+  if (countUsages(source, name) !== expected) throw drift(`unexpected ${name} consumers`);
 }
 
 // Minified names are module scoped. Restrict every relationship check to the
@@ -117,102 +121,6 @@ function bannerExpression(root) {
 
 function rootPattern(source) {
   return escapeRegExp(source).replace(escapeRegExp(ROOT_PLACEHOLDER), `(?<pluginRoot>${ID})`);
-}
-
-function anonymousSyncCall(source, syncSource) {
-  const start = source.indexOf(syncSource);
-  if (start < 0 || source.indexOf(syncSource, start + 1) >= 0) throw drift("ambiguous inline plugin synchronization");
-  const prefix = source.slice(0, start).match(/([\w$]+)=await $/);
-  const tail = source.slice(start + syncSource.length);
-  const match = tail.match(/^\(\{browserBackends:[\w$]+,deferTools:[\w$]+\.deferCuaTools,(?:omitCuaConfirmationPolicyBySku:[\w$]+\.omitCuaConfirmationPolicyBySku,)?surfaces:[\w$]+,codexHome:[\w$]+,marketplaceName:[\w$]+,marketplaces:[\w$]+,nodeRepl:[\w$]+\?void 0:[\w$]+(?<context>,codexLinuxCuaContext:(?<selection>[\w$]+))?\}\)/);
-  if (prefix == null || match == null) throw drift("changed inline plugin synchronization call");
-  match.index = start + syncSource.length;
-  match.groups = { ...match.groups, enabled: prefix[1] };
-  return match;
-}
-
-function lifecycleContract(source, builder, syncSource) {
-  const owner = uniqueMatch(syncSource, new RegExp(`^(?:async )?function(?: (?<name>${ID}))?\\((?<argument>${ID})\\)\\{`, "g"),
-    "expected one plugin synchronization owner");
-  requireUsages(source, builder, 3); // declaration, plugin synchronization, thread configuration
-  const reloads = owner.groups.name == null ? [] : [...source.matchAll(new RegExp(
-    `(?<![\\w$.#])${escapeRegExp(owner.groups.name)}\\(\\{\\.\\.\\.this\\.options,reloadUserConfig:!1\\}\\)`, "g",
-  ))];
-  if (reloads.length > 1) throw drift("unexpected plugin resynchronization consumers");
-  if (owner.groups.name != null) requireUsages(source, owner.groups.name, 2 + reloads.length);
-  const inlineSelection = [...syncSource.matchAll(new RegExp(
-    `,\\{selection:(?<selection>${ID}),cuaReplEnabled:${ID}\\}\\}\\)\\(${ID}\\)\\)`, "g",
-  ))];
-  if (inlineSelection.length === 1) {
-    const syncCall = uniqueMatch(syncSource, new RegExp(
-      `Object\\.assign\\(${ID},${escapeRegExp(builder)}\\(\\{\\.\\.\\.(?<argument>${ID}),accessBootstrapPath:${ID}\\}(?:,${ID})?\\)\\)`, "g",
-    ), "expected one inline plugin synchronization builder call");
-    const resume = uniqueMatch(source, new RegExp(
-      `(?<![\\w$.#])${escapeRegExp(builder)}\\(\\{browserBackends:(?<selection>${ID})\\.browserBackends,` +
-      `deferTools:\\k<selection>\\.desktopFeatureAvailability\\.deferCuaTools,` +
-      `(?:omitCuaConfirmationPolicyBySku:\\k<selection>\\.desktopFeatureAvailability\\.omitCuaConfirmationPolicyBySku,)?` +
-      `surfaces:\\k<selection>\\.cuaReplSurfaces,` +
-      `nodeRepl:${ID}\\}(?<root>,\\k<selection>\\.${ROOT_KEY})?\\)`, "g"),
-    "expected one thread configuration builder call");
-    const daemon = daemonGuard(source, resume);
-    return {
-      version: 2,
-      argument: syncCall.groups.argument,
-      selection: inlineSelection[0].groups.selection,
-      sync: { groups: { context: null } },
-      resume,
-      daemon,
-    };
-  }
-  const sync = owner.groups.name == null ? anonymousSyncCall(source, syncSource) : uniqueMatch(source, new RegExp(
-    `(?<enabled>${ID})=await ${escapeRegExp(owner.groups.name)}\\(\\{browserBackends:${ID},deferTools:${ID}\\.deferCuaTools,` +
-    `(?:omitCuaConfirmationPolicyBySku:${ID}\\.omitCuaConfirmationPolicyBySku,)?` +
-    `surfaces:${ID},codexHome:${ID},marketplaceName:${ID},marketplaces:${ID},nodeRepl:${ID}\\?void 0:${ID}` +
-    `(?<context>,${CONTEXT_KEY}:(?<selection>${ID}))?\\}\\)`, "g"), "expected one cached plugin synchronization call");
-  const syncOwner = enclosingFunction(source, sync.index);
-  if (syncOwner == null) throw drift("expected a plugin synchronization owner");
-  const syncOwnerSource = source.slice(syncOwner.start, syncOwner.end);
-  const cached = uniqueMatch(syncOwnerSource, new RegExp(
-    `(?:return |,)\\{selection:(?<selection>${ID}),cuaReplEnabled:${escapeRegExp(sync.groups.enabled)}\\}`, "g"),
-  "expected synchronized selection to be cached with CUA enabled state");
-  uniqueMatch(syncOwnerSource, new RegExp(`(?:let |,)${escapeRegExp(cached.groups.selection)}=`, "g"),
-    "expected cached selection to belong to plugin initialization");
-  const resume = uniqueMatch(source, new RegExp(
-    `(?<![\\w$.#])${escapeRegExp(builder)}\\(\\{browserBackends:(?<selection>${ID})\\.browserBackends,` +
-    `deferTools:\\k<selection>\\.desktopFeatureAvailability\\.deferCuaTools,` +
-    `(?:omitCuaConfirmationPolicyBySku:\\k<selection>\\.desktopFeatureAvailability\\.omitCuaConfirmationPolicyBySku,)?` +
-    `surfaces:\\k<selection>\\.cuaReplSurfaces,` +
-    `nodeRepl:${ID}\\}(?<root>,\\k<selection>\\.${ROOT_KEY})?\\)`, "g"),
-  "expected one thread configuration builder call");
-  const resumeOwner = enclosingFunction(source, resume.index);
-  if (resumeOwner == null) throw drift("expected a thread configuration owner");
-  const resumeSource = source.slice(resumeOwner.start, resumeOwner.end);
-  const selection = escapeRegExp(resume.groups.selection);
-  const threadGuard = uniqueMatch(resumeSource, new RegExp(
-    `null!=(?<node>${ID})&&null!=(?<identity>${ID})` +
-    `(?<daemon>&&"1"===(?:${ID}\\(\\)|process)\\.env\\.CODEX_APP_SERVER_USE_LOCAL_DAEMON)?` +
-    `&&\\(${ID}\\[\`mcp_servers\\.\\$\\{${ID}\\.${ID}\\}\`\\]=${escapeRegExp(builder)}\\(\\{browserBackends:${selection}\\.browserBackends,`, "g"),
-  "expected local identity guards on the thread configuration builder");
-  uniqueMatch(resumeSource, new RegExp(
-    `(?<cached>${ID})=${ID}\\.browserUseTinysky\\?${ID}:null,` +
-    `${ID}=${ID}\\?await ${ID}\\.getAuthenticatedPrincipal\\(\\)\\.catch\\(\\(\\)=>null\\):null,` +
-    `${selection}=\\k<cached>\\?\\.selection\\?\\?await ${ID}\\(`, "g"),
-  "expected thread configuration to reuse the cached selection");
-  // The per-thread selection may only be widened by copying the cached
-  // selection, which keeps the published trusted root.
-  const reassignments = [...resumeSource.matchAll(new RegExp(`(?<![\\w$.#])${selection}=(?!=)`, "g"))];
-  const copies = [...resumeSource.matchAll(new RegExp(`(?<![\\w$.#])${selection}=\\{\\.\\.\\.${selection},`, "g"))];
-  if (reassignments.length !== 1 + copies.length) {
-    throw drift("thread configuration replaces the cached selection");
-  }
-  if (sync.groups.context != null && sync.groups.selection !== cached.groups.selection) {
-    throw drift("plugin root receiver is not the cached selection");
-  }
-  const daemon = threadGuard.groups.daemon;
-  return { version: 1, argument: owner.groups.argument, sync, resume, selection: cached.groups.selection,
-    daemon: daemon == null ? null : {
-      index: resumeOwner.start + threadGuard.index + threadGuard[0].indexOf(daemon), length: daemon.length,
-    } };
 }
 
 function daemonGuard(source, resume) {
@@ -251,6 +159,104 @@ function freshBuilderRoot(source) {
   return name;
 }
 
+function sharedPluginLifecycle(source, builder) {
+  const builderName = escapeRegExp(builder);
+  const writer = uniqueMatch(source, new RegExp(
+    String.raw`async function (?<writer>${ID})\((?<fileRoot>${ID}),(?<options>${ID})(?<stable>,(?<stableRoot>${ID})=\k<fileRoot>)?\)\{let (?<file>${ID})=${ID}\(\)\.join\(\k<fileRoot>,"\.mcp\.json"\),(?<raw>${ID})=await \(0,${ID}\.readFile\)\(\k<file>,"utf8"\),(?<parsed>${ID})=${ID}\.parse\(JSON\.parse\(\k<raw>\)\);Object\.assign\(\k<parsed>\.mcpServers\.cua_repl,${builderName}\(\{\.\.\.\k<options>,sharedPlugin:!0\}(?<builderRoot>,${ID})?\)\)`,
+    "g",
+  ), "expected one shared plugin config writer");
+  const writerName = escapeRegExp(writer.groups.writer);
+  requireUsages(source, writer.groups.writer, 3);
+  requireUsages(source, builder, 3);
+
+  const installed = uniqueMatch(source, new RegExp(
+    String.raw`await async function\((?<options>${ID})\)\{let (?<plugin>${ID})=${ID}\(\{marketplaceName:\k<options>\.marketplaceName,marketplaces:\k<options>\.marketplaces,pluginName:${ID}\.${ID}\}\);if\(!\k<plugin>\?\.plugin\.installed\)return!1;let (?<root>${ID})=\(0,${ID}\.${ID}\)\(\{codexHome:\k<options>\.codexHome,localVersion:\k<plugin>\.plugin\.localVersion,marketplaceName:\k<plugin>\.marketplace\.name,pluginName:\k<plugin>\.plugin\.name\}\);return await ${writerName}\(\k<root>,\k<options>\),(?<publish>\k<options>\.${CONTEXT_KEY}\.${ROOT_KEY}=\k<root>,)?null!=\k<options>\.nodeRepl&&\k<options>\.surfaces\.length>0\}`,
+    "g",
+  ), "expected verified installed plugin synchronization");
+  const initialize = enclosingFunction(source, installed.index);
+  if (initialize == null) throw drift("expected plugin initialization owner");
+  const initializer = source.slice(initialize.start, initialize.end);
+  const cached = uniqueMatch(initializer, new RegExp(
+    String.raw`(?<executor>${ID})=\((?<enabled>${ID})=${escapeRegExp(installed[0])}\(\{\.\.\.(?<options>${ID}),codexHome:(?<home>${ID}),marketplaceName:(?<marketplace>${ID}),marketplaces:${ID}(?<context>,${CONTEXT_KEY}:(?<receiver>${ID}))?\}\)\)\?structuredClone\(\k<options>\):null`,
+    "g",
+  ), "expected cached shared plugin launch configuration");
+  const localPluginSync = [...initializer.matchAll(new RegExp(String.raw`if\("local"===${ID}\.hostConfig\.kind\)\{`, "g"))]
+    .filter(match => match.index < cached.index &&
+      findMatchingBrace(initializer, match.index + match[0].length - 1) >= cached.index + cached[0].length);
+  if (localPluginSync.length !== 1) throw drift("expected installed plugin synchronization to be local");
+  const selection = uniqueMatch(initializer, new RegExp(
+    String.raw`\{selection:(?<selection>${ID}),cuaReplEnabled:${escapeRegExp(cached.groups.enabled)},executorLaunch:${escapeRegExp(cached.groups.executor)},confirmationPolicyConfig:${ID}`,
+    "g",
+  ), "expected synchronized selection and executor state in the cache").groups.selection;
+  uniqueMatch(initializer.slice(0, cached.index), new RegExp(
+    String.raw`\{codexHome:${escapeRegExp(cached.groups.home)},marketplaceName:${escapeRegExp(cached.groups.marketplace)}(?:,${ID}:${ID})*\}=${escapeRegExp(selection)}(?=,|;)`,
+    "g",
+  ), "expected plugin synchronization to use the cached selection's marketplace");
+  if (cached.groups.context != null && cached.groups.receiver !== selection) {
+    throw drift("shared plugin root receiver is not the cached selection");
+  }
+
+  const executor = uniqueMatch(source, new RegExp(
+    String.raw`let (?<temp>${ID})=await \(0,(?<fs>${ID})\.mkdtemp\)\(${ID}\(\)\.join\(${ID},"\.staging-"\)\);try\{await \(0,\k<fs>\.cp\)\(${ID}\.path,\k<temp>,\{recursive:!0\}\),await ${writerName}\(\k<temp>,(?<options>${ID})(?<stable>,(?<stableRoot>${ID}))?\);try\{await \(0,\k<fs>\.rename\)\(\k<temp>,(?<final>${ID})\)\}`,
+    "g",
+  ), "expected executor staging to rename the shared plugin");
+
+  const resume = uniqueMatch(source, new RegExp(
+    String.raw`(?<![\w$.#])${builderName}\(\{browserBackends:(?<selection>${ID})\.browserBackends,deferTools:\k<selection>\.desktopFeatureAvailability\.deferCuaTools,confirmationPolicyConfig:(?<cache>${ID})\.confirmationPolicyConfig,omitCuaConfirmationPolicyBySku:\k<selection>\.desktopFeatureAvailability\.omitCuaConfirmationPolicyBySku,surfaces:\k<selection>\.cuaReplSurfaces,nodeRepl:${ID}\}(?<root>,\k<selection>\.${ROOT_KEY})?\)`,
+    "g",
+  ), "expected one shared thread configuration builder call");
+  const resumeOwner = enclosingFunction(source, resume.index);
+  if (resumeOwner == null) throw drift("expected thread configuration owner");
+  const resumeSource = source.slice(resumeOwner.start, resumeOwner.end);
+  const resumeSelection = escapeRegExp(resume.groups.selection);
+  const resumeCache = escapeRegExp(resume.groups.cache);
+  uniqueMatch(resumeSource, new RegExp(
+    String.raw`(?<local>${ID})="local"===${ID}\.hostConfig\.kind,[^;]*${ID}=\k<local>\?await ${ID}\.getAuthenticatedPrincipal\(\)\.catch\(\(\)=>null\):null,${resumeSelection}=${resumeCache}\?\.selection\?\?await ${ID}\(`,
+    "g",
+  ), "expected shared thread configuration to reuse a cached local selection");
+  const reassignments = [...resumeSource.matchAll(new RegExp(`(?<![\\w$.#])${resumeSelection}=(?!=)`, "g"))];
+  const copies = [...resumeSource.matchAll(new RegExp(`(?<![\\w$.#])${resumeSelection}=\\{\\.\\.\\.${resumeSelection},`, "g"))];
+  if (reassignments.length !== 1 + copies.length) throw drift("thread configuration replaces the cached selection");
+  const daemon = daemonGuard(source, resume);
+
+  const current = writer.groups.stable == null && writer.groups.builderRoot == null &&
+    installed.groups.publish == null && cached.groups.context == null && executor.groups.stable == null &&
+    resume.groups.root == null && daemon != null;
+  const patched = writer.groups.stable != null && writer.groups.builderRoot === "," + writer.groups.stableRoot &&
+    installed.groups.publish != null && cached.groups.context != null && executor.groups.stableRoot === executor.groups.final &&
+    resume.groups.root != null && daemon == null;
+  if (!current && !patched) throw drift("incomplete shared plugin root propagation");
+  const cachedSource = cached[0].replace(
+    "return await " + writer.groups.writer + "(" + installed.groups.root + "," + installed.groups.options + "),",
+    match => `${match}${installed.groups.options}.${CONTEXT_KEY}.${ROOT_KEY}=${installed.groups.root},`,
+  ).replace(/\}\)\)\?structuredClone/, () => `,${CONTEXT_KEY}:${selection}}))?structuredClone`);
+  const stableRoot = freshBuilderRoot(writer[0]);
+  const edits = current ? [
+    { ...daemon, replacement: "" },
+    {
+      index: writer.index, length: writer[0].length,
+      replacement: writer[0].replace("){let ", () => `,${stableRoot}=${writer.groups.fileRoot}){let `)
+        .replace(/\}\)\)$/, `},${stableRoot}))`),
+    },
+    {
+      index: initialize.start + cached.index, length: cached[0].length,
+      replacement: cachedSource,
+    },
+    {
+      index: executor.index, length: executor[0].length,
+      replacement: executor[0].replace(
+        `await ${writer.groups.writer}(${executor.groups.temp},${executor.groups.options})`,
+        call => call.slice(0, -1) + `,${executor.groups.final})`,
+      ),
+    },
+    {
+      index: resume.index, length: resume[0].length,
+      replacement: resume[0].slice(0, -1) + `,${resume.groups.selection}.${ROOT_KEY})`,
+    },
+  ] : [];
+  return { current, patched, edits };
+}
+
 function selectorPattern() {
   return /(?<native>[\w$]+)=(?<ready>[\w$]+)&&(?<features>[\w$]+)\.computerUse&&(?<legacy>[\w$]+)\.enabled&&\("win32"===(?<runtime>[\w$]+)\.platform\|\|"darwin"===\k<runtime>\.platform&&null!=\k<legacy>\.paths\.serviceAppPath\)(?<linux>\|\|\k<ready>&&"linux"===\k<runtime>\.platform&&\k<features>\.computerUse&&\k<legacy>\.enabled)?,(?<mode>[\w$]+)=(?<modeLinux>"linux"===\k<runtime>\.platform\?\k<native>:)?(?<modeValue>\k<features>\.computerUse&&\(!\k<features>\.browserUseTinysky\|\|"darwin"!==\k<runtime>\.platform\|\|\k<legacy>\.enabled\))(?=,)/g;
 }
@@ -283,8 +289,9 @@ function applyUnifiedComputerUseModulePatch(source) {
   // its cached selection, then pass that context through both builder calls.
   const builder = uniqueMatch(source, new RegExp(
     `function (?<builder>[\\w$]+)\\(\\{browserBackends:(?<backends>[\\w$]+),deferTools:(?<defer>[\\w$]+),` +
-      `(?:omitCuaConfirmationPolicyBySku:[\\w$]+,)?surfaces:(?<surfaces>[\\w$]+),nodeRepl:(?<nodeRepl>[\\w$]+),` +
-      `accessBootstrapPath:(?<accessBootstrapPath>[\\w$]+)\\}(?<rootParam>,(?<pluginRoot>[\\w$]+))?\\)\\{`,
+      `confirmationPolicyConfig:${ID}="\\{\\}",` +
+      `omitCuaConfirmationPolicyBySku:[\\w$]+,surfaces:(?<surfaces>[\\w$]+),nodeRepl:(?<nodeRepl>[\\w$]+),` +
+      `sharedPlugin:${ID}=!1\\}(?<rootParam>,(?<pluginRoot>[\\w$]+))?\\)\\{`,
     "g",
   ), "expected one native config builder");
   const builderOwner = enclosingFunction(source, builder.index);
@@ -323,67 +330,36 @@ function applyUnifiedComputerUseModulePatch(source) {
       bannerKeys !== 1 + patchedBanners.length) {
     throw drift("packaged cua-repl environment no longer preserves the native bridge");
   }
-  if (/(?<![\w$.#])require(?![\w$]|\()/.test(builderSource)) {
+  if (countUsages(builderSource, "require", true) !== 0) {
     throw drift("native config builder shadows require");
   }
-  const callPattern = new RegExp(
-    `Object\\.assign\\([\\w$]+,${escapeRegExp(builder.groups.builder)}\\(\\{\\.\\.\\.(?<argument>[\\w$]+),` +
-      `accessBootstrapPath:(?<accessBootstrapPath>[\\w$]+)\\}(?<rootArg>,(?<pluginRoot>[\\w$]+))?\\)\\)`,
-    "g",
-  );
-  const calls = [...source.matchAll(callPattern)];
-  const callOwner = calls.length === 1 ? enclosingFunction(source, calls[0].index) : null;
-  const callOwnerSource = callOwner == null ? "" : source.slice(callOwner.start, callOwner.end);
-  const pluginRoots = [...callOwnerSource.matchAll(new RegExp(
-    `${ID}=${ID}\\(\\)\\.join\\((?<pluginRoot>${ID}),"\\.mcp\\.json"\\)`, "g"))];
-  const lifecycle = lifecycleContract(source, builder.groups.builder, callOwnerSource);
-  const serviceCurrent = currentServices.length === 1 && patchedServices.length === 0;
-  const servicePatched = currentServices.length === 0 && patchedServices.length === 1;
-  const bannerCurrent = currentBanners.length === 1 && patchedBanners.length === 0;
-  const bannerPatched = currentBanners.length === 0 && patchedBanners.length === 1;
-  const current = !linux && builder.groups.rootParam == null && calls.length === 1 &&
-    calls[0].groups.rootArg == null && serviceCurrent && bannerCurrent &&
-    (lifecycle.version === 2 || lifecycle.sync.groups.context == null) && lifecycle.resume.groups.root == null;
-  const patched = Boolean(linux) && builder.groups.rootParam != null && calls.length === 1 &&
-    calls[0].groups.rootArg != null && servicePatched && bannerPatched &&
-    (lifecycle.version === 2 || lifecycle.sync.groups.context != null) && lifecycle.resume.groups.root != null;
+  const lifecycle = sharedPluginLifecycle(source, builder.groups.builder);
+  const current = !linux && builder.groups.rootParam == null && lifecycle.current &&
+    currentServices.length === 1 && patchedServices.length === 0 &&
+    currentBanners.length === 1 && patchedBanners.length === 0;
+  const patched = Boolean(linux) && builder.groups.rootParam != null && lifecycle.patched &&
+    currentServices.length === 0 && patchedServices.length === 1 &&
+    currentBanners.length === 0 && patchedBanners.length === 1;
   if (!current && !patched) throw drift("expected one native trusted service selector");
+
   const service = current ? currentServices[0] : patchedServices[0];
-  if (pluginRoots.length !== 1) throw drift("changed plugin cache relationship");
-  const root = pluginRoots[0];
-  const argument = lifecycle.argument;
-  uniqueMatch(callOwnerSource, new RegExp(
-    `${escapeRegExp(root.groups.pluginRoot)}=\\(0,${ID}\\.${ID}\\)\\(\\{codexHome:${escapeRegExp(argument)}\\.codexHome,` +
-    `localVersion:(?<plugin>${ID})\\.plugin\\.localVersion,marketplaceName:\\k<plugin>\\.marketplace\\.name,pluginName:\\k<plugin>\\.plugin\\.name\\}\\)`, "g"),
-  "expected plugin root derived from verified installed plugin metadata");
-  const publishRoot = lifecycle.version === 2
-    ? `${lifecycle.selection}.${ROOT_KEY}=${root.groups.pluginRoot};`
-    : `${argument}.${CONTEXT_KEY}.${ROOT_KEY}=${root.groups.pluginRoot};`;
   const banner = current ? currentBanners[0] : patchedBanners[0];
   if (banner.groups.services !== service.groups.services) throw drift("changed native banner relationship");
   if (patched && (service.groups.pluginRoot !== builder.groups.pluginRoot ||
       banner.groups.pluginRoot !== builder.groups.pluginRoot ||
-      calls[0].groups.pluginRoot !== root.groups.pluginRoot)) {
-    throw drift("changed native service path relationship");
-  }
-  const completePropagation = callOwnerSource.split(publishRoot).length === 2 &&
-    callOwnerSource.includes(publishRoot + calls[0][0]) &&
-    builderSource.startsWith(builder[0] + rootGuard(builder.groups.pluginRoot));
-  if ((current && callOwnerSource.includes(publishRoot)) || (patched && !completePropagation)) {
+      !builderSource.startsWith(builder[0] + rootGuard(builder.groups.pluginRoot)))) {
     throw drift("incomplete trusted root propagation");
   }
   // Shared local app-server connections do not inherit the GUI's daemon launch
   // marker. Preserve local identity/configuration guards and carry their
   // per-thread browser access environment into CUA for either local transport.
-  if (patched) return lifecycle.daemon == null ? source :
-    source.slice(0, lifecycle.daemon.index) + source.slice(lifecycle.daemon.index + lifecycle.daemon.length);
-  const pluginRoot = root.groups.pluginRoot;
+  if (patched) return source;
   // Caller and helper have independent minified scopes. A caller alias can be
   // an existing destructured parameter or local in the helper. Use a fresh
   // helper binding, including nested scopes that capture the injected value.
   const builderRoot = freshBuilderRoot(builderSource);
   const edits = [
-    ...(lifecycle.daemon == null ? [] : [{ ...lifecycle.daemon, replacement: "" }]),
+    ...lifecycle.edits,
     {
       index: match.index,
       length: match[0].length,
@@ -416,21 +392,6 @@ function applyUnifiedComputerUseModulePatch(source) {
       index: builder.index + builder[0].length,
       length: 0,
       replacement: rootGuard(builderRoot),
-    },
-    {
-      index: calls[0].index,
-      length: calls[0][0].length,
-      replacement: publishRoot + calls[0][0].slice(0, -2) + `,${pluginRoot}` + calls[0][0].slice(-2),
-    },
-    ...(lifecycle.version === 1 ? [{
-      index: lifecycle.sync.index,
-      length: lifecycle.sync[0].length,
-      replacement: lifecycle.sync[0].slice(0, -2) + `,${CONTEXT_KEY}:${lifecycle.selection}})`,
-    }] : []),
-    {
-      index: lifecycle.resume.index,
-      length: lifecycle.resume[0].length,
-      replacement: lifecycle.resume[0].slice(0, -1) + `,${lifecycle.resume.groups.selection}.${ROOT_KEY})`,
     },
   ];
   let patchedSource = source;

@@ -3,90 +3,12 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const {
-  findMatchingBrace,
-} = require("../lib/minified-js.js");
-
 const COMPUTER_USE_UI_ENV_VAR = "CODEX_LINUX_ENABLE_COMPUTER_USE_UI";
 const COMPUTER_USE_UI_SETTINGS_KEY = "codex-linux-computer-use-ui-enabled";
 const COMPUTER_USE_CURSOR_HANDLER_MARKER =
   "setRemoteHostedPIPContentComputerUseCursorLocationHandler";
 const LINUX_COMPUTER_USE_CURSOR_BRIDGE_MARKER =
   "codexLinuxRegisterComputerUseCursorHandler";
-const LINUX_CODEX_APP_THREAD_TOOLS_MARKER =
-  "codexLinuxCodexAppThreadTools";
-
-const CURRENT_THREAD_TOOLS_REQUEST =
-  /(?<prefix>readDynamicTools:async (?<input>[\w$]+)=>\{let (?<result>[\w$]+)=await [\w$]+\.request\()\k<input>(?<suffix>\);return (?<local>[\w$]+)\?\(0,[\w$]+\.[\w$]+\)\(\k<result>\):\{kind:"dynamic",tools:\k<result>\}\},traceRequest:)/g;
-
-function matchesLinuxCodexAppThreadToolsContract(source) {
-  return (
-    source.includes("hasDesktopRuntime:!0,usesDesktopMcp:") &&
-    /readDynamicTools:e=>[\w$]+\.request\(e\),traceRequest(?:\(e\)\{|:e=>)/.test(source)
-  ) || (
-    source.includes("return{hasDesktopRuntime:!0,hasDeveloperInstructions:!0,isBrowserRuntime:!1,") &&
-    [...source.matchAll(CURRENT_THREAD_TOOLS_REQUEST)].length === 1
-  );
-}
-
-function applyLinuxCodexAppThreadToolsPatch(currentSource) {
-  if (currentSource.includes(LINUX_CODEX_APP_THREAD_TOOLS_MARKER)) {
-    return currentSource;
-  }
-
-  const currentRequests = [...currentSource.matchAll(CURRENT_THREAD_TOOLS_REQUEST)];
-  if (currentRequests.length === 1) {
-    const [request] = currentRequests;
-    const { prefix, input, local, suffix } = request.groups;
-    const guards = [...currentSource.matchAll(
-      /(?:let |,)(?<local>[\w$]+)=(?:\(0,[\w$]+\.[\w$]+\)|[\w$]+)\([\w$]+\);return\{hasDesktopRuntime:!0,hasDeveloperInstructions:!0,isBrowserRuntime:!1,/g,
-    )].filter(guard => guard.groups.local === local &&
-      guard.index < request.index &&
-      findMatchingBrace(currentSource, guard.index + guard[0].indexOf("return{") + "return".length) >= request.index + request[0].length);
-    if (guards.length === 1) {
-      const replacement = `${prefix}${local}?{...${input},featureOverrides:{...${input}.featureOverrides,thread_tools:!0}}:${input}/*${LINUX_CODEX_APP_THREAD_TOOLS_MARKER}*/${suffix}`;
-      return currentSource.slice(0, request.index) + replacement +
-        currentSource.slice(request.index + request[0].length);
-    }
-  }
-
-  const needleRegex =
-    /readDynamicTools:e=>([A-Za-z_$][\w$]*)\.request\(e\),traceRequest(?:\(e\)\{|:e=>)/;
-  const needleMatch = needleRegex.exec(currentSource);
-  if (needleMatch == null || needleRegex.exec(currentSource.slice(needleMatch.index + needleMatch[0].length)) != null) {
-    console.warn(
-      "WARN: Could not uniquely identify local thread dynamic-tool request construction - skipping Linux thread tools patch",
-    );
-    return currentSource;
-  }
-  const dynamicToolsVar = needleMatch[1];
-  const matchIndex = needleMatch.index;
-  const needle = needleMatch[0];
-
-  // Bind to the enclosing returned runtime inputs, rather than an arbitrary
-  // lookback: current releases add fields between the guard and tool request.
-  const runtimeInputsRegex =
-    /return\{hasDesktopRuntime:!0,usesDesktopMcp:(?<predicate>\(0,[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*\)|[A-Za-z_$][\w$]*)\((?<hostId>[A-Za-z_$][\w$]*)\),/g;
-  const desktopMcpMatches = [...currentSource.matchAll(runtimeInputsRegex)].filter((match) => {
-    const openIndex = match.index + "return".length;
-    return openIndex < matchIndex && findMatchingBrace(currentSource, openIndex) >= matchIndex + needle.length;
-  });
-  if (desktopMcpMatches.length !== 1) {
-    console.warn(
-      "WARN: Local thread dynamic-tool request lacks the expected Desktop MCP guard - skipping Linux thread tools patch",
-    );
-    return currentSource;
-  }
-  const { predicate: desktopMcpPredicate, hostId: hostIdVar } = desktopMcpMatches[0].groups;
-
-  const traceRequest = needle.endsWith("traceRequest:e=>") ? "traceRequest:e=>" : "traceRequest(e){";
-  const replacement =
-    `readDynamicTools:e=>${dynamicToolsVar}.request((${desktopMcpPredicate})(${hostIdVar})?{...e,featureOverrides:{...e.featureOverrides,thread_tools:!0}}:e/*${LINUX_CODEX_APP_THREAD_TOOLS_MARKER}*/),${traceRequest}`;
-  return currentSource.slice(0, matchIndex) +
-    replacement +
-    currentSource.slice(matchIndex + needle.length);
-}
-
 function linuxComputerUseCursorBridgeRuntimeSource() {
   return [
     "function codexLinuxComputerUseCursorComponent(e){return typeof e==`string`&&e!==`.`&&e!==`..`&&/^[A-Za-z0-9._-]+$/.test(e)}function codexLinuxComputerUseCursorSocketPath(){let e=process.env.XDG_RUNTIME_DIR?.trim();if(!e)return null;let t=require(`node:path`);if(!t.isAbsolute(e))return null;let n=(process.env.CODEX_LINUX_APP_ID||process.env.CODEX_APP_ID||`codex-desktop`).trim();codexLinuxComputerUseCursorComponent(n)||(n=`codex-desktop`);let r=process.env.CODEX_LINUX_INSTANCE_ID?.trim()||``;if(r&&!codexLinuxComputerUseCursorComponent(r))return null;let i=r?t.join(e,n,`instances`,r,`computer-use-cursor.sock`):t.join(e,n,`computer-use-cursor.sock`);return Buffer.byteLength(i,`utf8`)<=100?i:null}",
@@ -328,11 +250,9 @@ module.exports = {
   COMPUTER_USE_UI_ENV_VAR,
   COMPUTER_USE_UI_SETTINGS_KEY,
   applyLinuxComputerUseAvatarCursorBridgePatch,
-  applyLinuxCodexAppThreadToolsPatch,
   applyLinuxComputerUseFeaturePatch,
   applyLinuxComputerUseHostPlatformPatch,
   isComputerUseUiEnabled,
   linuxComputerUseCursorBridgeRuntimeSource,
   matchesLinuxComputerUseHostPlatformContract,
-  matchesLinuxCodexAppThreadToolsContract,
 };

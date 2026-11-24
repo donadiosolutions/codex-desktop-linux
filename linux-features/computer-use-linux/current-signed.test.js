@@ -81,6 +81,7 @@ test("every current signed webview descriptor patches its rspack owners idempote
   const root = process.env.CODEX_SIGNED_EXTRACTED_APP;
   const expectedOwners = {
     "codex-app-thread-tools": 1,
+    "codex-app-resume-thread-tools": 1,
     "ui-availability": 1,
     "host-platform": 1,
     // The Plugins presentation module is duplicated into several lazy chunks.
