@@ -87,6 +87,9 @@ test("staging extends the hidden unified plugin and invalidates the browser-only
   fs.mkdirSync(path.join(target, ".codex-plugin"));
   fs.writeFileSync(path.join(target, ".codex-plugin/plugin.json"), JSON.stringify({ name: "unified-computer-use", version: "26.908.31748", mcpServers: "./.mcp.json" }));
   fs.writeFileSync(path.join(target, ".mcp.json"), JSON.stringify({ mcpServers: { cua_repl: { command: "node", args: [], enabled: false } } }));
+  const banner = path.join(installDir, "resources/cua_node/lib/node_modules/@oai/cua-repl/instructions/banner.js");
+  fs.mkdirSync(path.dirname(banner), { recursive: true });
+  fs.writeFileSync(banner, 'await import("@oai/cua/tinyskyAlt");\n');
   const backend = path.join(workspace, "backend");
   fs.writeFileSync(backend, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   const env = { ...process.env, SCRIPT_DIR: path.resolve(__dirname, "../.."), INSTALL_DIR: installDir,
@@ -109,10 +112,19 @@ test("staging extends the hidden unified plugin and invalidates the browser-only
     assert.equal(fs.existsSync(path.join(target, "scripts/native-service.mjs")), false);
   }
   fs.writeFileSync(mcpPath, originalMcp);
+  for (const changedBanner of ['await import("@oai/cua/new-setup");\n', 'await import("@oai/cua/tinyskyAlt");\nsetup();\n', null]) {
+    if (changedBanner === null) fs.rmSync(banner);
+    else fs.writeFileSync(banner, changedBanner);
+    assert.throws(stage, /unified.*contract/i);
+    assert.equal(fs.readFileSync(path.join(target, ".codex-plugin/plugin.json"), "utf8"), originalManifest);
+    assert.equal(fs.readFileSync(marketplacePath, "utf8"), marketplace);
+    assert.equal(fs.existsSync(path.join(target, "scripts/native-client.mjs")), false);
+  }
+  fs.writeFileSync(banner, 'await import("@oai/cua/tinyskyAlt");\n');
   stage();
   assert.ok(fs.existsSync(path.join(target, "bin/codex-computer-use-indicator")));
   const version = JSON.parse(fs.readFileSync(path.join(target, ".codex-plugin/plugin.json"))).version;
-  assert.equal(version, "26.908.31748-linux-native.11");
+  assert.equal(version, "26.908.31748-linux-native.12");
   assert.deepEqual(JSON.parse(fs.readFileSync(marketplacePath)).plugins.map(p => p.name), ["unified-computer-use", "browser", "computer-use"]);
   const settingsManifest = JSON.parse(fs.readFileSync(path.join(target, "../computer-use/.codex-plugin/plugin.json")));
   assert.equal(settingsManifest.mcpServers, undefined);
@@ -133,9 +145,9 @@ test("staging extends the hidden unified plugin and invalidates the browser-only
   previousManifest.version = "26.901.41600-linux-native.1";
   fs.writeFileSync(manifestPath, JSON.stringify(previousManifest));
   stage();
-  assert.equal(JSON.parse(fs.readFileSync(manifestPath)).version, "26.901.41600-linux-native.11");
+  assert.equal(JSON.parse(fs.readFileSync(manifestPath)).version, "26.901.41600-linux-native.12");
   stage();
-  assert.equal(JSON.parse(fs.readFileSync(manifestPath)).version, "26.901.41600-linux-native.11");
+  assert.equal(JSON.parse(fs.readFileSync(manifestPath)).version, "26.901.41600-linux-native.12");
   fs.writeFileSync(mcpPath, "upstream drift");
   assert.throws(stage, /unified.*contract/i);
 });

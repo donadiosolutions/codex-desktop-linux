@@ -5,8 +5,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Synchronize the embedded Computer Use backend to standalone v0.7.65. The
+  crate is 0.7.65. Screenshots come from `grim` ahead of the DBus routes on a
+  Wayland session whose compositor implements wlr-screencopy (Sway, Hyprland,
+  niri, river, labwc) when grim is installed;
+  `CODEX_COMPUTER_USE_SCREENSHOT_BACKEND=grim` (standalone alias
+  `COMPUTER_USE_LINUX_SCREENSHOT_BACKEND`) forces it and `doctor` reports it
+  as a screenshot route. `press_key` chords reach wtype when the portal
+  answers `CreateSession` with response code 2 before any consent dialog and
+  ydotool is absent; a cancelled portal dialog stays final. The server tries
+  the activity indicator again on a later action when its binary was missing.
+- Synchronize the embedded Computer Use backend to standalone v0.7.64 (including
+  the v0.7.63 test fixture fix). The crate is 0.7.64. `type_text` takes an
+  opt-in `paste_fallback` on GNOME Wayland: it tries verified AT-SPI insertion
+  first, then uses the Remote Desktop portal clipboard when no AT-SPI edit is
+  possible, restoring every offered clipboard MIME type and leaving a newer
+  owner unchanged. The DevTools background-input fixture also launches Chromium
+  with `--password-store=basic` to avoid a GNOME keyring unlock prompt.
+
 ### Added
 
+- Synchronize the embedded Computer Use backend to standalone v0.7.62. The
+  crate is 0.7.62. Background `scroll` works on a rotated or flipped monitor:
+  the touch pan's device values undo the turn the compositor gives the
+  virtual touchscreen (mutter by the whole output transform, KWin by the
+  rotation without the flip). On KDE an output rotation `kscreen-doctor -j`
+  cannot give is no route (the notice, then focused input) instead of an
+  error on every call.
+- Synchronize the embedded Computer Use backend to standalone v0.7.61 (and
+  the v0.7.60 fix). The crate is 0.7.61, the standalone version; the server
+  version now comes from the crate, so `server.rs` has no literal to bump.
+  `get_app_state`, `get_tree_page` and post-action `include_tree` take
+  `tree_detail` (`minimal`, `compact` or `full`) and `max_tree_bytes`,
+  `get_tree_page` searches the cached snapshot (`query`, `role`, `within`),
+  and `accessibility_tree_partial: true` marks a result that holds only the
+  leading nodes. Background `click` and `scroll` take `relative: true` with a
+  window target. `run_batch` runs up to 100 desktop calls in one. `js` and
+  `js_reset`, a persistent Node.js REPL, are opt-in on stdio with
+  `CODEX_COMPUTER_USE_ENABLE_REPL=1` or `CODEX_COMPUTER_USE_REPL_ONLY=1`
+  (`CODEX_COMPUTER_USE_NODE_BIN` picks Node; standalone `COMPUTER_USE_LINUX_*`
+  names apply only when the Codex name is unset) and never over HTTP. On KDE
+  Plasma the KWin tablet check reads KWin's wrapper, Xwayland child or systemd
+  unit when KWin's own environment is unreadable.
+- The in-app Computer Use adapter sends `click` and `scroll` with
+  `delivery: "background"`, so on GNOME and KDE Plasma Wayland (virtual pen
+  and touchscreen) and on X11 and sway (agent seat) they no longer move the
+  user's pointer. Where no background route exists, the backend's one-time
+  notice reaches the agent as an error and nothing is sent or replayed;
+  repeating the call uses normal focused input. A background refusal says to
+  pass `background: false`, which sends that call through focused input. The
+  host validator accepts `delivery: "background"` only.
 - Synchronize the embedded Computer Use backend to standalone v0.7.59. The
   crate and the `server.rs` literal are 0.7.59, the standalone version. KDE
   Plasma Wayland (KWin 6.3 and later) gets the virtual pen and touchscreen for

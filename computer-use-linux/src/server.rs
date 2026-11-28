@@ -16,7 +16,7 @@ use crate::remote_desktop::{
     click as portal_click, drag as portal_drag, keysyms_for_text, press_key_chord,
     press_keycode_chord, scroll as portal_scroll, start_portal_keyboard_session,
     start_portal_pointer_session, type_text_with_keysyms, InputOperationGuard, PointerButton,
-    PortalKey, PortalKeyboardSession, PortalPointerSession, ScrollDirection,
+    PortalKey, PortalKeyboardSession, PortalPointerSession, PortalRefusal, ScrollDirection,
 };
 use crate::screenshot::{
     capture_screenshot_raw, prepare_screenshot_payload, RawScreenshotCapture, ScreenshotCapture,
@@ -67,6 +67,8 @@ use tokio::{
 };
 use xkeysym::key as xkey;
 use zbus::{Connection as ZbusConnection, Proxy as ZbusProxy};
+
+mod gnome_clipboard;
 
 const INPUT_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 // Linux limits each exec argument (including its NUL) to 32 pages, at least
@@ -120,6 +122,10 @@ struct CachedAccessibilitySnapshot {
     /// Encoding of the result the nodes were returned in; get_tree_page pages
     /// them in the same one.
     detail: NodeDetail,
+    /// The whole compacted tree, when `nodes` is the interactive_only view
+    /// of it. Only get_tree_page reads it: actions resolve against `nodes`,
+    /// exactly as before this field existed.
+    search_nodes: Option<Vec<AccessibilityNode>>,
     /// The AT-SPI window the tree was narrowed to, when the app exposes
     /// several windows under one root. A post-action tree with no window
     /// target of its own keeps the same scope.
@@ -219,6 +225,9 @@ impl ElementObservationTarget {
 struct TreeShape {
     detail: NodeDetail,
     window_scope: Option<String>,
+    /// The whole compacted tree when the stored nodes are its interactive_only
+    /// view, kept for get_tree_page searches only.
+    search_tree: Option<Vec<AccessibilityNode>>,
 }
 
 /// Whether an action brought its target window to the front, so a
@@ -308,6 +317,8 @@ pub struct ComputerUseLinux {
     snapshot_ids: Arc<SnapshotIds>,
     portal_pointer_session: Arc<Mutex<Option<PortalPointerSession>>>,
     portal_keyboard_session: Arc<Mutex<Option<PortalKeyboardSession>>>,
+    portal_clipboard_session:
+        Arc<tokio::sync::Mutex<Option<crate::remote_desktop::PortalClipboardSession>>>,
     /// Lazily-created uinput absolute pointer (preferred coordinate backend).
     abs_pointer: Arc<Mutex<Option<crate::abs_pointer::AbsPointer>>>,
     portal_session_init_lock: Arc<tokio::sync::Mutex<()>>,
@@ -336,6 +347,8 @@ pub struct ComputerUseLinux {
     /// Set for HTTP: a remote client gets no file writes on the host, so
     /// screenshot_file_path is refused.
     http_transport: bool,
+    /// Persistent JS REPL worker for scripted desktop automation. Opt-in host code execution, like run_shell.
+    repl: Arc<crate::repl::ReplSession>,
 }
 
 /// The monitor layout of the cached capture. `generation` counts captures,
@@ -536,19 +549,53 @@ fn cache_abs_pointer_after_readiness<T>(
 
 impl ComputerUseLinux {
     fn mcp_tool_router(&self) -> rmcp::handler::server::router::tool::ToolRouter<Self> {
-        self.router_with_completion(completion_notifications_enabled())
+        self.router_with_options(
+            completion_notifications_enabled(),
+            crate::repl::repl_enabled_for_transport(self.http_transport),
+            crate::repl::repl_only_enabled(self.http_transport),
+        )
     }
 
+    #[cfg(test)]
     fn router_with_completion(
         &self,
         enabled: bool,
     ) -> rmcp::handler::server::router::tool::ToolRouter<Self> {
+        self.router_with_options(enabled, false, false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn router_for_test(
+        &self,
+        completion_enabled: bool,
+        repl_enabled: bool,
+        repl_only: bool,
+    ) -> rmcp::handler::server::router::tool::ToolRouter<Self> {
+        self.router_with_options(completion_enabled, repl_enabled, repl_only)
+    }
+
+    fn router_with_options(
+        &self,
+        completion_enabled: bool,
+        repl_enabled: bool,
+        repl_only: bool,
+    ) -> rmcp::handler::server::router::tool::ToolRouter<Self> {
         let mut router = Self::tool_router();
-        if !enabled {
-            router.map.remove("complete_interaction");
-        }
-        if !shell_execution_enabled() {
-            router.map.remove("run_shell");
+        if repl_only && repl_enabled {
+            router
+                .map
+                .retain(|name, _| matches!(name.as_ref(), "js" | "js_reset"));
+        } else {
+            if !completion_enabled {
+                router.map.remove("complete_interaction");
+            }
+            if !shell_execution_enabled() {
+                router.map.remove("run_shell");
+            }
+            if !repl_enabled {
+                router.map.remove("js");
+                router.map.remove("js_reset");
+            }
         }
         for route in router.map.values_mut() {
             let input_schema = Arc::make_mut(&mut route.attr.input_schema);
@@ -562,6 +609,144 @@ impl ComputerUseLinux {
             }
         }
         router
+    }
+
+    pub(crate) fn is_http_transport(&self) -> bool {
+        self.http_transport
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_http_transport_for_test(&mut self, value: bool) {
+        self.http_transport = value;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mcp_tool_router_for_test(
+        &self,
+    ) -> rmcp::handler::server::router::tool::ToolRouter<Self> {
+        self.mcp_tool_router()
+    }
+
+    pub(crate) async fn dispatch_internal_tool(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> CallToolResult {
+        let accepts_file = matches!(
+            name,
+            "screenshot"
+                | "get_app_state"
+                | "activate_window"
+                | "move_window"
+                | "resize_window"
+                | "click"
+                | "perform_action"
+                | "set_value"
+                | "scroll"
+                | "drag"
+                | "press_key"
+                | "type_text"
+        );
+        if let Some(obj) = args.as_object() {
+            if let Some(refusal) =
+                screenshot_file_refusal(name, Some(obj), accepts_file, self.http_transport)
+            {
+                return CallToolResult::error(vec![ContentBlock::text(refusal)]);
+            }
+        }
+
+        fn parse_args<T: serde::de::DeserializeOwned>(
+            name: &str,
+            args: serde_json::Value,
+        ) -> std::result::Result<T, CallToolResult> {
+            serde_json::from_value(args).map_err(|error| {
+                CallToolResult::error(vec![ContentBlock::text(format!(
+                    "invalid arguments for {name}: {error}"
+                ))])
+            })
+        }
+
+        fn json_to_call_result<T: Serialize>(value: Json<T>) -> CallToolResult {
+            match serde_json::to_value(&value.0) {
+                Ok(v) => CallToolResult::structured(v),
+                Err(error) => CallToolResult::error(vec![ContentBlock::text(format!(
+                    "failed to serialize tool result: {error}"
+                ))]),
+            }
+        }
+
+        fn finish_result(res: Result<CallToolResult, ErrorData>) -> CallToolResult {
+            match res {
+                Ok(r) => r,
+                Err(error) => {
+                    CallToolResult::error(vec![ContentBlock::text(error.message.to_string())])
+                }
+            }
+        }
+
+        match name {
+            "doctor" => json_to_call_result(self.doctor().await),
+            "setup_accessibility" => json_to_call_result(self.setup_accessibility().await),
+            "setup_window_targeting" => json_to_call_result(self.setup_window_targeting().await),
+            "list_apps" => json_to_call_result(self.list_apps().await),
+            "list_windows" => json_to_call_result(self.list_windows().await),
+            "focused_window" => json_to_call_result(self.focused_window().await),
+            "get_tree_page" => match parse_args::<GetTreePageParams>(name, args) {
+                Ok(p) => json_to_call_result(self.get_tree_page(Parameters(p)).await),
+                Err(err) => err,
+            },
+            "activate_window" => match parse_args::<ActivateWindowParams>(name, args) {
+                Ok(p) => finish_result(self.activate_window(Parameters(p)).await),
+                Err(err) => err,
+            },
+            "get_app_state" => match parse_args::<GetAppStateParams>(name, args) {
+                Ok(p) => finish_result(self.get_app_state(Parameters(p)).await),
+                Err(err) => err,
+            },
+            "screenshot" => match parse_args::<ScreenshotParams>(name, args) {
+                Ok(p) => self.screenshot(Parameters(p)).await,
+                Err(err) => err,
+            },
+            "click" => match parse_args::<ClickParams>(name, args) {
+                Ok(p) => finish_result(self.click(Parameters(p)).await),
+                Err(err) => err,
+            },
+            "perform_action" => match parse_args::<ActionParams>(name, args) {
+                Ok(p) => finish_result(self.perform_action(Parameters(p)).await),
+                Err(err) => err,
+            },
+            "set_value" => match parse_args::<SetValueParams>(name, args) {
+                Ok(p) => finish_result(self.set_value(Parameters(p)).await),
+                Err(err) => err,
+            },
+            "scroll" => match parse_args::<ScrollParams>(name, args) {
+                Ok(p) => finish_result(self.scroll(Parameters(p)).await),
+                Err(err) => err,
+            },
+            "drag" => match parse_args::<DragParams>(name, args) {
+                Ok(p) => finish_result(self.drag(Parameters(p)).await),
+                Err(err) => err,
+            },
+            "press_key" => match parse_args::<PressKeyParams>(name, args) {
+                Ok(p) => finish_result(self.press_key(Parameters(p)).await),
+                Err(err) => err,
+            },
+            "type_text" => match parse_args::<TypeTextParams>(name, args) {
+                Ok(p) => finish_result(self.type_text(Parameters(p)).await),
+                Err(err) => err,
+            },
+            "move_window" => match parse_args::<MoveWindowParams>(name, args) {
+                Ok(p) => finish_result(self.move_window(Parameters(p)).await),
+                Err(err) => err,
+            },
+            "resize_window" => match parse_args::<ResizeWindowParams>(name, args) {
+                Ok(p) => finish_result(self.resize_window(Parameters(p)).await),
+                Err(err) => err,
+            },
+            _ => CallToolResult::error(vec![ContentBlock::text(format!(
+                "tool {name:?} is not callable from run_batch or js"
+            ))]),
+        }
     }
 }
 
@@ -669,7 +854,7 @@ impl ComputerUseLinux {
 
     #[tool(
         name = "get_tree_page",
-        description = "Return a page of the accessibility tree from the latest get_app_state or include_tree snapshot, starting at node offset (default 0). Use it when a tree was too large to return inline (accessibility_tree_spill is set) and the host cannot read the spill file; page with next_offset until it is null. Element indices match the snapshot, so element_index actions work on these nodes. Pass the snapshot's snapshot_id to refuse a page from a tree a later snapshot replaced. It does not read the desktop again.",
+        description = "Return a page of the accessibility tree from the latest get_app_state or include_tree snapshot, starting at node offset (default 0). Use it when a tree was too large to return inline (accessibility_tree_spill is set) and the host cannot read the spill file; page with next_offset until it is null. Element indices match the snapshot, so element_index actions work on these nodes. Pass the snapshot's snapshot_id to refuse a page from a tree a later snapshot replaced. It does not read the desktop again. To search instead of paging everything, pass query (text in a node's name, text or description), role, or within (an element_index whose subtree to read); with tree_detail=\"minimal\" a search returns only the matching text. The cache holds the whole tree even after get_app_state interactive_only, so interactive_only=false reads page text that view left out.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -681,11 +866,35 @@ impl ComputerUseLinux {
         &self,
         Parameters(params): Parameters<GetTreePageParams>,
     ) -> Json<GetTreePageOutput> {
-        let (id, nodes, detail) = self
+        // Copy only what this request reads: the cached nodes for an unfiltered
+        // page in the snapshot's own view (as before), the whole tree for a
+        // filter or the other view.
+        let (id, cached_detail, cached_interactive, nodes, whole) = self
             .last_snapshot
             .lock()
-            .map(|snapshot| (snapshot.id.clone(), snapshot.nodes.clone(), snapshot.detail))
+            .map(|snapshot| {
+                let cached_interactive = snapshot.search_nodes.is_some();
+                let interactive_only = params.interactive_only.unwrap_or(cached_interactive);
+                let filtered = params.has_filter() || interactive_only != cached_interactive;
+                let nodes = (!filtered || (interactive_only && cached_interactive))
+                    .then(|| snapshot.nodes.clone());
+                let whole = filtered.then(|| {
+                    snapshot
+                        .search_nodes
+                        .clone()
+                        .unwrap_or_else(|| snapshot.nodes.clone())
+                });
+                (
+                    snapshot.id.clone(),
+                    snapshot.detail,
+                    cached_interactive,
+                    nodes,
+                    whole,
+                )
+            })
             .unwrap_or_default();
+        let detail = params.tree_detail.unwrap_or(cached_detail);
+        let interactive_only = params.interactive_only.unwrap_or(cached_interactive);
         let offset = params.offset.unwrap_or(0);
         let checked = self
             .require_snapshot_id("get_tree_page", params.snapshot_id.as_deref())
@@ -706,7 +915,44 @@ impl ComputerUseLinux {
                 message,
             });
         }
+        // Without a filter, and in the view the snapshot was returned in, page
+        // the cached nodes exactly as before. Anything else is read from the
+        // whole tree, so non-interactive text and containers stay searchable.
+        let filtered = whole.is_some();
+        let (cached_count, nodes) = match whole {
+            Some(whole) => {
+                // The snapshot's own interactive view, when it was taken with
+                // interactive_only; otherwise the view is computed on the
+                // whole tree.
+                let interactive_view = nodes.filter(|_| interactive_only && cached_interactive);
+                (
+                    whole.len(),
+                    tree_page_view(whole, interactive_view, interactive_only, &params),
+                )
+            }
+            None => {
+                let nodes = nodes.unwrap_or_default();
+                (nodes.len(), nodes)
+            }
+        };
         let mut page = tree_page(&nodes, detail, offset);
+        if filtered && cached_count > 0 && nodes.is_empty() {
+            page.message = format!(
+                "None of the {cached_count} cached nodes match; widen the query, role or within, or pass interactive_only=false."
+            );
+        } else if filtered && cached_count > 0 {
+            page.message.push_str(&format!(
+                " {} of the {cached_count} cached nodes match{}.",
+                nodes.len(),
+                if params.has_filter() {
+                    " the filters"
+                } else if interactive_only {
+                    " the interactive view"
+                } else {
+                    ": the whole tree"
+                }
+            ));
+        }
         page.snapshot_id = (!id.is_empty()).then_some(id);
         Json(page)
     }
@@ -826,7 +1072,7 @@ impl ComputerUseLinux {
     #[tool(
         name = "get_app_state",
         output_schema = rmcp::handler::server::tool::schema_for_output::<GetAppStateOutput>(),
-        description = "Get a size-bounded screenshot and accessibility state for a Linux app. Scope the accessibility tree with app_name_or_bundle_identifier or a window_id/pid/app_id/wm_class/title target; omitting a target returns the whole desktop tree and can flood context. Nodes are compact (empty fields left out, actions by name; verbose=true returns every field). Pass interactive_only=true for only actionable nodes, headings and status regions, with the same element_index values. A title or window_id target narrows an app with several windows under one AT-SPI root (Chromium) to that window, keeping the app's popups and dialogs. A window-targeted screenshot needs that window visible and already focused (outside Hyprland background mode); otherwise screenshot_error is set and the tree still returns, so use the screenshot tool to raise and capture it. A tree too large to return inline is written whole to the private file in accessibility_tree_spill. The result's snapshot_id names the tree: element_index and selector actions that pass it are refused once a later tree replaced it. Screenshot results always include coordinate_width, coordinate_height, scale, and format, plus quality for jpeg; callers can request jpeg/quality for compression before resizing. Pass screenshot_file_path (an absolute path to a new file, stdio only; an existing path is refused) to save the screenshot there instead of returning image content; screenshot.file_path then names it.",
+        description = "Get a size-bounded screenshot and accessibility state for a Linux app. Scope the accessibility tree with app_name_or_bundle_identifier or a window_id/pid/app_id/wm_class/title target; omitting a target returns the whole desktop tree and can flood context. Nodes are compact (empty fields left out, actions by name; verbose=true returns every field). Pass interactive_only=true for only actionable nodes, headings and status regions, with the same element_index values. A title or window_id target narrows an app with several windows under one AT-SPI root (Chromium) to that window, keeping the app's popups and dialogs. A window-targeted screenshot needs that window visible and already focused (outside Hyprland background mode); otherwise screenshot_error is set and the tree still returns, so use the screenshot tool to raise and capture it. A tree too large to return inline is written whole to the private file in accessibility_tree_spill; accessibility_tree_partial=true whenever the result holds only part of the tree. The result's snapshot_id names the tree: element_index and selector actions that pass it are refused once a later tree replaced it. Screenshot results always include coordinate_width, coordinate_height, scale, and format, plus quality for jpeg; callers can request jpeg/quality for compression before resizing. Pass screenshot_file_path (an absolute path to a new file, stdio only; an existing path is refused) to save the screenshot there instead of returning image content; screenshot.file_path then names it. For low-token use pass tree_detail=\"minimal\" and max_tree_bytes (0 returns no nodes yet still caches the whole tree under the snapshot_id), then search the snapshot with get_tree_page query, role or within.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -973,7 +1219,15 @@ impl ComputerUseLinux {
         let mut unmatched_pid_note = None;
         let mut window_scope = None;
         let mut interactive_note = None;
-        let detail = NodeDetail::from_verbose(verbose);
+        let detail = params
+            .tree_detail
+            .unwrap_or_else(|| NodeDetail::from_verbose(verbose));
+        let interactive_only = params.interactive_only.unwrap_or(false);
+        let max_tree_bytes = params.max_tree_bytes;
+        // interactive_only trims the result and the nodes actions resolve
+        // against, as before; the whole tree is kept beside them so
+        // get_tree_page can still search the page's text.
+        let mut search_tree: Option<Vec<AccessibilityNode>> = None;
         let (accessibility_tree, accessibility_tree_raw_count, accessibility_error, tree_read) =
             if diagnostics.readiness.can_build_accessibility_tree {
                 let target_pid = accessibility_snapshot_target_pid(
@@ -1018,9 +1272,10 @@ impl ComputerUseLinux {
                             accessibility_tree_truncated,
                         );
                         shell_only_note = note;
-                        let nodes = if params.interactive_only.unwrap_or(false) {
+                        let nodes = if interactive_only {
                             let compacted = nodes.len();
-                            let nodes = interactive_accessibility_tree(nodes);
+                            let (nodes, whole) = interactive_view_and_search_tree(nodes);
+                            search_tree = Some(whole);
                             interactive_note = Some(format!(
                                 "interactive_only kept {} of {compacted} compacted nodes; element_index values match the full tree.",
                                 nodes.len()
@@ -1092,6 +1347,7 @@ impl ComputerUseLinux {
                     TreeShape {
                         detail,
                         window_scope: window_scope.clone(),
+                        search_tree: search_tree.take(),
                     },
                 )
                 .await;
@@ -1200,6 +1456,7 @@ impl ComputerUseLinux {
             accessibility_tree: TreeNodes::new(Vec::new(), detail),
             accessibility_tree_raw_count,
             accessibility_tree_spill: None,
+            accessibility_tree_partial: false,
             tree_scoped,
             accessibility_tree_truncated,
             accessibility_error,
@@ -1210,14 +1467,16 @@ impl ComputerUseLinux {
         // The tree gets whatever the rest of the result leaves of the budget.
         let rest = serde_json::to_string(&output).map_or(0, |json| json.len());
         let mut accessibility_tree = TreeNodes::new(accessibility_tree, detail);
-        let (spill, note) = fit_tree(
+        let fit = fit_tree_capped(
             &self.tree_spiller,
             &mut accessibility_tree,
             tree_budget(rest),
+            max_tree_bytes,
         );
         output.accessibility_tree = accessibility_tree;
-        output.accessibility_tree_spill = spill;
-        if let Some(note) = note {
+        output.accessibility_tree_spill = fit.spill;
+        output.accessibility_tree_partial = fit.partial;
+        if let Some(note) = fit.note {
             output.message.push(' ');
             output.message.push_str(&note);
         }
@@ -1754,7 +2013,7 @@ impl ComputerUseLinux {
     #[tool(
         name = "click",
         output_schema = rmcp::handler::server::tool::schema_for_output::<ActionToolOutput>(),
-        description = "Click an element by index, semantic selector, or desktop coordinate pixels from screenshot metadata. A plain left click on an element whose first AT-SPI action is click, press, or toggle invokes that action, avoiding toolkit coordinate scaling. Entry activate and slider jump actions are not substituted for pointer clicks. Explicit coordinates, right clicks, and multi-clicks retain pointer semantics. Explicit x/y default to raw screenshot capture pixels; coordinate_space=\"atspi\" with element_index or a semantic selector maps a global AT-SPI screen point through the element's KWin window and output geometry on KDE Wayland. A window target is raised and focused first (on GNOME Wayland, raising needs the Shell extension); nothing is sent when focus cannot be verified. Pass screenshot_after (true, \"screen\", or \"window\") or include_tree=true to return post-action observation in the same result.",
+        description = "Click an element by index, semantic selector, or desktop coordinate pixels from screenshot metadata. A plain left click on an element whose first AT-SPI action is click, press, or toggle invokes that action, avoiding toolkit coordinate scaling. Entry activate and slider jump actions are not substituted for pointer clicks. Explicit coordinates, right clicks, and multi-clicks retain pointer semantics. Explicit x/y default to raw screenshot capture pixels; coordinate_space=\"atspi\" with element_index or a semantic selector maps a global AT-SPI screen point through the element's KWin window and output geometry on KDE Wayland. A window target is raised and focused first (on GNOME Wayland, raising needs the Shell extension); nothing is sent when focus cannot be verified. With delivery=\"background\", the point goes to the target window, in screenshot capture pixels or window-relative with relative=true, through a pointer of the server's own where the desktop has one, and the user's pointer stays where it is. Pass screenshot_after (true, \"screen\", or \"window\") or include_tree=true to return post-action observation in the same result.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -1804,10 +2063,9 @@ impl ComputerUseLinux {
                     self.background_pointer(
                         "click",
                         (params.x, params.y),
+                        params.relative == Some(true),
                         params.window_target(),
-                        params.relative == Some(true)
-                            || params.coordinate_space != ClickCoordinateSpace::default()
-                            || click_resolves_cached_element(&params),
+                        background_click_unsupported(&params),
                         move |x, y| crate::agent_seat::PointerInput::Click {
                             x,
                             y,
@@ -2568,7 +2826,7 @@ impl ComputerUseLinux {
     #[tool(
         name = "scroll",
         output_schema = rmcp::handler::server::tool::schema_for_output::<ActionToolOutput>(),
-        description = "Scroll an element, window, or point in a direction by a number of pages (5 wheel notches per page). With a window target and no x/y/element_index, scrolls at the centre of the targeted window; with no point or target, at the current pointer. A window target is raised and focused first; nothing is sent when focus cannot be verified. Pass screenshot_after (true, \"screen\", or \"window\") or include_tree=true to return post-action observation in the same result.",
+        description = "Scroll an element, window, or point in a direction by a number of pages (5 wheel notches per page). With a window target and no x/y/element_index, scrolls at the centre of the targeted window; with no point or target, at the current pointer. A window target is raised and focused first; nothing is sent when focus cannot be verified. With delivery=\"background\", the point goes to the target window, in screenshot capture pixels or window-relative with relative=true, through a pointer of the server's own where the desktop has one, and the user's pointer stays where it is. Pass screenshot_after (true, \"screen\", or \"window\") or include_tree=true to return post-action observation in the same result.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -2629,8 +2887,9 @@ impl ComputerUseLinux {
                 .background_pointer(
                     "scroll",
                     (params.x, params.y),
+                    params.relative == Some(true),
                     params.window_target(),
-                    params.relative == Some(true) || params.element_index.is_some(),
+                    params.element_index.is_some().then_some("an element"),
                     move |x, y| crate::agent_seat::PointerInput::Scroll { x, y, dx, dy },
                     received.clone(),
                     input_guard,
@@ -3181,6 +3440,7 @@ impl ComputerUseLinux {
                         start: (params.start_x, params.start_y),
                         end: (params.end_x, params.end_y),
                     },
+                    false,
                     target.clone(),
                     received.clone(),
                     input_guard,
@@ -3443,7 +3703,7 @@ impl ComputerUseLinux {
     #[tool(
         name = "press_key",
         output_schema = rmcp::handler::server::tool::schema_for_output::<ActionToolOutput>(),
-        description = "Press a key or key-combination on the keyboard, optionally after focusing a target window or terminal selector. Key grammar (case-insensitive; hyphens/spaces ignored): combos join with '+', e.g. Ctrl+L or Ctrl+Shift+T. Modifiers: ctrl/control, alt/option, shift, meta/super/cmd/command. Named keys: enter/return, kp_enter (keypad Enter), escape/esc, tab, backspace, delete/del, space, home, end, pageup, pagedown, arrowleft/left, arrowright/right, arrowup/up, arrowdown/down, f1-f12. Plus single US letters a-z and digits 0-9. Anything else returns an error (never silently dropped). With PIXELFLUX_CU and PIXELFLUX_CU_TOKEN set, chords go to pixelflux. An unreachable pixelflux falls through to the routes below; a pixelflux error does not. On X11, chords go through xdotool (XTEST), or ydotool when xdotool is missing or cannot start. On Wayland, chords are sent through an active remote desktop portal keyboard session when one is available (or when ydotool is absent), falling back to ydotool otherwise. When ydotool is absent and the session has no RemoteDesktop portal (for example wlroots compositors), chords go through wtype instead. Portal chords send modifiers and named keys as keysyms so remapped keys (e.g. Caps Lock swapped with Control) follow the active keymap; letters and digits are physical US positions. On KDE Plasma every key in a portal chord is a physical keycode. Note: compositor-level shortcuts (e.g. Super+Up) may be consumed by GNOME before reaching the app. Pass delivery=\"background\" (the default when an element or browser_tab is named) to leave the user's keyboard focus alone: input goes to a named element through AT-SPI, to a browser tab over a DevTools port the user opened (CODEX_COMPUTER_USE_DEVTOOLS), or to a terminal's program through tmux; when no route serves the target (the reason says which setting or desktop would open one), the first such call in a server session sends nothing and returns a notice (background.retry_to_continue=true); repeating it, and every later such call, goes through normal focused input and reports background.used=false. The result's background field names the route used. On an element, only keys that mean an action map (Enter or space on a button or menu item, space on a check box, radio button or toggle, Enter on a link or a single-line field with an activate action); others have no route there. Pass screenshot_after (true, \"screen\", or \"window\") or include_tree=true to return post-action observation in the same result.",
+        description = "Press a key or key-combination on the keyboard, optionally after focusing a target window or terminal selector. Key grammar (case-insensitive; hyphens/spaces ignored): combos join with '+', e.g. Ctrl+L or Ctrl+Shift+T. Modifiers: ctrl/control, alt/option, shift, meta/super/cmd/command. Named keys: enter/return, kp_enter (keypad Enter), escape/esc, tab, backspace, delete/del, space, home, end, pageup, pagedown, arrowleft/left, arrowright/right, arrowup/up, arrowdown/down, f1-f12. Plus single US letters a-z and digits 0-9. Anything else returns an error (never silently dropped). With PIXELFLUX_CU and PIXELFLUX_CU_TOKEN set, chords go to pixelflux. An unreachable pixelflux falls through to the routes below; a pixelflux error does not. On X11, chords go through xdotool (XTEST), or ydotool when xdotool is missing or cannot start. On Wayland, chords are sent through an active remote desktop portal keyboard session when one is available (or when ydotool is absent), falling back to ydotool otherwise. When ydotool is absent and the session has no RemoteDesktop portal (for example wlroots compositors) or CreateSession fails before any consent dialog, chords go through wtype instead; a request the user cancels in the portal dialog is never replayed. Portal chords send modifiers and named keys as keysyms so remapped keys (e.g. Caps Lock swapped with Control) follow the active keymap; letters and digits are physical US positions. On KDE Plasma every key in a portal chord is a physical keycode. Note: compositor-level shortcuts (e.g. Super+Up) may be consumed by GNOME before reaching the app. Pass delivery=\"background\" (the default when an element or browser_tab is named) to leave the user's keyboard focus alone: input goes to a named element through AT-SPI, to a browser tab over a DevTools port the user opened (CODEX_COMPUTER_USE_DEVTOOLS), or to a terminal's program through tmux; when no route serves the target (the reason says which setting or desktop would open one), the first such call in a server session sends nothing and returns a notice (background.retry_to_continue=true); repeating it, and every later such call, goes through normal focused input and reports background.used=false. The result's background field names the route used. On an element, only keys that mean an action map (Enter or space on a button or menu item, space on a check box, radio button or toggle, Enter on a link or a single-line field with an activate action); others have no route there. Pass screenshot_after (true, \"screen\", or \"window\") or include_tree=true to return post-action observation in the same result.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -3536,6 +3796,57 @@ impl ComputerUseLinux {
         .await
     }
 
+    /// The wtype half of `press_key`. The route chosen up front and the
+    /// replay of a chord whose portal session could not start both end here;
+    /// `portal_failure` names that failure in a successful result.
+    async fn press_key_through_wtype(
+        &self,
+        key: &str,
+        input_guard: InputOperationGuard,
+        received: Option<serde_json::Value>,
+        focus: Option<WindowFocusResult>,
+        portal_failure: Option<String>,
+    ) -> Json<ActionOutput> {
+        let Some(args) = wtype_key_args(key) else {
+            return Json(ActionOutput {
+                ok: false,
+                implemented: true,
+                action: "press_key".to_string(),
+                message: "Unsupported key. Use names like Enter, Escape, Tab, ArrowLeft, Super, Ctrl+L, or a single US keyboard letter/digit.".to_string(),
+                received,
+            });
+        };
+        let (input_guard, result) =
+            run_cancellation_safe_input(input_guard, async move { run_wtype_key(&args).await })
+                .await;
+        let _input_guard = input_guard;
+        let output = match result {
+            Ok(()) => {
+                let mut output = successful_action_with_focus(
+                    "press_key",
+                    "Action sent through wtype (Wayland virtual-keyboard protocol).",
+                    received,
+                    focus.clone(),
+                );
+                if let Some(failure) = portal_failure {
+                    output.message = format!(
+                        "{} The remote desktop portal did not send it: {failure}.",
+                        output.message
+                    );
+                }
+                output
+            }
+            Err(error) => {
+                action_result_with_focus("press_key", Err(error), received, focus.clone())
+            }
+        };
+        if output.ok && focus.is_some() {
+            let notes = self.input_landing_notes(focus.as_ref(), false).await;
+            return Json(with_notes(output, notes));
+        }
+        Json(output)
+    }
+
     async fn dispatch_press_key(&self, params: PressKeyParams) -> Json<ActionOutput> {
         let received = Some(serde_json::json!(params.clone()));
         let input_guard =
@@ -3601,35 +3912,9 @@ impl ComputerUseLinux {
 
         let route = self.chord_route().await;
         if route == ChordRoute::Wtype {
-            let Some(args) = wtype_key_args(&params.key) else {
-                return Json(ActionOutput {
-                    ok: false,
-                    implemented: true,
-                    action: "press_key".to_string(),
-                    message: "Unsupported key. Use names like Enter, Escape, Tab, ArrowLeft, Super, Ctrl+L, or a single US keyboard letter/digit.".to_string(),
-                    received,
-                });
-            };
-            let (input_guard, result) =
-                run_cancellation_safe_input(input_guard, async move { run_wtype_key(&args).await })
-                    .await;
-            let _input_guard = input_guard;
-            let output = match result {
-                Ok(()) => successful_action_with_focus(
-                    "press_key",
-                    "Action sent through wtype (Wayland virtual-keyboard protocol).",
-                    received,
-                    focus.clone(),
-                ),
-                Err(error) => {
-                    action_result_with_focus("press_key", Err(error), received, focus.clone())
-                }
-            };
-            if output.ok && focus.is_some() {
-                let notes = self.input_landing_notes(focus.as_ref(), false).await;
-                return Json(with_notes(output, notes));
-            }
-            return Json(output);
+            return self
+                .press_key_through_wtype(&params.key, input_guard, received, focus, None)
+                .await;
         }
         if route == ChordRoute::Portal {
             let portal_target = match self
@@ -3693,7 +3978,41 @@ impl ComputerUseLinux {
                     }
                 }
                 Ok(None) => {}
-                Err(error) => return Json(portal_start_error("press_key", error, received)),
+                Err(error) => {
+                    // A portal that answers CreateSession with code 2 serves no
+                    // RemoteDesktop session (as on niri) and reads as absent; a
+                    // cancellation, or a failure after a consent dialog, is final.
+                    let refusal = error.downcast_ref::<PortalRefusal>().copied();
+                    let pinned = env_flag_enabled_any(&[
+                        "COMPUTER_USE_LINUX_FORCE_PORTAL_KEYBOARD",
+                        "CODEX_COMPUTER_USE_FORCE_PORTAL_KEYBOARD",
+                    ]);
+                    if wtype_replays_failed_portal_chord(
+                        refusal,
+                        pinned,
+                        self.should_prefer_wtype_keyboard(),
+                    ) {
+                        // The target is verified again, as the portal path does
+                        // after consent, so the chord lands on the same window.
+                        let focus = match self.focus_target_for_input(&portal_target).await {
+                            Ok(focus) => focus,
+                            Err(message) => {
+                                return Json(action_result("press_key", Err(message), received))
+                            }
+                        };
+                        let failure = format!("{error:#}");
+                        return self
+                            .press_key_through_wtype(
+                                &params.key,
+                                input_guard,
+                                received,
+                                focus,
+                                Some(failure),
+                            )
+                            .await;
+                    }
+                    return Json(portal_start_error("press_key", error, received));
+                }
             }
         }
         let Some(key_events) = key_sequence(&params.key) else {
@@ -3774,7 +4093,7 @@ impl ComputerUseLinux {
     #[tool(
         name = "type_text",
         output_schema = rmcp::handler::server::tool::schema_for_output::<ActionToolOutput>(),
-        description = "Type literal text using keyboard input, optionally after focusing a target window or terminal selector. Keyboard success confirms dispatch, not field-content verification; re-observe the target before retrying. On GNOME, when a configured keyboard layout group cannot type a character of the text, the text goes into the focused editable field of the verified target window through AT-SPI EditableText instead: inserted at the caret, replacing a selection, and reported as ok only when the field reads it back with the rest unchanged. Password fields, text with a newline, tab or other control character, and focus outside an editable field of that active window keep the refusal. Pass delivery=\"background\" (the default when an element or browser_tab is named) to leave the user's keyboard focus alone: input goes to a named element through AT-SPI, to a browser tab over a DevTools port the user opened (CODEX_COMPUTER_USE_DEVTOOLS), or to a terminal's program through tmux; when no route serves the target (the reason says which setting or desktop would open one), the first such call in a server session sends nothing and returns a notice (background.retry_to_continue=true); repeating it, and every later such call, goes through normal focused input and reports background.used=false. The result's background field names the route used. Into a named element the text goes in at its caret (or end) and must read back; a password field is filled unverified. X11 xdotool can silently substitute symbols under non-US or changing XKB layouts; inspect the text before pressing Enter or submitting it. The wtype backend rejects NUL and text over 131071 UTF-8 bytes before focus or indicators. On Hyprland, confirmed password fields are rejected, and ambiguous fields and terminals use private stdin for at most 100 Unicode characters per call. Pass screenshot_after (true, \"screen\", or \"window\") or include_tree=true to return post-action observation in the same result.",
+        description = "Type literal text using keyboard input, optionally after focusing a target window or terminal selector. Keyboard success confirms dispatch, not field-content verification; re-observe the target before retrying. On GNOME, when a configured keyboard layout group cannot type a character of the text, the text goes into the focused editable field of the verified target window through AT-SPI EditableText instead: inserted at the caret, replacing a selection, and reported as ok only when the field reads it back with the rest unchanged. Password fields, text with a newline, tab or other control character, and focus outside an editable field of that active window keep the refusal. Pass paste_fallback=true on GNOME Wayland to try AT-SPI first and use portal clipboard paste when no AT-SPI edit is possible; every offered clipboard MIME type is restored, a newer owner is left unchanged, and paste success confirms dispatch only. Pass delivery=\"background\" (the default when an element or browser_tab is named) to leave the user's keyboard focus alone: input goes to a named element through AT-SPI, to a browser tab over a DevTools port the user opened (CODEX_COMPUTER_USE_DEVTOOLS), or to a terminal's program through tmux; when no route serves the target (the reason says which setting or desktop would open one), the first such call in a server session sends nothing and returns a notice (background.retry_to_continue=true); repeating it, and every later such call, goes through normal focused input and reports background.used=false. The result's background field names the route used. Into a named element the text goes in at its caret (or end) and must read back; a password field is filled unverified. X11 xdotool can silently substitute symbols under non-US or changing XKB layouts; inspect the text before pressing Enter or submitting it. The wtype backend rejects NUL and text over 131071 UTF-8 bytes before focus or indicators. On Hyprland, confirmed password fields are rejected, and ambiguous fields and terminals use private stdin for at most 100 Unicode characters per call. Pass screenshot_after (true, \"screen\", or \"window\") or include_tree=true to return post-action observation in the same result.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -3874,22 +4193,30 @@ impl ComputerUseLinux {
     }
 
     /// GNOME's portal route refused the text because a layout group lacks a
-    /// character. Insert it into the target's focused field through AT-SPI
-    /// EditableText instead, and succeed only when the field reads it back.
-    /// Every other case keeps the portal refusal.
+    /// character, or the caller opted into `paste_fallback`. Insert it into
+    /// the target's focused field through AT-SPI EditableText first, and
+    /// succeed only when the field reads it back. When `paste_fallback` is
+    /// set and no AT-SPI edit was attempted, fall back to portal clipboard
+    /// paste. Every other case keeps the refusal.
+    #[allow(clippy::too_many_arguments)]
     async fn type_text_through_atspi(
         &self,
         text: &str,
         portal_target: &WindowTarget,
-        missing: crate::keyboard_keymap::MissingLayoutKeysym,
+        missing: Option<crate::keyboard_keymap::MissingLayoutKeysym>,
         refusal: String,
         received: Option<serde_json::Value>,
         input_guard: InputOperationGuard,
+        paste_fallback: bool,
     ) -> ActionOutput {
         if let Some(key) = key_press_character(text) {
             return action_result(
                 "type_text",
-                Err(type_text_control_character_refusal(&refusal, key)),
+                Err(type_text_control_character_refusal_for_fallbacks(
+                    &refusal,
+                    key,
+                    paste_fallback,
+                )),
                 received,
             );
         }
@@ -3912,19 +4239,27 @@ impl ComputerUseLinux {
         });
         let title = window.and_then(|window| window.title.clone());
         let Some(pid) = window.and_then(|window| window.pid) else {
-            return action_result_with_focus(
-                "type_text",
-                Err(format!(
-                    "{refusal} No AT-SPI text fallback: the target window has no process id to find its focused field."
-                )),
-                received,
-                focus,
+            let reason = format!(
+                "{refusal} No AT-SPI text fallback: the target window has no process id to find its focused field."
             );
+            if paste_fallback {
+                return self
+                    .type_text_through_gnome_clipboard(
+                        text,
+                        portal_target,
+                        focus,
+                        received,
+                        input_guard,
+                        reason,
+                    )
+                    .await;
+            }
+            return action_result_with_focus("type_text", Err(reason), received, focus);
         };
         // A selection replace is DeleteText then InsertText. Finish both even
         // if this call is cancelled, and hold the input lock until they end.
         let owned_text = text.to_string();
-        let (_guard, insert) = run_cancellation_safe_guarded(input_guard, async move {
+        let (input_guard, insert) = run_cancellation_safe_guarded(input_guard, async move {
             crate::atspi_tree::insert_text_at_focus(pid, title.as_deref(), &owned_text).await
         })
         .await;
@@ -3934,6 +4269,22 @@ impl ComputerUseLinux {
                 may_have_changed: true,
             })
         });
+        let can_fallback_to_clipboard =
+            paste_fallback && gnome_clipboard::atspi_outcome_allows_clipboard_fallback(&insert);
+        if can_fallback_to_clipboard {
+            let refusal = type_text_atspi_result(&refusal, missing, text, insert)
+                .expect_err("a no-edit AT-SPI outcome is an error");
+            return self
+                .type_text_through_gnome_clipboard(
+                    text,
+                    portal_target,
+                    focus,
+                    received,
+                    input_guard.expect("AT-SPI completion returned its input guard"),
+                    refusal,
+                )
+                .await;
+        }
         match type_text_atspi_result(&refusal, missing, text, insert) {
             Ok(message) => successful_action_with_focus("type_text", &message, received, focus),
             Err(message) => action_result_with_focus("type_text", Err(message), received, focus),
@@ -4109,6 +4460,37 @@ impl ComputerUseLinux {
                 Err(error) => return Json(portal_start_error("type_text", error, received)),
             }
         }
+        if params.paste_fallback
+            && self.is_gnome_wayland_session()
+            && self.should_prefer_portal_text_backend()
+        {
+            let portal_target = match self
+                .portal_keyboard_target(&window_target, focus.as_ref())
+                .await
+            {
+                Ok(target) => target,
+                Err(error) => {
+                    return Json(action_result_with_focus(
+                        "type_text",
+                        Err(format!("{error:#}")),
+                        received,
+                        focus,
+                    ))
+                }
+            };
+            return Json(
+                self.type_text_through_atspi(
+                    &params.text,
+                    &portal_target,
+                    None,
+                    "Literal text was not sent through GNOME portal keysyms.".to_string(),
+                    received,
+                    input_guard,
+                    true,
+                )
+                .await,
+            );
+        }
         if self.should_prefer_portal_text_backend() {
             let mut focus = focus;
             let mut layout_refusal = None;
@@ -4151,10 +4533,11 @@ impl ComputerUseLinux {
                     self.type_text_through_atspi(
                         &params.text,
                         &portal_target,
-                        missing,
+                        Some(missing),
                         refusal,
                         received,
                         input_guard,
+                        params.paste_fallback,
                     )
                     .await,
                 );
@@ -4322,19 +4705,90 @@ impl ComputerUseLinux {
         self.finish_window_geometry_output(output, &capture, &target)
             .await
     }
+    #[tool(
+        name = "run_batch",
+        description = "Execute an ordered sequence of desktop actions (click, type_text, press_key, set_value, scroll, drag, activate_window, get_app_state, screenshot, or sleep_ms) strictly sequentially in a single tool call. Keeps the AT-SPI snapshot_id cache warm and propagates snapshot_id across steps by default. Stops on the first error unless stop_on_error=false, and returns compact step results plus up to the last 2 captured screenshots.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn run_batch(
+        &self,
+        Parameters(params): Parameters<crate::repl::RunBatchParams>,
+    ) -> CallToolResult {
+        crate::repl::execute_batch(self, params).await
+    }
+
+    #[tool(
+        name = "js",
+        description = "Run JavaScript in a persistent desktop REPL worker (opt-in on stdio via CODEX_COMPUTER_USE_ENABLE_REPL=1 or CODEX_COMPUTER_USE_REPL_ONLY=1; disabled over HTTP). Executes multi-step workflows, AT-SPI tree filtering, waitFor loops, form filling, and post-action verification in a single turn. Not a sandbox: enabling it lets the model run code as the server user, the same trust as run_shell. The Node.js worker starts with an empty environment, string code generation refused, and Node's permission flag when available; these are defence in depth, not a security boundary. Supports top-level await, return, console.log, sleep(ms), viewImage(shot), persistent bindings across turns, and the `desktop` (alias `cua`) handle DSL: `const win = await desktop.window(titleOrApp)` returns a WindowHandle with `win.focus()`, `win.state()`, `win.summary()`, `win.find(matcher)` (returns ElementHandle with `.click()`, `.doubleClick()`, `.rightClick()`, `.setValue(v)`, `.type(t)`, `.press(k)`), `win.findAll(matcher)`, `win.waitFor(matcher)`, `win.click(targetOrX, y?)` (explicit x/y default to relative=true window coordinates; divide image pixels by shot.scale if scaled), `win.clickAll(targets, opts?)`, `win.fillForm(fields)`, `win.type(text)`, `win.press(key)`, `win.hotkey(['Ctrl','L'])`, `win.scroll(dir, pages)` (x/y also default to relative=true), `win.drag(x1,y1,x2,y2)` (full-capture coordinates), `win.screenshot()`. Top-level `desktop.getState()`, `desktop.windows()`, `desktop.focused()`, `desktop.setupAccessibility()`, `desktop.setupWindowTargeting()`, `desktop.click(x, y)` (full-capture coordinates), `desktop.doubleClick(...)`, `desktop.rightClick(...)`, `desktop.hotkey(...)`, `desktop.screenshot()`, `desktop.help()`, and `desktop.clearImages()` are also available. Captured screenshots (up to the last 2) return natively as MCP image blocks.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn js(
+        &self,
+        Parameters(params): Parameters<crate::repl::JsEvalParams>,
+    ) -> CallToolResult {
+        self.repl.eval(self, params).await
+    }
+
+    #[tool(
+        name = "js_reset",
+        description = "Reset the persistent desktop JavaScript REPL session (opt-in via CODEX_COMPUTER_USE_ENABLE_REPL=1 or CODEX_COMPUTER_USE_REPL_ONLY=1), clearing all in-memory JS variables and restarting the worker on the next `js` call.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn js_reset(&self) -> Json<crate::repl::JsResetOutput> {
+        let restarted = self.repl.reset().await;
+        Json(crate::repl::JsResetOutput {
+            ok: true,
+            reset: true,
+            worker_was_running: restarted,
+        })
+    }
 }
 
-#[tool_handler(
-    router = self.mcp_tool_router(),
-    name = "codex-computer-use-linux",
-    // NOTE: keep in lockstep with Cargo.toml + package.json on every release.
-    // The rmcp tool_handler macro only accepts a string literal here, so this
-    // can't be env!("CARGO_PKG_VERSION"); the MCP safety check (CI) fails the
-    // build if it drifts from the Cargo version.
-    version = "0.7.59",
-    instructions = "Begin every turn that uses Computer Use by calling get_app_state. If diagnostics report disabled GNOME accessibility, call setup_accessibility before asking the user to retry. Use list_windows/focused_window before targeted keyboard input. If readiness reports can_query_windows or can_focus_windows false on GNOME, call setup_window_targeting to install the GNOME Shell extension, then ask the user to log out and back in if the setup report says a shell reload is required. This Linux backend captures size-bounded screenshots (pixelflux when configured, GNOME Shell, the Codex GNOME Shell extension, the XDG portal, native X11, gnome-screenshot; grim in Hyprland background mode), reads AT-SPI trees with action/value metadata, invokes native AT-SPI actions, sets AT-SPI values or editable text, lists and focuses compositor windows through registered Linux window backends when the session permits it, and attaches best-effort terminal tty/process metadata to terminal windows. Click, scroll and drag try pixelflux when configured, xdotool on native X11, the uinput pointer, the RemoteDesktop portal (an open portal session, or when ydotool is absent, on COSMIC, or when forced), then ydotool outside Wayland. On Wayland a point never goes through ydotool: without uinput or the portal a coordinate action is refused; a coordinate scroll sends the move and the wheel through the uinput pointer, and an untargeted scroll sends the wheel through ydotool, or the portal without its daemon. The uinput pointer is sized to the latest full screenshot; take a new one after the desktop size changes. type_text sends literal text through pixelflux when configured (an unreachable pixelflux falls through), KDE clipboard paste on Plasma Wayland (raw ydotool when Klipper cannot be read), wtype on compatible Wayland compositors, portal keysyms on other Wayland sessions, or xdotool on X11. Portal text startup or conversion failures return an error without replaying through ydotool. GNOME preflights the complete text against every configured keyboard layout group because the background reader cannot establish the active group; rejected text goes into the target's focused editable field through AT-SPI EditableText and must read back, and otherwise can use set_value on an editable field. Raw ydotool text is limited to printable ASCII, tab and newline, uses US physical key positions, and requires checking the resulting field contents under the active layout. Screenshot results include width/height for the returned image plus coordinate_width/coordinate_height and scale for desktop coordinate conversion; request more detail with max_width, max_height, max_bytes, format=jpeg, quality, or a smaller target/crop instead of relying on unbounded screenshots. Mutating tools (click, type_text, press_key, scroll, drag, perform_action, set_value, activate_window, move_window, resize_window) accept optional screenshot_after (true, \"screen\", or \"window\") with format/quality/scale/max_width/max_height/max_bytes, optional screenshot_file_path (an absolute path to a new file, stdio only, refused over HTTP) to save the screenshot there instead of returning image content, and optional include_tree=true to return post-action observation in the same tool call. A failed action returns no observation, except set_value with verified=false. Tools with readOnlyHint=false may mutate local desktop or application state; hosts should require approval for actions that can submit, delete, send, purchase, or overwrite data. For element-targeted actions, prefer element_index from the latest get_app_state result; click, perform_action, and set_value can also use semantic role/name/text/states selectors when the target is unique. Pass that result's snapshot_id with the index or selector: each get_app_state or include_tree tree replaces the cached one, and a call naming a replaced snapshot is refused before any input. type_text and press_key accept optional window_id, pid, app_id, wm_class, title, tty, terminal_pid, terminal_command, or terminal_cwd selectors and refuse targeted input if focus cannot be verified. After targeted keyboard input, results append focused-element feedback from AT-SPI (role, name, editable); type_text also warns when a concrete non-terminal focus is not editable. Exact window focus alone does not suppress a missing-focus warning; only a complete scoped tree containing window/menu chrome without content makes it informational. Terminals accept keyboard input without an EditableText interface. On Hyprland, wtype passes classified nonsecret text as one literal argument after -- to avoid stdin keymap-refresh corruption; that text is visible in process arguments, so confirmed password fields are rejected (use set_value), and terminals and ambiguous fields, with or without AT-SPI, use private stdin for at most 100 Unicode characters per call (split larger input or expose accessibility). Input classification has its own 1500 ms budget, independent of the 250 ms cosmetic indicator timeout. Other compatible compositors retain stdin. The wtype path rejects NUL and more than 131071 UTF-8 bytes before focus or indicators. X11 xdotool can silently substitute symbols under non-US XKB layouts (reported with br/ABNT2) or changing keymap state; inspect the text before pressing Enter or submitting it. A successful type_text result through a keyboard backend confirms dispatch only and leaves field contents unverified; only the GNOME AT-SPI fallback reads the field back. Re-observe the target before retrying. Screenshot, keyboard and move/resize results warn when the target window is partly or fully off-screen; click, scroll and drag results warn when a coordinate is off the screenshot or between monitors (not through pixelflux, and not for KWin element clicks, which KWin maps onto an output). move_window and resize_window, which bring a window back on-screen, work only through the GNOME Shell extension or X11/EWMH (wmctrl). scroll accepts the same window targeting and relative coordinates as click; on both, a window target is raised and focused first, and nothing is sent when focus cannot be verified. get_app_state returns a compact readiness block and compact tree nodes (null, empty and default fields left out, actions listed by name) by default; pass verbose=true for the full diagnostics dump and full nodes. Pass interactive_only=true to get only nodes with an action, editable text or a value, plus headings, status/live regions, windows and dialogs; containers are collapsed and element_index values match the full tree. A title or window_id target narrows an app that exposes several windows under one AT-SPI application root (Chromium) to that window's subtree, keeping the app's popups and dialogs. Scope get_app_state with app_name_or_bundle_identifier or a window target (window_id, pid, app_id, wm_class, title); without one it returns the whole desktop AT-SPI tree, reports tree_scoped=false, and warns in message, which can flood context. accessibility_tree_truncated=true means the node, depth, read, or time budget stopped traversal with unread elements left; recover by scoping to a narrower app or window target and raising max_nodes or max_depth (hard caps 10000 and 64), not by lowering max_nodes. A compacted tree too large to return inline comes back as its leading nodes plus accessibility_tree_spill.path, a private JSON file with the whole tree and the same element_index values; search that file instead of requesting the tree again, or page through it with get_tree_page when files are not readable. Electron apps with only window/menu chrome may need --force-renderer-accessibility to expose renderer content. run_shell is absent unless CODEX_COMPUTER_USE_ENABLE_SHELL=1 or the standalone COMPUTER_USE_LINUX_ENABLE_SHELL=1 compatibility alias; when enabled it is same-user arbitrary host execution, not a sandbox, and hosts should require explicit approval."
-)]
+const DEFAULT_SERVER_INSTRUCTIONS_BODY: &str = "Begin every turn that uses Computer Use by calling get_app_state. If diagnostics report disabled GNOME accessibility, call setup_accessibility before asking the user to retry. Use list_windows/focused_window before targeted keyboard input. If readiness reports can_query_windows or can_focus_windows false on GNOME, call setup_window_targeting to install the GNOME Shell extension, then ask the user to log out and back in if the setup report says a shell reload is required. This Linux backend captures size-bounded screenshots (pixelflux when configured, grim where the compositor implements wlr-screencopy, GNOME Shell, the Codex GNOME Shell extension, the XDG portal, native X11, gnome-screenshot), reads AT-SPI trees with action/value metadata, invokes native AT-SPI actions, sets AT-SPI values or editable text, lists and focuses compositor windows through registered Linux window backends when the session permits it, and attaches best-effort terminal tty/process metadata to terminal windows. Click, scroll and drag try pixelflux when configured, xdotool on native X11, the uinput pointer, the RemoteDesktop portal (an open portal session, or when ydotool is absent, on COSMIC, or when forced), then ydotool outside Wayland. On Wayland a point never goes through ydotool: without uinput or the portal a coordinate action is refused; a coordinate scroll sends the move and the wheel through the uinput pointer, and an untargeted scroll sends the wheel through ydotool, or the portal without its daemon. The uinput pointer is sized to the latest full screenshot; take a new one after the desktop size changes. type_text sends literal text through pixelflux when configured (an unreachable pixelflux falls through), KDE clipboard paste on Plasma Wayland (raw ydotool when Klipper cannot be read), wtype on compatible Wayland compositors, portal keysyms on other Wayland sessions, or xdotool on X11. Portal text startup or conversion failures return an error without replaying through ydotool. GNOME preflights the complete text against every configured keyboard layout group because the background reader cannot establish the active group; rejected text goes into the target's focused editable field through AT-SPI EditableText and must read back, and otherwise can use set_value on an editable field or paste_fallback=true on GNOME Wayland to paste through the portal clipboard and restore its previous contents. Raw ydotool text is limited to printable ASCII, tab and newline, uses US physical key positions, and requires checking the resulting field contents under the active layout. Screenshot results include width/height for the returned image plus coordinate_width/coordinate_height and scale for desktop coordinate conversion; request more detail with max_width, max_height, max_bytes, format=jpeg, quality, or a smaller target/crop instead of relying on unbounded screenshots. Mutating tools (click, type_text, press_key, scroll, drag, perform_action, set_value, activate_window, move_window, resize_window) accept optional screenshot_after (true, \"screen\", or \"window\") with format/quality/scale/max_width/max_height/max_bytes, optional screenshot_file_path (an absolute path to a new file, stdio only, refused over HTTP) to save the screenshot there instead of returning image content, and optional include_tree=true to return post-action observation in the same tool call. A failed action returns no observation, except set_value with verified=false. Tools with readOnlyHint=false may mutate local desktop or application state; hosts should require approval for actions that can submit, delete, send, purchase, or overwrite data. For element-targeted actions, prefer element_index from the latest get_app_state result; click, perform_action, and set_value can also use semantic role/name/text/states selectors when the target is unique. Pass that result's snapshot_id with the index or selector: each get_app_state or include_tree tree replaces the cached one, and a call naming a replaced snapshot is refused before any input. type_text and press_key accept optional window_id, pid, app_id, wm_class, title, tty, terminal_pid, terminal_command, or terminal_cwd selectors and refuse targeted input if focus cannot be verified. After targeted keyboard input, results append focused-element feedback from AT-SPI (role, name, editable); type_text also warns when a concrete non-terminal focus is not editable. Exact window focus alone does not suppress a missing-focus warning; only a complete scoped tree containing window/menu chrome without content makes it informational. Terminals accept keyboard input without an EditableText interface. On Hyprland, wtype passes classified nonsecret text as one literal argument after -- to avoid stdin keymap-refresh corruption; that text is visible in process arguments, so confirmed password fields are rejected (use set_value), and terminals and ambiguous fields, with or without AT-SPI, use private stdin for at most 100 Unicode characters per call (split larger input or expose accessibility). Input classification has its own 1500 ms budget, independent of the 250 ms cosmetic indicator timeout. Other compatible compositors retain stdin. The wtype path rejects NUL and more than 131071 UTF-8 bytes before focus or indicators. X11 xdotool can silently substitute symbols under non-US XKB layouts (reported with br/ABNT2) or changing keymap state; inspect the text before pressing Enter or submitting it. A successful type_text result through a keyboard backend confirms dispatch only and leaves field contents unverified; only the GNOME AT-SPI fallback reads the field back. Re-observe the target before retrying. Screenshot, keyboard and move/resize results warn when the target window is partly or fully off-screen; click, scroll and drag results warn when a coordinate is off the screenshot or between monitors (not through pixelflux, and not for KWin element clicks, which KWin maps onto an output). move_window and resize_window, which bring a window back on-screen, work only through the GNOME Shell extension or X11/EWMH (wmctrl). scroll accepts the same window targeting and relative coordinates as click; on both, a window target is raised and focused first, and nothing is sent when focus cannot be verified. get_app_state returns a compact readiness block and compact tree nodes (null, empty and default fields left out, actions listed by name) by default; pass verbose=true for the full diagnostics dump and full nodes. Pass interactive_only=true to get only nodes with an action, editable text or a value, plus headings, status/live regions, windows and dialogs; containers are collapsed and element_index values match the full tree. A title or window_id target narrows an app that exposes several windows under one AT-SPI application root (Chromium) to that window's subtree, keeping the app's popups and dialogs. Scope get_app_state with app_name_or_bundle_identifier or a window target (window_id, pid, app_id, wm_class, title); without one it returns the whole desktop AT-SPI tree, reports tree_scoped=false, and warns in message, which can flood context. accessibility_tree_truncated=true means the node, depth, read, or time budget stopped traversal with unread elements left; recover by scoping to a narrower app or window target and raising max_nodes or max_depth (hard caps 10000 and 64), not by lowering max_nodes. A compacted tree too large to return inline comes back as its leading nodes, with accessibility_tree_partial=true, plus accessibility_tree_spill.path (absent when the file could not be written), a private JSON file with the whole tree and the same element_index values; search that file instead of requesting the tree again, or page through it with get_tree_page when files are not readable. Electron apps with only window/menu chrome may need --force-renderer-accessibility to expose renderer content. run_shell is absent unless CODEX_COMPUTER_USE_ENABLE_SHELL=1 or the standalone COMPUTER_USE_LINUX_ENABLE_SHELL=1 compatibility alias; when enabled it is same-user arbitrary host execution, not a sandbox, and hosts should require explicit approval.";
+
+const REPL_ONLY_SERVER_INSTRUCTIONS: &str = "Control Linux desktop apps through the persistent desktop JavaScript REPL (`js` / `js_reset`). Start with `await desktop.getState()` or `const win = await desktop.window(titleOrApp)`. Use `win.summary()` for a compact interactive AT-SPI listing, `win.find(matcher)` / `win.clickAll(...)` / `win.waitFor(...)` / `win.type(...)` / `win.hotkey(...)` / `win.screenshot()` for multi-step workflows, `desktop.setupAccessibility()` / `desktop.setupWindowTargeting()` if diagnostics report missing setup, and `desktop.help()` for the full handle API. Tools with readOnlyHint=false may mutate local desktop or application state; hosts should require approval for actions that can submit, delete, send, purchase, or overwrite data.";
+
+#[tool_handler(router = self.mcp_tool_router())]
 impl ServerHandler for ComputerUseLinux {
+    fn get_info(&self) -> rmcp::model::ServerConfig {
+        let instructions = if crate::repl::repl_only_enabled(self.http_transport) {
+            REPL_ONLY_SERVER_INSTRUCTIONS.to_string()
+        } else if crate::repl::repl_enabled_for_transport(self.http_transport) {
+            format!(
+                "For multi-step desktop workflows, prefer `js` (persistent desktop JavaScript REPL with `desktop`/`cua` window and element handles) or `run_batch` to complete chains in a single turn. {DEFAULT_SERVER_INSTRUCTIONS_BODY}"
+            )
+        } else {
+            format!(
+                "For multi-step desktop sequences (multiple clicks, keys, or form actions on known targets), prefer `run_batch` to execute ordered steps in a single turn. {DEFAULT_SERVER_INSTRUCTIONS_BODY}"
+            )
+        };
+        rmcp::model::ServerConfig::new(
+            rmcp::model::ServerCapabilities::builder()
+                .enable_tools()
+                .build(),
+        )
+        .with_server_info(rmcp::model::Implementation::new(
+            "codex-computer-use-linux",
+            env!("CARGO_PKG_VERSION"),
+        ))
+        .with_instructions(instructions)
+    }
+
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,
@@ -4837,6 +5291,27 @@ struct PostActionCaptureParams {
     /// is true, call get_app_state with a higher max_nodes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     include_tree: Option<bool>,
+    /// Node encoding of the include_tree tree: "minimal", "compact" (the
+    /// default) or "full". get_tree_page pages it in the same encoding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tree_detail: Option<NodeDetail>,
+    /// Most bytes of include_tree nodes to return inline. 0 returns none: the
+    /// whole tree is still cached, so get_tree_page searches it and
+    /// element_index actions work on it. The action's own result is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_tree_bytes: Option<usize>,
+}
+
+/// The tree-only capture perform_action and set_value take after their own
+/// screenshot: no screenshot fields, but the caller's tree encoding and
+/// inline byte cap.
+fn element_tree_capture(capture: &PostActionCaptureParams) -> PostActionCaptureParams {
+    PostActionCaptureParams {
+        include_tree: Some(true),
+        tree_detail: capture.tree_detail,
+        max_tree_bytes: capture.max_tree_bytes,
+        ..Default::default()
+    }
 }
 
 /// The fields of a tool call that decide whether its screenshot_file_path
@@ -4942,6 +5417,11 @@ struct PostActionObservation {
     /// tree is in this private file, with the same element_index values.
     #[serde(skip_serializing_if = "Option::is_none")]
     accessibility_tree_spill: Option<crate::tree_spill::TreeSpill>,
+    /// True when the post-action accessibility_tree holds only its leading
+    /// nodes (too large to return inline, or cut by max_tree_bytes), whether
+    /// or not the spill file could be written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    accessibility_tree_partial: Option<bool>,
     /// True when the post-action accessibility tree was scoped to the target app/window.
     #[serde(skip_serializing_if = "Option::is_none")]
     tree_scoped: Option<bool>,
@@ -5217,8 +5697,24 @@ struct GetAppStateParams {
     /// Containers are collapsed: each node's parent_index points at its
     /// nearest kept ancestor. element_index values are the same as in the full
     /// tree, so they work with click, perform_action and set_value.
+    /// The full tree is still cached: get_tree_page with
+    /// interactive_only=false reads text this view leaves out; query, role
+    /// and within search the same view unless interactive_only=false is passed.
     #[serde(default)]
     interactive_only: Option<bool>,
+    /// Node encoding: "minimal" (index, role, name, text, value and
+    /// distinguishing states only; the smallest), "compact" (the default), or
+    /// "full". Overrides the node encoding verbose would choose; verbose still
+    /// adds the diagnostics report.
+    #[serde(default)]
+    tree_detail: Option<NodeDetail>,
+    /// Most bytes of tree nodes to return inline (default and cap 32000).
+    /// 0 returns no nodes: the call still reads and caches the whole tree
+    /// under a new snapshot_id, so get_tree_page searches it (query, role,
+    /// within) and element_index actions work on it. Errors, warnings and the
+    /// readiness block are returned as usual.
+    #[serde(default)]
+    max_tree_bytes: Option<usize>,
 }
 
 impl GetAppStateParams {
@@ -5459,6 +5955,107 @@ struct GetTreePageParams {
     /// If a later snapshot replaced it, no nodes are returned.
     #[serde(default)]
     snapshot_id: Option<String>,
+    /// Return only nodes whose name, text or description contains this,
+    /// ignoring case (for example a price symbol, a product word, or a
+    /// heading). The offset counts matching nodes.
+    #[serde(default)]
+    query: Option<String>,
+    /// Return only nodes whose role contains this, ignoring case (for example
+    /// heading, link, or entry).
+    #[serde(default)]
+    role: Option<String>,
+    /// Return only this element_index and the nodes below it, such as one
+    /// result list or article.
+    #[serde(default)]
+    within: Option<u32>,
+    /// Page only interactive nodes (true) or the whole cached tree (false).
+    /// Defaults to how the snapshot was returned, so a get_app_state
+    /// interactive_only result pages the same way; pass false to read text
+    /// that view left out.
+    #[serde(default)]
+    interactive_only: Option<bool>,
+    /// Node encoding for this page: "minimal", "compact" or "full". Defaults
+    /// to the encoding of the snapshot.
+    #[serde(default)]
+    tree_detail: Option<NodeDetail>,
+}
+
+impl GetTreePageParams {
+    fn has_filter(&self) -> bool {
+        self.query.as_deref().is_some_and(|query| !query.is_empty())
+            || self.role.as_deref().is_some_and(|role| !role.is_empty())
+            || self.within.is_some()
+    }
+}
+
+/// The nodes of a cached tree that get_tree_page pages, in tree order. The
+/// view is the interactive one when `interactive_only` (the snapshot's own,
+/// `interactive_view`, when it has one; otherwise computed on the whole tree)
+/// and the whole tree otherwise. `within` is resolved on the whole tree and
+/// then applied to that view, so a container the interactive view drops
+/// still bounds it, and interactive membership (live regions included) and
+/// parent_index values are those of the whole-tree view. Then role and query.
+fn tree_page_view(
+    whole: Vec<AccessibilityNode>,
+    interactive_view: Option<Vec<AccessibilityNode>>,
+    interactive_only: bool,
+    params: &GetTreePageParams,
+) -> Vec<AccessibilityNode> {
+    // Nodes come in traversal order, so a parent is seen before its children.
+    let inside: Option<std::collections::HashSet<u32>> = params.within.map(|within| {
+        let mut inside = std::collections::HashSet::new();
+        for node in &whole {
+            if node.index == within
+                || node
+                    .parent_index
+                    .is_some_and(|parent| inside.contains(&parent))
+            {
+                inside.insert(node.index);
+            }
+        }
+        inside
+    });
+    let nodes = if interactive_only {
+        interactive_view.unwrap_or_else(|| interactive_accessibility_tree(whole))
+    } else {
+        whole
+    };
+    let nodes: Vec<AccessibilityNode> = match &inside {
+        Some(inside) => nodes
+            .into_iter()
+            .filter(|node| inside.contains(&node.index))
+            .collect(),
+        None => nodes,
+    };
+    let query = params
+        .query
+        .as_deref()
+        .filter(|query| !query.is_empty())
+        .map(str::to_lowercase);
+    let role = params
+        .role
+        .as_deref()
+        .filter(|role| !role.is_empty())
+        .map(str::to_lowercase);
+    nodes
+        .into_iter()
+        .filter(|node| {
+            let role_matches = role
+                .as_deref()
+                .is_none_or(|role| node.role.to_lowercase().contains(role));
+            let query_matches = query.as_deref().is_none_or(|query| {
+                [
+                    node.name.as_deref(),
+                    node.description.as_deref(),
+                    node.text.as_ref().and_then(|text| text.content.as_deref()),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|field| field.to_lowercase().contains(query))
+            });
+            role_matches && query_matches
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -5615,6 +6212,12 @@ struct GetAppStateOutput {
     /// tree is in this private file, with the same element_index values.
     #[serde(skip_serializing_if = "Option::is_none")]
     accessibility_tree_spill: Option<crate::tree_spill::TreeSpill>,
+    /// True when accessibility_tree holds only the leading nodes of the
+    /// compacted tree: it was too large to return inline, or max_tree_bytes
+    /// cut it. The whole tree stays cached under snapshot_id for
+    /// get_tree_page, and is in accessibility_tree_spill when that file could
+    /// be written. A search over the inline nodes alone can miss elements.
+    accessibility_tree_partial: bool,
     /// True when the snapshot was limited to selected app roots rather than the
     /// full desktop AT-SPI registry.
     tree_scoped: bool,
@@ -5728,9 +6331,10 @@ struct ClickParams {
     /// a window manager (an XInput 2 master pointer) and on sway 1.10 or later
     /// (a transient seat). On GNOME and KDE Plasma Wayland a virtual pen (a touch pan for
     /// scroll) leaves the user's pointer alone, but a click still focuses the
-    /// window, and apps without tablet support ignore it. Needs x and y in
-    /// screenshot capture pixels over the window the call targets, without
-    /// relative or an element. Elsewhere the
+    /// window, and apps without tablet support ignore it. Needs a window
+    /// target and x and y over that window, in screenshot capture pixels or,
+    /// with relative=true, from the window screenshot's crop origin; an
+    /// element has no background route. Elsewhere the
     /// first such call in a server session sends nothing and returns a
     /// notice; repeated, and for every later such call, it goes through the
     /// user's pointer as with "focus". Default: "focus".
@@ -6010,9 +6614,10 @@ struct ScrollParams {
     /// a window manager (an XInput 2 master pointer) and on sway 1.10 or later
     /// (a transient seat). On GNOME and KDE Plasma Wayland a virtual pen (a touch pan for
     /// scroll) leaves the user's pointer alone, but a click still focuses the
-    /// window, and apps without tablet support ignore it. Needs x and y in
-    /// screenshot capture pixels over the window the call targets, without
-    /// relative or an element. Elsewhere the
+    /// window, and apps without tablet support ignore it. Needs a window
+    /// target and x and y over that window, in screenshot capture pixels or,
+    /// with relative=true, from the window screenshot's crop origin; an
+    /// element has no background route. Elsewhere the
     /// first such call in a server session sends nothing and returns a
     /// notice; repeated, and for every later such call, it goes through the
     /// user's pointer as with "focus". Default: "focus".
@@ -6314,6 +6919,10 @@ struct TypeTextParams {
     /// match outside a terminal match, the first wins.
     #[serde(default)]
     title: Option<String>,
+    /// On GNOME Wayland, use portal clipboard paste when verified AT-SPI
+    /// cannot insert the text. The previous clipboard is restored afterwards.
+    #[serde(default)]
+    paste_fallback: bool,
     #[serde(flatten)]
     background: BackgroundKeyboardParams,
     #[serde(flatten)]
@@ -6437,9 +7046,23 @@ fn key_press_character(text: &str) -> Option<char> {
     text.chars().find(|ch| ch.is_control())
 }
 
+#[cfg(test)]
 fn type_text_control_character_refusal(refusal: &str, key: char) -> String {
+    type_text_control_character_refusal_for_fallbacks(refusal, key, false)
+}
+
+fn type_text_control_character_refusal_for_fallbacks(
+    refusal: &str,
+    key: char,
+    paste_fallback: bool,
+) -> String {
+    let fallback_label = if paste_fallback {
+        "The AT-SPI and clipboard text fallbacks were not used"
+    } else {
+        "The AT-SPI text fallback was not used"
+    };
     format!(
-        "{refusal} The AT-SPI text fallback was not used: the text contains U+{:04X}, which typing sends as a key press such as Enter or Tab, and inserting it is not the same. Type the text without it, then send the key with press_key.",
+        "{refusal} {fallback_label}: the text contains U+{:04X}, which typing sends as a key press such as Enter or Tab, and inserting it is not the same. Type the text without it, then send the key with press_key.",
         key as u32
     )
 }
@@ -6448,12 +7071,15 @@ fn type_text_control_character_refusal(refusal: &str, key: char) -> String {
 /// success message.
 fn type_text_atspi_result(
     refusal: &str,
-    missing: crate::keyboard_keymap::MissingLayoutKeysym,
+    missing: Option<crate::keyboard_keymap::MissingLayoutKeysym>,
     text: &str,
     insert: Result<FocusedTextInsert>,
 ) -> std::result::Result<String, String> {
     const MAY_HAVE_CHANGED: &str = "The field may have changed; re-observe it before retrying.";
-    let because = format!("because GNOME {}", missing.summary());
+    let because = match missing {
+        Some(missing) => format!("because GNOME {}", missing.summary()),
+        None => "for the GNOME paste fallback".to_string(),
+    };
     let route = format!("{TYPE_TEXT_ATSPI_ROUTE} {because}");
     let unverified = format!("{TYPE_TEXT_ATSPI_UNVERIFIED}: the text was sent {because}");
     match insert {
@@ -7037,6 +7663,7 @@ impl ComputerUseLinux {
     ) {
         let screenshot_scope = capture.screenshot_scope();
         let include_tree = capture.include_tree.unwrap_or(false);
+        let tree_detail = capture.tree_detail.unwrap_or_default();
         if screenshot_scope.is_none() && !include_tree {
             return (PostActionObservation::default(), None, Vec::new());
         }
@@ -7295,6 +7922,7 @@ impl ComputerUseLinux {
                     observation.accessibility_tree_raw_count = Some(0);
                     observation.tree_scoped = Some(false);
                     observation.accessibility_tree_truncated = Some(false);
+                    observation.accessibility_tree_partial = Some(false);
                     observation.accessibility_error = Some(error);
                 }
                 Ok(snapshot) => {
@@ -7316,6 +7944,7 @@ impl ComputerUseLinux {
                             snapshot.root_pid,
                             tree_window,
                             snapshot.window_scope.clone(),
+                            tree_detail,
                         )
                         .await,
                     );
@@ -7339,14 +7968,16 @@ impl ComputerUseLinux {
                     if let Some(note) = shell_only_note {
                         notes.push(note.to_string());
                     }
-                    let mut nodes = TreeNodes::from(nodes);
-                    let (spill, spill_note) = fit_tree(
+                    let mut nodes = TreeNodes::new(nodes, tree_detail);
+                    let fit = fit_tree_capped(
                         &self.tree_spiller,
                         &mut nodes,
                         tree_budget(POST_ACTION_RESULT_RESERVE),
+                        capture.max_tree_bytes,
                     );
-                    notes.extend(spill_note);
-                    observation.accessibility_tree_spill = spill;
+                    notes.extend(fit.note);
+                    observation.accessibility_tree_spill = fit.spill;
+                    observation.accessibility_tree_partial = Some(fit.partial);
                     observation.accessibility_tree = Some(nodes);
                     observation.accessibility_tree_raw_count = Some(raw_count);
                     observation.tree_scoped = Some(snapshot.scoped);
@@ -7360,6 +7991,7 @@ impl ComputerUseLinux {
                     observation.accessibility_tree_raw_count = Some(0);
                     observation.tree_scoped = Some(false);
                     observation.accessibility_tree_truncated = Some(false);
+                    observation.accessibility_tree_partial = Some(false);
                     observation.accessibility_error = Some(error);
                 }
             }
@@ -7407,10 +8039,7 @@ impl ComputerUseLinux {
             Ok(target) => {
                 // The dispatched element's scope was bound before the action.
                 // A later snapshot must not narrow its process to another window.
-                let tree_params = PostActionCaptureParams {
-                    include_tree: Some(true),
-                    ..Default::default()
-                };
+                let tree_params = element_tree_capture(capture);
                 // A screenshot of this action already waited the settle delay.
                 self.capture_post_action_observation_with(
                     &tree_params,
@@ -7432,6 +8061,7 @@ impl ComputerUseLinux {
                     accessibility_tree_raw_count: Some(0),
                     tree_scoped: Some(false),
                     accessibility_tree_truncated: Some(false),
+                    accessibility_tree_partial: Some(false),
                     accessibility_error: Some(message.clone()),
                     ..Default::default()
                 };
@@ -7741,6 +8371,15 @@ impl ComputerUseLinux {
             .focused_window
             .as_ref()
             .unwrap_or(&focus.requested_window);
+        self.window_coordinate_map(window).await
+    }
+
+    /// Where a window's screenshot crop sits in capture pixels, for
+    /// window-relative coordinates.
+    async fn window_coordinate_map(
+        &self,
+        window: &WindowInfo,
+    ) -> std::result::Result<WindowCoordinateMap, String> {
         // Umbriel's bounds depend on what the capture covers: read them for
         // the capture the caller's coordinates come from. Before the first
         // capture of a session there is none yet, and the pointer's own
@@ -8797,6 +9436,7 @@ impl ComputerUseLinux {
         target_pid: Option<u32>,
         window: Option<(u64, String)>,
         window_scope: Option<String>,
+        detail: NodeDetail,
     ) -> String {
         let _input_guard = Arc::clone(&self.input_operation_lock).lock_owned().await;
         self.store_snapshot_for(
@@ -8805,7 +9445,8 @@ impl ComputerUseLinux {
             None,
             window,
             TreeShape {
-                detail: NodeDetail::Compact,
+                detail,
+                search_tree: None,
                 window_scope,
             },
         )
@@ -8901,6 +9542,7 @@ impl ComputerUseLinux {
                 window_backend: window.map(|(_, backend)| backend),
                 recovery_scope,
                 detail: shape.detail,
+                search_nodes: shape.search_tree,
                 window_scope: shape.window_scope,
             };
         }
@@ -10381,6 +11023,61 @@ fn tree_budget(rest: usize) -> usize {
     crate::tree_spill::INLINE_RESULT_BYTES.saturating_sub(rest + SPILL_NOTE_RESERVE)
 }
 
+/// A tree fitted into a result: the spill file, a note for the message, and
+/// whether the result holds only the leading nodes of the tree.
+struct TreeFit {
+    spill: Option<crate::tree_spill::TreeSpill>,
+    note: Option<String>,
+    partial: bool,
+}
+
+/// fit_tree under a caller's max_tree_bytes cap. The cap only trims what the
+/// result carries: the snapshot was already cached whole, so get_tree_page
+/// searches it, and its element_index values stay valid for actions. Without
+/// a cap this is fit_tree. `partial` is set whenever nodes were left out,
+/// also when the spill file could not be written and no spill names them.
+fn fit_tree_capped(
+    spiller: &crate::tree_spill::TreeSpiller,
+    tree: &mut TreeNodes,
+    budget: usize,
+    max_tree_bytes: Option<usize>,
+) -> TreeFit {
+    let total = tree.len();
+    let (spill, note) = match max_tree_bytes.filter(|&cap| cap < budget) {
+        Some(cap) => fit_tree_under_cap(spiller, tree, cap),
+        None => fit_tree(spiller, tree, budget),
+    };
+    TreeFit {
+        spill,
+        note,
+        partial: tree.len() < total,
+    }
+}
+
+fn fit_tree_under_cap(
+    spiller: &crate::tree_spill::TreeSpiller,
+    tree: &mut TreeNodes,
+    cap: usize,
+) -> (Option<crate::tree_spill::TreeSpill>, Option<String>) {
+    let total = tree.len();
+    let detail = tree.detail;
+    let (spill, file) = match spiller.fit(&mut tree.nodes, detail, cap) {
+        Ok(None) => return (None, None),
+        Ok(Some(spill)) => {
+            let file = format!(" and in {}", spill.path);
+            (Some(spill), file)
+        }
+        // The tree is still cached, so get_tree_page reaches it; say why the
+        // file the note would otherwise name is missing.
+        Err((_, error)) => (None, format!(" (writing it to a file failed: {error})")),
+    };
+    let note = format!(
+        "max_tree_bytes={cap} kept {} of {total} nodes inline. The whole tree is cached under this snapshot_id{file}: search it with get_tree_page (query, role, within), and act on its element_index values as usual.",
+        tree.len()
+    );
+    (spill, Some(note))
+}
+
 /// Keep `nodes` within the inline budget, spilling the whole tree to a private
 /// file when it does not fit. Returns the spill and a note for the message.
 fn fit_tree(
@@ -10404,7 +11101,7 @@ fn fit_tree(
         Err((inline, error)) => (
             None,
             Some(format!(
-                "The compacted tree has {total} nodes, too large to return inline, and writing it to a file failed ({error}); only the first {inline} are here. Scope to a narrower target to see the rest."
+                "The compacted tree has {total} nodes, too large to return inline, and writing it to a file failed ({error}); only the first {inline} are here (accessibility_tree_partial is set). Page the rest with get_tree_page, or scope to a narrower target."
             )),
         ),
     }
@@ -10488,6 +11185,14 @@ fn nearest_kept_parent(
 /// collapsed: a kept node's parent_index names its nearest kept ancestor and
 /// child_count counts kept children. Indices are not renumbered, so an
 /// element_index means the same node as in the full compacted tree.
+/// The interactive_only view get_app_state returns and actions resolve
+/// against, and the whole compacted tree kept beside it for get_tree_page.
+fn interactive_view_and_search_tree(
+    nodes: Vec<AccessibilityNode>,
+) -> (Vec<AccessibilityNode>, Vec<AccessibilityNode>) {
+    (interactive_accessibility_tree(nodes.clone()), nodes)
+}
+
 fn interactive_accessibility_tree(nodes: Vec<AccessibilityNode>) -> Vec<AccessibilityNode> {
     let position: std::collections::HashMap<u32, usize> = nodes
         .iter()
@@ -10808,7 +11513,10 @@ fn data_url_payload(data_url: &str) -> String {
         .to_string()
 }
 
-fn session_is_wayland(session_type: Option<&str>, wayland_display: Option<&str>) -> bool {
+pub(crate) fn session_is_wayland(
+    session_type: Option<&str>,
+    wayland_display: Option<&str>,
+) -> bool {
     match session_type
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -11069,6 +11777,77 @@ enum PenRequest {
         dx: i32,
         dy: i32,
     },
+}
+
+impl PenRequest {
+    /// The request with its window-relative point moved to capture pixels.
+    /// `capture_rect` is the target window's screenshot crop.
+    fn relative_to_capture(
+        self,
+        capture_rect: (i32, i32, u32, u32),
+    ) -> std::result::Result<Self, String> {
+        match self {
+            PenRequest::Click { at, button, count } => Ok(PenRequest::Click {
+                at: window_relative_point(at, capture_rect, "click")?,
+                button,
+                count,
+            }),
+            PenRequest::Scroll { at, dx, dy } => Ok(PenRequest::Scroll {
+                at: window_relative_point(at, capture_rect, "scroll")?,
+                dx,
+                dy,
+            }),
+            PenRequest::Drag { .. } => {
+                Err("A background drag takes no relative coordinates.".to_string())
+            }
+        }
+    }
+}
+
+/// The point of a background click or scroll: in full capture pixels, or
+/// with relative=true from the target window's screenshot crop origin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackgroundPoint {
+    Capture(i32, i32),
+    WindowRelative(i32, i32),
+}
+
+impl BackgroundPoint {
+    fn coordinates(self) -> (i32, i32) {
+        match self {
+            BackgroundPoint::Capture(x, y) | BackgroundPoint::WindowRelative(x, y) => (x, y),
+        }
+    }
+}
+
+/// Checks the point a background click or scroll names, before any window
+/// is read. `unsupported` names a target form no background route takes.
+fn background_point(
+    action: &str,
+    (x, y): (Option<i32>, Option<i32>),
+    relative: bool,
+    unsupported: Option<&str>,
+    has_window_target: bool,
+) -> BackgroundResult<BackgroundPoint> {
+    if let Some(form) = unsupported {
+        return Err(BackgroundRefusal::NoRoute(format!(
+            "a background {action} takes x and y in screenshot capture pixels (or from the window screenshot's crop origin with relative=true), not {form}"
+        )));
+    }
+    let (Some(x), Some(y)) = (x, y) else {
+        return Err(BackgroundRefusal::NoRoute(format!(
+            "a background {action} needs x and y in screenshot capture pixels (or from the window screenshot's crop origin with relative=true)"
+        )));
+    };
+    if !relative {
+        return Ok(BackgroundPoint::Capture(x, y));
+    }
+    if !has_window_target {
+        return Err(BackgroundRefusal::Failed(format!(
+            "Nothing was sent: a relative background {action} needs a window target (window_id, pid, app_id, wm_class or window_title)."
+        )));
+    }
+    Ok(BackgroundPoint::WindowRelative(x, y))
 }
 
 /// The windows the virtual pen checks a point against, bottom to top.
@@ -11464,8 +12243,9 @@ impl ComputerUseLinux {
         &self,
         action: &'static str,
         point: (Option<i32>, Option<i32>),
+        relative: bool,
         target: Option<WindowTarget>,
-        unsupported_target: bool,
+        unsupported: Option<&'static str>,
         input: impl FnOnce(f64, f64) -> crate::agent_seat::PointerInput,
         received: Option<serde_json::Value>,
         input_guard: impl Send + 'static,
@@ -11478,15 +12258,16 @@ impl ComputerUseLinux {
             reason,
             fallback: FocusFallback::default(),
         };
-        if unsupported_target {
-            return unavailable(format!("a background {action} takes x and y in screenshot capture pixels, without relative, coordinate_space or an element"));
-        }
-        let (Some(x), Some(y)) = point else {
-            return unavailable(format!(
-                "a background {action} needs x and y in screenshot capture pixels"
-            ));
+        let has_window_target = target.as_ref().is_some_and(WindowTarget::has_target);
+        let point = match background_point(action, point, relative, unsupported, has_window_target)
+        {
+            Ok(point) => point,
+            Err(BackgroundRefusal::NoRoute(reason)) => return unavailable(reason),
+            Err(BackgroundRefusal::Failed(message)) => return fail(message),
         };
+        let relative = matches!(point, BackgroundPoint::WindowRelative(..));
         if let Ok(desktop) = crate::virtual_pen::availability() {
+            let (x, y) = point.coordinates();
             let request = match input(f64::from(x), f64::from(y)) {
                 seat::PointerInput::Click { button, count, .. } => PenRequest::Click {
                     at: (x, y),
@@ -11498,7 +12279,15 @@ impl ComputerUseLinux {
                 }
             };
             return self
-                .background_pen(desktop, action, request, target, received, input_guard)
+                .background_pen(
+                    desktop,
+                    action,
+                    request,
+                    relative,
+                    target,
+                    received,
+                    input_guard,
+                )
                 .await;
         }
         let kind = match seat::availability() {
@@ -11540,6 +12329,17 @@ impl ComputerUseLinux {
         if !seat_backend_matches(kind, &window) {
             return unavailable(format!("window_id {} comes from the {} window backend, which the agent seat cannot address", window.window_id, window.backend));
         }
+        let (x, y) = match point {
+            BackgroundPoint::Capture(x, y) => (x, y),
+            BackgroundPoint::WindowRelative(x, y) => match self
+                .window_coordinate_map(&window)
+                .await
+                .and_then(|map| window_relative_point((x, y), map.capture_rect, action))
+            {
+                Ok(point) => point,
+                Err(message) => return fail(format!("Nothing was sent: {message}")),
+            },
+        };
         self.indicator.action(action).await;
         match seat::send_pointer(kind, seat::SeatTarget::from(&window), input(f64::from(x), f64::from(y)), input_guard).await {
             Ok(report) => BackgroundOutcome::Done(
@@ -11566,11 +12366,13 @@ impl ComputerUseLinux {
     /// pen clicks and drags, a virtual touchscreen pans, and the user's mouse
     /// pointer stays where it is. The point must be on the target window,
     /// with no window stacked above it there.
+    #[allow(clippy::too_many_arguments)]
     async fn background_pen(
         &self,
         desktop: crate::virtual_pen::Desktop,
         action: &'static str,
         request: PenRequest,
+        relative: bool,
         target: Option<WindowTarget>,
         received: Option<serde_json::Value>,
         input_guard: impl Send + 'static,
@@ -11624,6 +12426,20 @@ impl ComputerUseLinux {
                 }
                 return fail(format!("Nothing was sent: {error:#}"));
             }
+        };
+        // A window-relative point is measured from the crop the window
+        // screenshot shows; the checks below see it in capture pixels.
+        let request = if relative {
+            match self
+                .window_coordinate_map(&window)
+                .await
+                .and_then(|map| request.relative_to_capture(map.capture_rect))
+            {
+                Ok(request) => request,
+                Err(message) => return fail(format!("Nothing was sent: {message}")),
+            }
+        } else {
+            request
         };
         let cached = self.desktop_size.lock().ok().and_then(|guard| *guard);
         let capture = match cached {
@@ -11721,13 +12537,14 @@ impl ComputerUseLinux {
                 let Some(monitor) = layout.monitor_at(point) else {
                     return fail("Nothing was sent: no monitor holds the point.".to_string());
                 };
-                // A touchscreen maps to one monitor, through that monitor's
-                // rotation, which the device values here do not apply.
-                if monitor.transform == u32::MAX {
-                    return fail("Nothing was sent: a background scroll pans with a virtual touchscreen, and this monitor's rotation could not be read (kscreen-doctor -j).".to_string());
-                }
-                if monitor.transform != 0 {
-                    return fail("Nothing was sent: a background scroll pans with a virtual touchscreen, and this monitor is rotated or flipped.".to_string());
+                // A touchscreen maps to one monitor and the compositor turns
+                // it by that monitor's transform; the pan's device values
+                // undo the turn, so it must be known.
+                if desktop.touch_turn(monitor.transform).is_none() {
+                    return unavailable(match desktop {
+                        pen::Desktop::Kwin => "a background scroll pans with a virtual touchscreen, and the rotation of the output under the point could not be read (kscreen-doctor -j)".to_string(),
+                        pen::Desktop::Gnome => "a background scroll pans with a virtual touchscreen, and the rotation of the monitor under the point is not one mutter reports".to_string(),
+                    });
                 }
                 // Scrolling down moves the content up: the finger moves up.
                 let motion = (
@@ -12601,6 +13418,17 @@ fn window_crop_rect(bounds: &crate::windowing::WindowBounds) -> Option<(i32, i32
     Some((x, y, bounds.width, bounds.height))
 }
 
+/// The target form of a click that no background route takes.
+fn background_click_unsupported(params: &ClickParams) -> Option<&'static str> {
+    if params.coordinate_space != ClickCoordinateSpace::default() {
+        Some("coordinate_space=\"atspi\"")
+    } else if click_resolves_cached_element(params) {
+        Some("an element")
+    } else {
+        None
+    }
+}
+
 fn validate_click_coordinate_space(params: &ClickParams) -> std::result::Result<(), String> {
     if params.coordinate_space == ClickCoordinateSpace::Capture {
         return Ok(());
@@ -12626,28 +13454,11 @@ fn apply_window_relative_click_coordinates(
     params: &mut ClickParams,
     capture_rect: (i32, i32, u32, u32),
 ) -> std::result::Result<(), String> {
-    let (relative_x, relative_y) = params
+    let point = params
         .x
         .zip(params.y)
         .ok_or_else(|| "Relative coordinate clicks require both x and y.".to_string())?;
-    let (origin_x, origin_y, width, height) = capture_rect;
-    if width == 0 || height == 0 {
-        return Err(
-            "Relative coordinate clicks require non-empty target-window bounds.".to_string(),
-        );
-    }
-    if relative_x < 0 || relative_y < 0 {
-        return Err("Relative click coordinates must be inside target-window bounds.".to_string());
-    }
-    if relative_x as u32 >= width || relative_y as u32 >= height {
-        return Err("Relative click coordinates must be inside target-window bounds.".to_string());
-    }
-    let x = origin_x
-        .checked_add(relative_x)
-        .ok_or_else(|| "Relative click x coordinate overflowed.".to_string())?;
-    let y = origin_y
-        .checked_add(relative_y)
-        .ok_or_else(|| "Relative click y coordinate overflowed.".to_string())?;
+    let (x, y) = window_relative_point(point, capture_rect, "click")?;
     params.x = Some(x);
     params.y = Some(y);
     Ok(())
@@ -12655,6 +13466,34 @@ fn apply_window_relative_click_coordinates(
 
 fn prefer_abs_pointer_scroll(enabled: bool, forced_backend: bool) -> bool {
     enabled && !forced_backend
+}
+
+/// A point measured from a window screenshot's crop origin, moved to full
+/// capture pixels. `capture_rect` is that crop; the point must be inside it.
+fn window_relative_point(
+    (relative_x, relative_y): (i32, i32),
+    capture_rect: (i32, i32, u32, u32),
+    action: &str,
+) -> std::result::Result<(i32, i32), String> {
+    let (origin_x, origin_y, width, height) = capture_rect;
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "Relative {action} coordinates require non-empty target-window bounds."
+        ));
+    }
+    if relative_x < 0 || relative_y < 0 || relative_x as u32 >= width || relative_y as u32 >= height
+    {
+        return Err(format!(
+            "Relative {action} coordinates must be inside target-window bounds."
+        ));
+    }
+    let x = origin_x
+        .checked_add(relative_x)
+        .ok_or_else(|| format!("Relative {action} x coordinate overflowed."))?;
+    let y = origin_y
+        .checked_add(relative_y)
+        .ok_or_else(|| format!("Relative {action} y coordinate overflowed."))?;
+    Ok((x, y))
 }
 
 /// Point a window-targeted scroll at the centre of the resolved window when
@@ -12680,22 +13519,13 @@ fn apply_window_relative_scroll_coordinates(
     params: &mut ScrollParams,
     capture_rect: (i32, i32, u32, u32),
 ) -> std::result::Result<(), String> {
-    let (relative_x, relative_y) = params
+    let point = params
         .x
         .zip(params.y)
         .ok_or_else(|| "Relative scroll coordinates require both x and y.".to_string())?;
-    let (origin_x, origin_y, width, height) = capture_rect;
-    if width == 0 || height == 0 {
-        return Err(
-            "Relative scroll coordinates require non-empty target-window bounds.".to_string(),
-        );
-    }
-    if relative_x < 0 || relative_y < 0 || relative_x as u32 >= width || relative_y as u32 >= height
-    {
-        return Err("Relative scroll coordinates must be inside target-window bounds.".to_string());
-    }
-    params.x = Some(origin_x.saturating_add(relative_x));
-    params.y = Some(origin_y.saturating_add(relative_y));
+    let (x, y) = window_relative_point(point, capture_rect, "scroll")?;
+    params.x = Some(x);
+    params.y = Some(y);
     Ok(())
 }
 
@@ -14416,7 +15246,9 @@ enum ChordRoute {
 
 /// wtype replaces the portal only when the session has no RemoteDesktop
 /// portal at all, and the portal is neither forced nor already holding the
-/// user's consent. Wherever the portal exists it stays preferred.
+/// user's consent. Wherever the portal exists it stays preferred; a portal
+/// that then fails to serve the request may still replay the chord through
+/// wtype, see `wtype_replays_failed_portal_chord`.
 fn chord_route_from(
     prefer_portal: bool,
     portal_pinned: bool,
@@ -14430,6 +15262,20 @@ fn chord_route_from(
     } else {
         ChordRoute::Portal
     }
+}
+
+/// Whether a chord whose portal session could not start goes through wtype
+/// instead. Only a `CreateSession` failure qualifies: no consent dialog has
+/// run, and code 2 there means that no backend serves the request. A
+/// cancellation is the user's answer, a failure at a later step may follow a
+/// dialog, and a portal that is forced keeps its own error, as one does when
+/// wtype cannot replace it.
+fn wtype_replays_failed_portal_chord(
+    refusal: Option<PortalRefusal>,
+    portal_pinned: bool,
+    wtype: bool,
+) -> bool {
+    refusal.is_some_and(|refusal| refusal.failed_before_dialog()) && !portal_pinned && wtype
 }
 
 /// wtype arguments for a chord: hold each modifier with `-M`, tap the key by
@@ -14563,7 +15409,7 @@ fn which_in_path(binary: &str) -> bool {
 
 /// True when a directory of `path` (a `PATH` value) holds an executable
 /// `binary`.
-fn executable_in(path: &std::ffi::OsStr, binary: &str) -> bool {
+pub(crate) fn executable_in(path: &std::ffi::OsStr, binary: &str) -> bool {
     env::split_paths(path).any(|dir| executable_file(&dir.join(binary)))
 }
 
@@ -16479,6 +17325,7 @@ case "$*" in *"-- 5001 1301"*) echo "xdotool: test failure" >&2; exit 1 ;; esac
             snapshot_id: None,
             accessibility_tree: TreeNodes::default(),
             accessibility_tree_spill: None,
+            accessibility_tree_partial: false,
             accessibility_tree_raw_count: 0,
             tree_scoped: true,
             accessibility_tree_truncated: false,
@@ -17169,6 +18016,52 @@ esac
     }
 
     #[test]
+    fn wtype_replays_only_a_failed_unpinned_portal_chord() {
+        use crate::remote_desktop::PortalStep;
+        let create_session = Some(PortalRefusal::Failed {
+            step: PortalStep::CreateSession,
+        });
+        // (refusal, portal_pinned, wtype)
+        assert!(wtype_replays_failed_portal_chord(
+            create_session,
+            false,
+            true
+        ));
+        // The user's cancellation is final.
+        assert!(!wtype_replays_failed_portal_chord(
+            Some(PortalRefusal::Cancelled),
+            false,
+            true
+        ));
+        // A later step may have shown a consent dialog; its code 2 stays final.
+        for step in [
+            PortalStep::SelectDevices,
+            PortalStep::SelectSources,
+            PortalStep::Start,
+        ] {
+            assert!(!wtype_replays_failed_portal_chord(
+                Some(PortalRefusal::Failed { step }),
+                false,
+                true
+            ));
+        }
+        // An error without a portal response code, such as a timeout.
+        assert!(!wtype_replays_failed_portal_chord(None, false, true));
+        // A forced portal keeps its own error.
+        assert!(!wtype_replays_failed_portal_chord(
+            create_session,
+            true,
+            true
+        ));
+        // Without wtype nothing can replay the chord.
+        assert!(!wtype_replays_failed_portal_chord(
+            create_session,
+            false,
+            false
+        ));
+    }
+
+    #[test]
     fn wtype_chords_hold_modifiers_around_one_keysym() {
         let args = |key| wtype_key_args(key).map(|args| args.join(" "));
         assert_eq!(args("Return").as_deref(), Some("-k Return"));
@@ -17364,6 +18257,131 @@ esac
             assert!(error.contains("inside target-window bounds"));
             assert_eq!((params.x, params.y), (Some(x), Some(y)));
         }
+    }
+
+    #[test]
+    fn background_click_takes_window_relative_coordinates() {
+        // The shape a client sends for a point in a window screenshot (#480).
+        let params = ClickParams {
+            x: Some(90),
+            y: Some(137),
+            relative: Some(true),
+            window_id: Some(7),
+            delivery: Some(KeyboardDelivery::Background),
+            ..Default::default()
+        };
+        assert_eq!(background_click_unsupported(&params), None);
+        let point = background_point(
+            "click",
+            (params.x, params.y),
+            params.relative == Some(true),
+            background_click_unsupported(&params),
+            params.window_target().is_some(),
+        )
+        .unwrap();
+        assert_eq!(point, BackgroundPoint::WindowRelative(90, 137));
+        assert_eq!(
+            background_point("scroll", (Some(4), Some(5)), false, None, false).unwrap(),
+            BackgroundPoint::Capture(4, 5)
+        );
+    }
+
+    #[test]
+    fn background_relative_point_needs_a_window_target() {
+        let error = background_point("click", (Some(1), Some(2)), true, None, false).unwrap_err();
+        match error {
+            BackgroundRefusal::Failed(message) => {
+                assert!(message.starts_with("Nothing was sent"), "{message}");
+                assert!(message.contains("window target"), "{message}");
+            }
+            BackgroundRefusal::NoRoute(reason) => {
+                panic!("expected a failure, got no route: {reason}")
+            }
+        }
+    }
+
+    #[test]
+    fn background_click_still_has_no_route_for_elements_or_atspi_points() {
+        let element = ClickParams {
+            element_index: Some(3),
+            relative: Some(true),
+            ..Default::default()
+        };
+        let atspi = ClickParams {
+            x: Some(1),
+            y: Some(2),
+            coordinate_space: ClickCoordinateSpace::Atspi,
+            ..Default::default()
+        };
+        assert_eq!(background_click_unsupported(&element), Some("an element"));
+        assert_eq!(
+            background_click_unsupported(&atspi),
+            Some("coordinate_space=\"atspi\"")
+        );
+        for unsupported in ["an element", "coordinate_space=\"atspi\""] {
+            match background_point("click", (Some(1), Some(2)), false, Some(unsupported), true) {
+                Err(BackgroundRefusal::NoRoute(reason)) => assert!(reason.contains(unsupported)),
+                other => panic!("expected no route, got {other:?}"),
+            }
+        }
+        assert!(matches!(
+            background_point("scroll", (None, Some(2)), true, None, true),
+            Err(BackgroundRefusal::NoRoute(_))
+        ));
+    }
+
+    #[test]
+    fn background_relative_point_maps_like_a_focused_relative_click() {
+        let crop = (760, 406, 400, 300);
+        let mut focused = ClickParams {
+            x: Some(90),
+            y: Some(137),
+            relative: Some(true),
+            ..Default::default()
+        };
+        apply_window_relative_click_coordinates(&mut focused, crop).unwrap();
+        let click = PenRequest::Click {
+            at: (90, 137),
+            button: crate::agent_seat::PointerButton::Left,
+            count: 1,
+        }
+        .relative_to_capture(crop)
+        .unwrap();
+        let PenRequest::Click { at, .. } = click else {
+            panic!("a click stays a click");
+        };
+        assert_eq!((Some(at.0), Some(at.1)), (focused.x, focused.y));
+        let scroll = PenRequest::Scroll {
+            at: (0, 299),
+            dx: 0,
+            dy: 5,
+        }
+        .relative_to_capture(crop)
+        .unwrap();
+        assert!(matches!(
+            scroll,
+            PenRequest::Scroll {
+                at: (760, 705),
+                dx: 0,
+                dy: 5
+            }
+        ));
+    }
+
+    #[test]
+    fn background_relative_point_stays_inside_the_window_crop() {
+        for at in [(-1, 0), (0, -1), (400, 0), (0, 300)] {
+            let error = PenRequest::Scroll { at, dx: 0, dy: 1 }
+                .relative_to_capture((760, 406, 400, 300))
+                .unwrap_err();
+            assert!(error.contains("inside target-window bounds"), "{error}");
+        }
+        assert!(PenRequest::Drag {
+            start: (1, 1),
+            end: (2, 2)
+        }
+        .relative_to_capture((0, 0, 10, 10))
+        .is_err());
     }
 
     #[test]
@@ -22211,6 +23229,7 @@ printf '0x00000007 0 %s 0 0 100 100 first.First host Target 7\n0x00000008 0 %s 0
                 None,
                 TreeShape {
                     detail: NodeDetail::Compact,
+                    search_tree: None,
                     window_scope: Some("Window 3".to_string()),
                 },
             );
@@ -23972,6 +24991,7 @@ mod node_target_scope_tests {
             Some(&window),
             TreeShape {
                 detail: NodeDetail::Compact,
+                search_tree: None,
                 window_scope: Some("Window 20".to_string()),
             },
         );
@@ -24028,6 +25048,7 @@ mod node_target_scope_tests {
             Some(&pidless_window(20)),
             TreeShape {
                 detail: NodeDetail::Compact,
+                search_tree: None,
                 window_scope: Some("Window 20".to_string()),
             },
         );
@@ -24200,6 +25221,7 @@ mod node_target_scope_tests {
                 Some(&window),
                 TreeShape {
                     detail: NodeDetail::Compact,
+                    search_tree: None,
                     window_scope: Some("Window 10".to_string()),
                 },
             );
@@ -24439,6 +25461,7 @@ mod node_target_scope_tests {
             Some(&window_20),
             TreeShape {
                 detail: NodeDetail::Compact,
+                search_tree: None,
                 window_scope: Some("Window 20".to_string()),
             },
         );
@@ -24488,6 +25511,7 @@ mod node_target_scope_tests {
             None,
             TreeShape {
                 detail: NodeDetail::Compact,
+                search_tree: None,
                 window_scope: Some("Window 20".to_string()),
             },
         );
@@ -24520,6 +25544,7 @@ mod node_target_scope_tests {
             Some(&window_10_other_backend),
             TreeShape {
                 detail: NodeDetail::Compact,
+                search_tree: None,
                 window_scope: Some("Window 10".to_string()),
             },
         );
@@ -24553,6 +25578,7 @@ mod node_target_scope_tests {
             Some(&windows[1]),
             TreeShape {
                 detail: NodeDetail::Compact,
+                search_tree: None,
                 window_scope: Some("PlanetScale".to_string()),
             },
         );
@@ -24640,6 +25666,7 @@ mod node_target_scope_tests {
                 None,
                 Some((20, "i3".to_string())),
                 Some("Window 20".to_string()),
+                NodeDetail::Compact,
             )
             .await;
 
@@ -26351,6 +27378,113 @@ mod tree_spill_server_tests {
         assert_eq!(page.nodes.len(), 1);
         assert_eq!(page.next_offset, Some(1));
     }
+
+    #[test]
+    fn max_tree_bytes_zero_returns_no_nodes_but_names_the_cached_tree() {
+        let (backend, root) = backend("cap-zero");
+        let tree: Vec<_> = (0..5).map(node).collect();
+        let mut inline = TreeNodes::new(tree.clone(), NodeDetail::Minimal);
+        let TreeFit {
+            spill,
+            note,
+            partial,
+        } = fit_tree_capped(
+            &backend.tree_spiller,
+            &mut inline,
+            tree_budget(2_000),
+            Some(0),
+        );
+        assert!(inline.is_empty());
+        assert!(partial);
+        let spill = spill.expect("the capped tree is written to a file");
+        assert_eq!(spill.node_count, 5);
+        let note = note.unwrap();
+        assert!(
+            note.starts_with("max_tree_bytes=0 kept 0 of 5 nodes inline."),
+            "{note}"
+        );
+        assert!(note.contains("get_tree_page"), "{note}");
+        assert!(note.contains(&spill.path), "{note}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn max_tree_bytes_keeps_the_prefix_that_fits() {
+        let (backend, root) = backend("cap-prefix");
+        let tree: Vec<_> = (0..5).map(node).collect();
+        // Brackets, the first two nodes and the comma between them.
+        let two = 2
+            + crate::tree_encoding::node_json_len(&tree[0], NodeDetail::Compact)
+            + 1
+            + crate::tree_encoding::node_json_len(&tree[1], NodeDetail::Compact);
+        let mut inline = TreeNodes::new(tree, NodeDetail::Compact);
+        let TreeFit {
+            spill,
+            note,
+            partial,
+        } = fit_tree_capped(
+            &backend.tree_spiller,
+            &mut inline,
+            tree_budget(2_000),
+            Some(two),
+        );
+        assert_eq!(inline.len(), 2);
+        assert!(partial);
+        assert!(spill.is_some());
+        assert!(note.unwrap().contains("kept 2 of 5 nodes inline"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_failed_spill_write_marks_the_inline_prefix_partial() {
+        // No private directory: the spill write fails, so no spill field
+        // names the cut. The partial flag must still say the tree is a prefix.
+        let spiller = crate::tree_spill::TreeSpiller::new(None);
+        let big: Vec<_> = (0..300).map(node).collect();
+        let mut inline = TreeNodes::new(big, NodeDetail::Compact);
+        let fit = fit_tree_capped(&spiller, &mut inline, tree_budget(2_000), None);
+        assert!(fit.spill.is_none());
+        assert!(fit.partial);
+        assert!(!inline.is_empty() && inline.len() < 300, "{}", inline.len());
+        let note = fit.note.expect("a note explains the cut");
+        assert!(note.contains("writing it to a file failed"), "{note}");
+        assert!(note.contains("accessibility_tree_partial"), "{note}");
+
+        // A tree that fits is whole.
+        let mut inline = TreeNodes::new((0..3).map(node).collect(), NodeDetail::Compact);
+        let fit = fit_tree_capped(&spiller, &mut inline, tree_budget(2_000), None);
+        assert!(!fit.partial && fit.spill.is_none() && fit.note.is_none());
+    }
+
+    #[test]
+    fn max_tree_bytes_omitted_or_above_the_budget_is_fit_tree() {
+        let small: Vec<_> = (0..3).map(node).collect();
+        for cap in [None, Some(usize::MAX)] {
+            let (backend, root) = backend("cap-none");
+            let mut inline = TreeNodes::new(small.clone(), NodeDetail::Compact);
+            let TreeFit {
+                spill,
+                note,
+                partial,
+            } = fit_tree_capped(&backend.tree_spiller, &mut inline, tree_budget(2_000), cap);
+            assert!(spill.is_none() && note.is_none());
+            assert!(!partial);
+            assert_eq!(inline.len(), 3);
+
+            // A tree over the inline budget spills with fit_tree's own note.
+            let big: Vec<_> = (0..300).map(node).collect();
+            let mut inline = TreeNodes::new(big, NodeDetail::Compact);
+            let TreeFit {
+                spill,
+                note,
+                partial,
+            } = fit_tree_capped(&backend.tree_spiller, &mut inline, tree_budget(2_000), cap);
+            assert!(spill.is_some());
+            assert!(partial);
+            assert!(note.unwrap().contains("too large to return inline"));
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -26924,6 +28058,7 @@ mod snapshot_handle_tests {
                     .get_tree_page(Parameters(GetTreePageParams {
                         offset: None,
                         snapshot_id,
+                        ..Default::default()
                     }))
                     .await
                     .0
@@ -27032,6 +28167,7 @@ mod snapshot_handle_tests {
                 .get_tree_page(Parameters(GetTreePageParams {
                     offset: None,
                     snapshot_id: missing,
+                    ..Default::default()
                 }))
                 .await
                 .0;
@@ -27047,6 +28183,7 @@ mod snapshot_handle_tests {
             .get_tree_page(Parameters(GetTreePageParams {
                 offset: None,
                 snapshot_id: Some(id.clone()),
+                ..Default::default()
             }))
             .await
             .0;
@@ -27162,7 +28299,7 @@ mod type_text_atspi_fallback_tests {
     };
 
     fn result(insert: Result<FocusedTextInsert>) -> std::result::Result<String, String> {
-        type_text_atspi_result(REFUSAL, MISSING, "/home/x", insert)
+        type_text_atspi_result(REFUSAL, Some(MISSING), "/home/x", insert)
     }
 
     #[test]
@@ -27179,6 +28316,25 @@ mod type_text_atspi_fallback_tests {
         assert!(message.contains("reads back the text"), "{message}");
         assert!(message.contains("replaced the selection"), "{message}");
         assert!(!message.contains("caret"), "{message}");
+    }
+
+    #[test]
+    fn optional_layout_reason_names_the_paste_fallback() {
+        let message = type_text_atspi_result(
+            REFUSAL,
+            None,
+            "/home/x",
+            Ok(FocusedTextInsert::Verified {
+                role: "text".to_string(),
+                replaced_selection: false,
+                caret_after_text: true,
+            }),
+        )
+        .unwrap();
+        assert!(
+            message.contains("for the GNOME paste fallback"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -27238,7 +28394,7 @@ mod type_text_atspi_fallback_tests {
         };
         let error = type_text_atspi_result(
             REFUSAL,
-            unreachable,
+            Some(unreachable),
             "/home/x",
             Ok(FocusedTextInsert::ReadbackFailed),
         )
@@ -27292,7 +28448,7 @@ mod type_text_atspi_fallback_tests {
             "/home/x",
         )
         .await;
-        let message = type_text_atspi_result(&refusal, missing, "/home/x", insert).unwrap();
+        let message = type_text_atspi_result(&refusal, Some(missing), "/home/x", insert).unwrap();
         assert!(message.starts_with(TYPE_TEXT_ATSPI_ROUTE), "{message}");
         assert!(message.contains("group 2 lacks U+0068"), "{message}");
         assert_eq!(running.take_state(0).contents, "/home/x");
@@ -27316,5 +28472,478 @@ mod type_text_atspi_fallback_tests {
             assert!(error.contains(code), "{error}");
             assert!(error.contains("press_key"), "{error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tree_page_search_tests {
+    use super::*;
+    use crate::atspi_tree::{AccessibilityAction, AccessibilityText};
+
+    fn node(
+        index: u32,
+        parent: Option<u32>,
+        depth: u32,
+        role: &str,
+        name: &str,
+    ) -> AccessibilityNode {
+        AccessibilityNode {
+            index,
+            parent_index: parent,
+            depth,
+            object_ref: format!(":1.{index}/node"),
+            role: role.to_string(),
+            name: (!name.is_empty()).then(|| name.to_string()),
+            description: None,
+            child_count: 0,
+            bounds: None,
+            states: vec!["enabled".into(), "visible".into(), "showing".into()],
+            actions: Vec::new(),
+            value: None,
+            text: None,
+            supports_editable_text: false,
+        }
+    }
+
+    fn link(index: u32, parent: u32, depth: u32, name: &str) -> AccessibilityNode {
+        AccessibilityNode {
+            actions: vec![AccessibilityAction {
+                index: 0,
+                name: "click".to_string(),
+                description: String::new(),
+                keybinding: String::new(),
+            }],
+            ..node(index, Some(parent), depth, "link", name)
+        }
+    }
+
+    fn static_text(index: u32, parent: u32, depth: u32, content: &str) -> AccessibilityNode {
+        AccessibilityNode {
+            text: Some(AccessibilityText {
+                character_count: content.chars().count() as i32,
+                caret_offset: None,
+                content: Some(content.to_string()),
+                truncated: false,
+                selections: Vec::new(),
+            }),
+            ..node(index, Some(parent), depth, "static", "")
+        }
+    }
+
+    /// A results page: a plain section holding one listing, and one more
+    /// listing outside it.
+    fn results_page() -> Vec<AccessibilityNode> {
+        vec![
+            node(0, None, 0, "application", "Google Chrome"),
+            node(1, Some(0), 1, "frame", "Results"),
+            node(2, Some(1), 2, "section", ""),
+            link(3, 2, 3, "Handmade biscuits"),
+            static_text(4, 2, 3, "£7.49"),
+            link(5, 1, 2, "Dog treats"),
+            static_text(6, 1, 2, "£3.30"),
+        ]
+    }
+
+    /// A backend whose cache holds `results_page` as get_app_state stores it
+    /// with interactive_only=`interactive_only`: the action view in `nodes`,
+    /// and the whole tree beside it when that view is filtered.
+    fn backend(interactive_only: bool) -> (ComputerUseLinux, String) {
+        let (nodes, search_tree) = if interactive_only {
+            let (view, whole) = interactive_view_and_search_tree(results_page());
+            (view, Some(whole))
+        } else {
+            (results_page(), None)
+        };
+        let backend = ComputerUseLinux::default();
+        let id = backend.store_snapshot(
+            &nodes,
+            None,
+            None,
+            None,
+            TreeShape {
+                detail: NodeDetail::Compact,
+                window_scope: None,
+                search_tree,
+            },
+        );
+        (backend, id)
+    }
+
+    /// The cache v0.7.60 kept for an interactive_only get_app_state: the
+    /// interactive view alone.
+    fn v0_7_60_interactive_backend() -> ComputerUseLinux {
+        let backend = ComputerUseLinux::default();
+        backend.cache_snapshot(&interactive_accessibility_tree(results_page()), None);
+        backend
+    }
+
+    fn click_target(
+        backend: &ComputerUseLinux,
+        element_index: Option<u32>,
+        selector: ElementSelector<'_>,
+    ) -> std::result::Result<AccessibilityNode, String> {
+        backend.resolve_cached_node(element_index, &selector, ElementResolvePurpose::Click)
+    }
+
+    /// Resolution results compared field by field that matter to an action.
+    fn outcome(
+        result: std::result::Result<AccessibilityNode, String>,
+    ) -> std::result::Result<(u32, String, Option<u32>), String> {
+        result.map(|node| (node.index, node.object_ref, node.parent_index))
+    }
+
+    #[test]
+    fn interactive_snapshot_resolves_element_index_exactly_as_v0_7_60() {
+        let (current, _) = backend(true);
+        let legacy = v0_7_60_interactive_backend();
+        for index in 0..=7 {
+            assert_eq!(
+                outcome(click_target(
+                    &current,
+                    Some(index),
+                    ElementSelector::default()
+                )),
+                outcome(click_target(
+                    &legacy,
+                    Some(index),
+                    ElementSelector::default()
+                )),
+                "element_index {index}"
+            );
+        }
+        // Non-interactive nodes (the section and the prices) stay refused.
+        for index in [2, 4, 6] {
+            assert!(click_target(&current, Some(index), ElementSelector::default()).is_err());
+        }
+        assert!(click_target(&current, Some(3), ElementSelector::default()).is_ok());
+    }
+
+    #[test]
+    fn interactive_snapshot_resolves_selectors_exactly_as_v0_7_60() {
+        let (current, _) = backend(true);
+        let legacy = v0_7_60_interactive_backend();
+        let selectors = [
+            ElementSelector {
+                role: Some("link"),
+                name: Some("dog"),
+                ..Default::default()
+            },
+            ElementSelector {
+                role: Some("link"),
+                ..Default::default()
+            },
+            ElementSelector {
+                text: Some("£7.49"),
+                ..Default::default()
+            },
+            ElementSelector {
+                role: Some("static"),
+                ..Default::default()
+            },
+            ElementSelector {
+                role: Some("section"),
+                ..Default::default()
+            },
+        ];
+        for selector in selectors {
+            assert_eq!(
+                outcome(click_target(&current, None, selector)),
+                outcome(click_target(&legacy, None, selector)),
+                "{selector:?}"
+            );
+        }
+        // Price text is not a target in the interactive snapshot ...
+        assert!(click_target(&current, None, selectors[2]).is_err());
+        // ... but is one in a whole-tree snapshot, as it always was.
+        let (whole, _) = backend(false);
+        assert_eq!(click_target(&whole, None, selectors[2]).unwrap().index, 4);
+    }
+
+    #[tokio::test]
+    async fn research_hit_on_a_link_is_clickable_in_the_interactive_snapshot() {
+        let (backend, id) = backend(true);
+        let links = page(
+            &backend,
+            GetTreePageParams {
+                snapshot_id: Some(id),
+                query: Some("biscuits".to_string()),
+                interactive_only: Some(false),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(indices(&links), [3]);
+        assert!(click_target(&backend, Some(3), ElementSelector::default()).is_ok());
+    }
+
+    async fn page(backend: &ComputerUseLinux, params: GetTreePageParams) -> GetTreePageOutput {
+        backend.get_tree_page(Parameters(params)).await.0
+    }
+
+    fn indices(page: &GetTreePageOutput) -> Vec<u32> {
+        page.nodes.iter().map(|node| node.index).collect()
+    }
+
+    #[tokio::test]
+    async fn interactive_snapshot_pages_its_view_but_caches_the_whole_tree() {
+        let (backend, _) = backend(true);
+        let default = page(&backend, GetTreePageParams::default()).await;
+        assert_eq!(indices(&default), [0, 1, 3, 5]);
+
+        // The default page is v0.7.60's, nodes and message alike.
+        let legacy = page(&v0_7_60_interactive_backend(), GetTreePageParams::default()).await;
+        assert_eq!(
+            serde_json::to_value(&default.nodes).unwrap(),
+            serde_json::to_value(&legacy.nodes).unwrap()
+        );
+        assert_eq!(default.message, legacy.message);
+        assert_eq!(default.node_count, legacy.node_count);
+
+        let whole = page(
+            &backend,
+            GetTreePageParams {
+                interactive_only: Some(false),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(indices(&whole), [0, 1, 2, 3, 4, 5, 6]);
+    }
+
+    #[tokio::test]
+    async fn unfiltered_page_is_unchanged() {
+        let (backend, id) = backend(false);
+        let whole = page(&backend, GetTreePageParams::default()).await;
+        assert_eq!(indices(&whole), [0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(
+            whole.message,
+            "Nodes 0-6 of 7; this is the end of the tree."
+        );
+        assert_eq!(whole.snapshot_id, Some(id));
+    }
+
+    #[tokio::test]
+    async fn query_finds_page_text_an_interactive_view_left_out() {
+        let (backend, _) = backend(true);
+        let prices = page(
+            &backend,
+            GetTreePageParams {
+                query: Some("£".to_string()),
+                interactive_only: Some(false),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(indices(&prices), [4, 6]);
+
+        // In the interactive view the prices are not there to match.
+        let none = page(
+            &backend,
+            GetTreePageParams {
+                query: Some("£".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(none.nodes.is_empty());
+        assert!(
+            none.message.starts_with("None of the 7 cached nodes match"),
+            "{}",
+            none.message
+        );
+    }
+
+    #[tokio::test]
+    async fn query_ignores_case_and_reads_names() {
+        let (backend, _) = backend(false);
+        let found = page(
+            &backend,
+            GetTreePageParams {
+                query: Some("HANDMADE".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(indices(&found), [3]);
+    }
+
+    #[tokio::test]
+    async fn within_is_bounded_by_a_container_the_interactive_view_drops() {
+        let (backend, _) = backend(true);
+        let listing = page(
+            &backend,
+            GetTreePageParams {
+                within: Some(2),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(indices(&listing), [3]);
+
+        let whole_listing = page(
+            &backend,
+            GetTreePageParams {
+                within: Some(2),
+                interactive_only: Some(false),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(indices(&whole_listing), [2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn role_filter_and_minimal_detail() {
+        let (backend, _) = backend(false);
+        let links = page(
+            &backend,
+            GetTreePageParams {
+                role: Some("LINK".to_string()),
+                tree_detail: Some(NodeDetail::Minimal),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            serde_json::to_value(&links.nodes).unwrap(),
+            serde_json::json!([
+                {"index": 3, "role": "link", "name": "Handmade biscuits"},
+                {"index": 5, "role": "link", "name": "Dog treats"},
+            ])
+        );
+    }
+
+    /// A status bar whose message sits in a plain section, as in Chromium:
+    /// the interactive view keeps the message because it is in a live region.
+    fn status_page() -> Vec<AccessibilityNode> {
+        vec![
+            node(0, None, 0, "application", "Google Chrome"),
+            node(1, Some(0), 1, "frame", "Editor"),
+            AccessibilityNode {
+                child_count: 1,
+                ..node(2, Some(1), 2, "status bar", "")
+            },
+            AccessibilityNode {
+                child_count: 1,
+                ..node(3, Some(2), 3, "section", "")
+            },
+            static_text(4, 3, 4, "Saved"),
+            link(5, 1, 2, "Next"),
+        ]
+    }
+
+    #[tokio::test]
+    async fn within_keeps_the_snapshots_interactive_view_and_its_parents() {
+        let (view, whole) = interactive_view_and_search_tree(status_page());
+        let saved = view
+            .iter()
+            .find(|node| node.index == 4)
+            .expect("live-region text is in the view");
+        assert_eq!(saved.parent_index, Some(2));
+        let backend = ComputerUseLinux::default();
+        backend.store_snapshot(
+            &view,
+            None,
+            None,
+            None,
+            TreeShape {
+                detail: NodeDetail::Compact,
+                window_scope: None,
+                search_tree: Some(whole),
+            },
+        );
+        // The section is not in the interactive view, but it bounds the search,
+        // and the message keeps its place in that view.
+        let inside = page(
+            &backend,
+            GetTreePageParams {
+                within: Some(3),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(indices(&inside), [4]);
+        assert_eq!(inside.nodes[0].parent_index, Some(2));
+    }
+
+    #[tokio::test]
+    async fn paging_the_whole_tree_of_an_interactive_snapshot_says_so() {
+        let (backend, _) = backend(true);
+        let whole = page(
+            &backend,
+            GetTreePageParams {
+                interactive_only: Some(false),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(indices(&whole), [0, 1, 2, 3, 4, 5, 6]);
+        assert!(
+            whole
+                .message
+                .ends_with("7 of the 7 cached nodes match: the whole tree."),
+            "{}",
+            whole.message
+        );
+        assert!(
+            !whole.message.contains("interactive view"),
+            "{}",
+            whole.message
+        );
+    }
+
+    #[test]
+    fn element_observation_keeps_the_callers_tree_options() {
+        let capture = PostActionCaptureParams {
+            include_tree: Some(true),
+            tree_detail: Some(NodeDetail::Minimal),
+            max_tree_bytes: Some(0),
+            screenshot_after: Some(ScreenshotAfter::Enabled(true)),
+            ..Default::default()
+        };
+        let tree = element_tree_capture(&capture);
+        assert_eq!(tree.include_tree, Some(true));
+        assert_eq!(tree.tree_detail, Some(NodeDetail::Minimal));
+        assert_eq!(tree.max_tree_bytes, Some(0));
+        // The element's own screenshot was taken already.
+        assert!(tree.screenshot_scope().is_none());
+    }
+
+    #[test]
+    fn max_tree_bytes_reports_a_failed_spill_write() {
+        let spiller = crate::tree_spill::TreeSpiller::new(None);
+        let mut inline = TreeNodes::new(results_page(), NodeDetail::Minimal);
+        let TreeFit {
+            spill,
+            note,
+            partial,
+        } = fit_tree_capped(&spiller, &mut inline, tree_budget(2_000), Some(0));
+        assert!(spill.is_none());
+        assert!(partial);
+        assert!(inline.is_empty());
+        let note = note.expect("a note explains the capped tree");
+        assert!(
+            note.starts_with("max_tree_bytes=0 kept 0 of 7 nodes inline."),
+            "{note}"
+        );
+        assert!(note.contains("writing it to a file failed"), "{note}");
+        assert!(note.contains("get_tree_page"), "{note}");
+    }
+
+    #[tokio::test]
+    async fn filters_respect_a_replaced_snapshot_id() {
+        let (backend, id) = backend(false);
+        backend.cache_snapshot(&results_page(), None);
+        let stale = page(
+            &backend,
+            GetTreePageParams {
+                snapshot_id: Some(id),
+                query: Some("£".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(stale.nodes.is_empty());
+        assert_eq!(stale.snapshot_id, None);
     }
 }

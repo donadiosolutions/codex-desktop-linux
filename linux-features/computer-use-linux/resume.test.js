@@ -61,7 +61,7 @@ function resumeHarness(source, trustedServicesKey, chunks) {
   const builder = only(source, new RegExp(
     `function (${IDENT})\\(\\{browserBackends:(${IDENT}),deferTools:${IDENT},` +
     `confirmationPolicyConfig:${IDENT}="\\{\\}",omitCuaConfirmationPolicyBySku:${IDENT},surfaces:${IDENT},` +
-    `nodeRepl:${IDENT},sharedPlugin:${IDENT}=!1\\}`,
+    `nodeRepl:${IDENT},sharedPlugin:${IDENT}=!1,codexLinuxCuaPluginRoot:${IDENT}\\}`,
     "g",
   ));
   const call = only(source, new RegExp(
@@ -224,9 +224,11 @@ test("official per-thread CUA overrides carry the trusted root when resuming cha
       assert.equal(cua.enabled, true);
       assert.equal(cua.env.CUA_REPL_ENABLED_SURFACES, surfaces.join(","));
       assert.equal(cua.env.CUA_REPL_CONFIRMATION_POLICY_CONFIG, "{}");
-      assert.equal(cua.env.CODEX_LINUX_CUA_HOST_SOCKET, "/runtime/cua.sock");
-      assert.equal(cua.env.NODE_REPL_JS_BANNER,
-        'await import("@oai/cua/tinyskyAlt");await(await import("/trusted-plugin/scripts/native-client.mjs")).installLinuxComputerUse(cua);');
+      const native = surfaces.includes("computer");
+      assert.equal(cua.env.CODEX_LINUX_CUA_HOST_SOCKET, native ? "/runtime/cua.sock" : undefined);
+      assert.equal(cua.env.NODE_REPL_JS_BANNER, native ?
+        'await import("@oai/cua/tinyskyAlt");await(await import("/trusted-plugin/scripts/native-client.mjs")).installLinuxComputerUse(cua);' :
+        instructions ? 'await import("@oai/cua/tinyskyAlt");' : undefined);
       assert.equal(JSON.parse(cua.env.NODE_REPL_TRUSTED_SERVICES).sky,
         surfaces.includes("computer") ? "/trusted-plugin/scripts/native-service.mjs" : undefined);
       // Both the packaged instructions path and its ENOENT fallback keep the bridge.

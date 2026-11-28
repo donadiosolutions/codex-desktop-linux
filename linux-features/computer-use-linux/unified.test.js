@@ -1,123 +1,236 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
-const { applyUnifiedComputerUsePatch: patch } = require("./unified.js");
-const fixture = require("./fixtures/shared-plugin-runtime.js");
+const { applyUnifiedComputerUsePatch } = require("./unified.js");
 
-function select(source, platform, { ready = true, enabled = true, native = true, service = null } = {}) {
-  const owner = source.slice(0, source.indexOf("async function writePlugin"));
-  const selector = vm.runInNewContext(`(${owner})`);
-  const result = selector(ready, { platform },
-    { computerUse: enabled, browser: true, browserUseTinysky: true }, { enabled: native, paths: { serviceAppPath: service } });
-  return { computerUse: result.computerUse, surfaces: Array.from(result.cuaReplSurfaces) };
+const fixture = [
+  'let keys={services:"NODE_REPL_TRUSTED_SERVICES",cua:"cua_repl"},pluginIds={cua:"cua"},banner="fallback";',
+  'let plugins={root:({localVersion:e})=>`/verified/${e}`};',
+  'function lookup({marketplaces:e,pluginName:t}){return e.find(e=>e.plugin.name===t)}',
+  'function build({browserBackends:b,deferTools:d,confirmationPolicyConfig:c="{}",omitCuaConfirmationPolicyBySku:q,surfaces:s,nodeRepl:n,sharedPlugin:a=!1}){',
+  'let o={};s.includes("browser")&&(o.browser="@oai/browser-desktop/service"),s.includes("computer")&&(o.sky="@oai/sky/service");',
+  'let env={CUA_REPL_ENABLED_SURFACES:s.join(","),[keys.services]:JSON.stringify(o)};',
+  'function packaged(e,fail){try{if(fail)throw Error("instructions unavailable")}catch{}return{NODE_REPL_TRUSTED_SERVICES:e.NODE_REPL_TRUSTED_SERVICES??JSON.stringify(o),NODE_REPL_JS_BANNER:e.NODE_REPL_JS_BANNER??banner}}',
+  'return{env,packaged}}',
+  'async function synchronize(root,e){let file=pathIo().join(root,".mcp.json"),raw=await (0,files.readFile)(file,"utf8"),parsed=codec.parse(JSON.parse(raw));Object.assign(parsed.mcpServers.cua_repl,build({...e,sharedPlugin:!0}));globalThis.lastShared=parsed.mcpServers.cua_repl}',
+  'async function stage(bundle,base,options){let final=pathIo().join(base,"stable");let temp=await (0,files.mkdtemp)(pathIo().join(base,".staging-"));try{await (0,files.cp)(bundle.path,temp,{recursive:!0}),await synchronize(temp,options);try{await (0,files.rename)(temp,final)}catch(e){throw e}return final}finally{await (0,files.rm)(temp,{recursive:!0,force:!0})}}',
+  'async function initialize(e){let g=e.marketplaces,f=await select(),{codexHome:w,marketplaceName:y,runtimePaths:z,browserBackends:v,cuaReplSurfaces:S}=f;',
+  'let k=await thread({appServerConnection:e,appVersion:z,selection:f,hostServicesPipePath:null,includePrivateProcessEnv:!1});globalThis.lastThread=k;',
+  'let t={browserBackends:v,deferTools:true,confirmationPolicyConfig:"{}",omitCuaConfirmationPolicyBySku:false,surfaces:S,nodeRepl:k["mcp_servers.node_repl"]};',
+  'let x=await async function(e){let p=lookup({marketplaceName:e.marketplaceName,marketplaces:e.marketplaces,pluginName:pluginIds.cua});if(!p?.plugin.installed)return!1;',
+  'let r=(0,plugins.root)({codexHome:e.codexHome,localVersion:p.plugin.localVersion,marketplaceName:p.marketplace.name,pluginName:p.plugin.name});',
+  'return await synchronize(r,e)}({...t,codexHome:w,marketplaceName:y,marketplaces:g});',
+  'let C=true,I="{}";return await e.sendAppServerRequest("config/batchWrite",{edits:[],expectedVersion:null}),{selection:f,cuaReplEnabled:C,executorLaunch:x,confirmationPolicyConfig:I}}',
+  'async function thread({appServerConnection:e,appVersion:t,selection:r,verifyBrowserService:n=!1,includePrivateProcessEnv:i=!0,hostServicesPipePath:h=null}){',
+  'let{codexHome:a,marketplaceName:o,browserServicePluginVersion:l,desktopFeatureAvailability:c,runtimePaths:d,shouldUseWslPaths:u,browserBackends:b,computerUse:p,computerUsePaths:m}=r;',
+  'let v=b.length>0?"/browser-service.mjs":null,q={env:{[keys.services]:null!=v||p?JSON.stringify({...null==v?{}:{browser:v},...p?{sky:"@oai/sky/service"}:{}}):void 0}},y={"mcp_servers.node_repl":q};',
+  'if(null==y)return null;return y}',
+  'async function resume(s,d={}){let o=s?.selection??await select(),c={env:{}},l={};',
+  'return(null!=c&&null!=d&&"1"===process.env.CODEX_APP_SERVER_USE_LOCAL_DAEMON&&(l[`mcp_servers.${keys.cua}`]=build({browserBackends:o.browserBackends,deferTools:o.desktopFeatureAvailability.deferCuaTools,confirmationPolicyConfig:s.confirmationPolicyConfig,omitCuaConfirmationPolicyBySku:o.desktopFeatureAvailability.omitCuaConfirmationPolicyBySku,surfaces:o.cuaReplSurfaces,nodeRepl:c})),l["mcp_servers.cua_repl"])}',
+  'async function select(){let u=true,t={computerUse:true,browserUseTinysky:true},c={enabled:true,paths:{serviceAppPath:null}},o={platform:"linux"},h=u&&t.computerUse&&c.enabled&&("win32"===o.platform||"darwin"===o.platform&&null!=c.paths.serviceAppPath),p=t.computerUse&&(!t.browserUseTinysky||"darwin"!==o.platform||c.enabled),m=[];',
+  'h&&m.push("computer");return{codexHome:"/codex",marketplaceName:"m",browserServicePluginVersion:null,desktopFeatureAvailability:{deferCuaTools:false,omitCuaConfirmationPolicyBySku:false},runtimePaths:o,shouldUseWslPaths:false,browserBackends:[],computerUse:p,computerUsePaths:c.paths,cuaReplSurfaces:m}}',
+  'globalThis.api={initialize,resume,select,stage,thread,getLastThread:()=>globalThis.lastThread,getLastShared:()=>globalThis.lastShared};',
+].join("");
+
+function execute(patched) {
+  const context = {
+    require,
+    process: { platform: "linux", env: { CODEX_LINUX_CUA_HOST_SOCKET: "/host.sock" } },
+    pathIo: () => path,
+    files: {
+      readFile: async () => '{"mcpServers":{"cua_repl":{}}}',
+      mkdtemp: async base => base + "test",
+      cp: async () => {},
+      rename: async () => {},
+      rm: async () => {},
+    },
+    codec: { parse: data => data },
+  };
+  new vm.Script(patched).runInNewContext(context);
+  return context.api;
 }
 
-test("the Linux selector keeps its readiness and native opt-out gates independent of browser access", () => {
-  const patched = patch(fixture);
-  assert.deepEqual(select(fixture, "linux").surfaces, ["browser"]);
-  assert.deepEqual(select(patched, "linux"), { computerUse: true, surfaces: ["browser", "computer"] });
-  assert.deepEqual(select(patched, "linux", { ready: false }), { computerUse: false, surfaces: [] });
-  for (const settings of [{ enabled: false }, { native: false }]) {
-    assert.deepEqual(select(patched, "linux", settings), { computerUse: false, surfaces: ["browser"] });
-  }
-  for (const platform of ["darwin", "win32"]) {
-    for (const settings of [{}, { native: false }, { service: "/service" }]) {
-      assert.deepEqual(select(patched, platform, settings), select(fixture, platform, settings));
-    }
-  }
-});
-
-test("unified relationships are scoped to the rspack module owning the selector", () => {
-  const unrelated = 'let build=Symbol("jobs"),writePlugin=Symbol("done");class Q{#build;[writePlugin](){this[build]+=1,this.#build=writePlugin}}';
-  const chunk = `exports.ids=[916],exports.modules={61071(e,t,r){"use strict";${fixture}},82751(e,t,r){"use strict";${unrelated}}};`;
-  const patched = patch(chunk);
+test("current unified contract enables Linux and propagates the verified plugin root", () => {
+  const patched = applyUnifiedComputerUsePatch(fixture);
+  assert.notEqual(patched, fixture);
+  assert.equal(applyUnifiedComputerUsePatch(patched), patched);
   assert.doesNotThrow(() => new vm.Script(patched));
-  assert.ok(patched.endsWith(`},82751(e,t,r){"use strict";${unrelated}}};`));
-  assert.equal(patch(patched), patched);
+  assert.match(patched, /"linux"===o\.platform\?h:/u);
+  assert.equal(patched.split("codexLinuxUnifiedCuaBuilder").length, 2);
+  assert.equal(patched.split("codexLinuxUnifiedCuaRoot").length, 2);
+  assert.equal(patched.split("codexLinuxUnifiedCuaThread").length, 2);
+  assert.equal(patched.split("codexLinuxUnifiedCuaStartup").length, 2);
+  assert.equal(patched.split("codexLinuxUnifiedCuaExecutor").length, 2);
+  assert.match(patched, /require\("node:path"\)\.join\(codexLinuxCuaPluginRoot,"scripts","native-service\.mjs"\)/u);
+  assert.match(patched, /codexLinuxCuaContext:f/u);
+  assert.match(patched, /codexLinuxCuaPluginRoot:o\.codexLinuxCuaPluginRoot/u);
 });
 
-test("unified patch leaves other rspack chunks alone", t => {
-  const warnings = [];
-  t.mock.method(console, "warn", message => warnings.push(message));
-  const unrelated = 'exports.ids=[87],exports.modules={1(e,t,r){"use strict";e.exports=1}};';
-  assert.equal(patch(unrelated), unrelated);
-  assert.match(warnings.join("\n"), /unified Computer Use surface selector/);
+test("first initialization publishes the verified root before configuring the Linux thread", async () => {
+  const api = execute(applyUnifiedComputerUsePatch(fixture));
+  const result = await api.initialize({
+    marketplaces: [{ marketplace: { name: "m" }, plugin: { name: "cua", installed: true, localVersion: "v" } }],
+    sendAppServerRequest: async () => null,
+  });
+  assert.equal(result.selection.codexLinuxCuaPluginRoot, "/verified/v");
+  const env = api.getLastThread()["mcp_servers.node_repl"].env;
+  assert.equal(JSON.parse(env.NODE_REPL_TRUSTED_SERVICES).sky, "/verified/v/scripts/native-service.mjs");
+  assert.match(env.NODE_REPL_JS_BANNER, /\/verified\/v\/scripts\/native-client\.mjs/u);
+  assert.equal(env.CODEX_LINUX_CUA_HOST_SOCKET, "/host.sock");
+  const shared = api.getLastShared().env;
+  assert.equal(JSON.parse(shared.NODE_REPL_TRUSTED_SERVICES).sky, "/verified/v/scripts/native-service.mjs");
 });
 
-test("unified builder preserves upstream confirmation, audio, and backend settings", () => {
-  const patched = patch(fixture);
-  for (const field of [
-    'CUA_REPL_CONFIRMATION_POLICY_CONFIG:c,[q]:JSON.stringify(p)',
-    '[deleteKey]:[n?.env[deleteKey],q,"CUA_REPL_CONFIRMATION_POLICY_CONFIG"].filter(Boolean).join(",")',
-    '...n?.env.SKY_ENABLE_AUDIO==="1"?{SKY_ENABLE_AUDIO:s.includes("computer")?"1":"0",NODE_REPL_ENABLE_AUDIO:s.includes("computer")?n.env.NODE_REPL_ENABLE_AUDIO:"0"}:{}',
-    '[constants.backends]:b.join(",")',
-  ]) {
-    assert.ok(fixture.includes(field));
-    assert.ok(patched.includes(field));
+test("executor configuration uses its final plugin root before the staging directory is renamed", async () => {
+  const api = execute(applyUnifiedComputerUsePatch(fixture));
+  const root = await api.stage({ path: "/bundled" }, "/executor", { surfaces: ["computer"] });
+  assert.equal(root, "/executor/stable");
+  const env = api.getLastShared().env;
+  assert.equal(JSON.parse(env.NODE_REPL_TRUSTED_SERVICES).sky, `${root}/scripts/native-service.mjs`);
+  assert.ok(env.NODE_REPL_JS_BANNER.includes(`${root}/scripts/native-client.mjs`));
+});
+
+test("thread config without a verified plugin root keeps the browser service", async () => {
+  const api = execute(applyUnifiedComputerUsePatch(fixture));
+  const selection = await api.select();
+  selection.browserBackends = ["iab"];
+  const config = await api.thread({ selection });
+  const env = config["mcp_servers.node_repl"].env;
+  assert.equal(JSON.parse(env.NODE_REPL_TRUSTED_SERVICES).browser, "/browser-service.mjs");
+  assert.equal(JSON.parse(env.NODE_REPL_TRUSTED_SERVICES).sky, undefined);
+});
+
+test("cached resume and packaged instruction fallbacks retain the verified bridge", async () => {
+  const api = execute(applyUnifiedComputerUsePatch(fixture));
+  const cached = await api.initialize({
+    marketplaces: [{ marketplace: { name: "m" }, plugin: { name: "cua", installed: true, localVersion: "v" } }],
+    sendAppServerRequest: async () => null,
+  });
+  const resumed = await api.resume(cached);
+  assert.equal(await api.resume(cached, null), undefined);
+  assert.equal(JSON.parse(resumed.env.NODE_REPL_TRUSTED_SERVICES).sky, "/verified/v/scripts/native-service.mjs");
+  for (const instructionsUnavailable of [false, true]) {
+    const packaged = resumed.packaged(resumed.env, instructionsUnavailable);
+    assert.equal(JSON.parse(packaged.NODE_REPL_TRUSTED_SERVICES).sky, "/verified/v/scripts/native-service.mjs");
+    assert.match(packaged.NODE_REPL_JS_BANNER, /\/verified\/v\/scripts\/native-client\.mjs/u);
   }
 });
 
-test("unified owner, selector, and service configuration drift fail closed", () => {
-  assert.throws(() => patch(fixture + fixture), /unified.*contract/i);
-  for (const [from, to] of [
-    ["null!=u.paths.serviceAppPath", "u.paths.serviceAppPath"],
-    [",h=[]", "&&t.extraGate,h=[]"],
-    ['(l.sky="@oai/sky/service")', '(l.sky="@oai/sky/changed")'],
-    ["CUA_REPL_ENABLED_SURFACES:s", "CUA_REPL_ENABLED_SURFACES:other"],
-    ["NODE_REPL_JS_BANNER:e.NODE_REPL_JS_BANNER??", "NODE_REPL_JS_BANNER:"],
-    ["NODE_REPL_TRUSTED_SERVICES:e.NODE_REPL_TRUSTED_SERVICES??", "NODE_REPL_TRUSTED_SERVICES:"],
-    ["NODE_REPL_JS_BANNER:e.", "NODE_REPL_JS_BANNER:`x`,NODE_REPL_JS_BANNER:e."],
-    ['[constants.services]:JSON.stringify(l)', '[constants.services]:JSON.stringify(other)'],
-  ]) {
-    assert.ok(fixture.includes(from), from);
-    assert.throws(() => patch(fixture.replace(from, to)), /unified.*contract/i, from);
-  }
-});
-
-test("unified patch rejects untrusted roots and ambiguous config consumers", () => {
-  for (const [from, to] of [
-    ["build({...opts,sharedPlugin:!0})", "build({...opts,sharedPlugin:!0}),build(other)"],
-    ["record(file,parsed)", "const alias=writePlugin"],
-    ["if(!t?.plugin.installed)", "if(!t)"],
-    ['if("local"===e.hostConfig.kind)', 'if("remote"===e.hostConfig.kind)'],
-    ["{selection:selection", "{selection:other"],
-    ["selection=posture?.selection", "selection=cached?.selection"],
-    ["selection={...selection,", "selection={"],
-    ["principal=local?await connection.getAuthenticatedPrincipal().catch(()=>null):null,", ""],
-    ["null!=node&&null!=identity&&", "null!=node&&"],
-    ['"1"===process.env.CODEX_APP_SERVER_USE_LOCAL_DAEMON', '"true"===process.env.CODEX_APP_SERVER_USE_LOCAL_DAEMON'],
-    ['(0,files.rename)(temp,final)', '(0,files.rename)(other,final)'],
-  ]) {
-    assert.ok(fixture.includes(from), from);
-    assert.throws(() => patch(fixture.replace(from, to)), /unified.*contract/i, from);
-  }
-  assert.doesNotThrow(() => patch(fixture +
-    'function unrelated(){return constants.build(extra)}const serialized="build writePlugin require";'));
-});
-
-test("unified patch validates every installed, executor, and resume path after patching", () => {
-  const patched = patch(fixture);
-  for (const [from, to] of [
-    ["codexLinuxCuaContext:selection", "codexLinuxCuaContext:other"],
-    ["e.codexLinuxCuaContext.codexLinuxCuaPluginRoot=r,", ""],
-    ["writePlugin(temp,opts,final)", "writePlugin(temp,opts,temp)"],
-    [",selection.codexLinuxCuaPluginRoot)", ")"],
-    ['join(codexLinuxCuaPluginRoot,"scripts","native-service.mjs")', 'join(externalRoot,"scripts","native-service.mjs")'],
-    ['join(codexLinuxCuaPluginRoot,"scripts","native-client.mjs")', 'join(externalRoot,"scripts","native-client.mjs")'],
-  ]) {
-    assert.ok(patched.includes(from), from);
-    assert.throws(() => patch(patched.replace(from, to)), /unified.*contract/i, from);
-  }
-});
-
-test("unified builder root cannot collide with existing locals or shadowed require", () => {
-  const rootCollision = fixture.replace('let l={};', 'let codexLinuxCuaPluginRoot=1;let l={};');
-  const patched = patch(rootCollision);
-  assert.match(patched, /sharedPlugin:a=!1\},codexLinuxCuaPluginRoot1\)/);
+test("builder parameters avoid native root binding collisions", () => {
+  const source = fixture.replace("let o={};", "let codexLinuxCuaPluginRoot=1;let o={};");
+  const patched = applyUnifiedComputerUsePatch(source);
+  assert.match(patched, /codexLinuxCuaPluginRoot:codexLinuxCuaPluginRoot1/u);
   assert.doesNotThrow(() => new vm.Script(patched));
-  assert.equal(patch(patched), patched);
-  const shadowed = fixture.replace("browserBackends:b", "browserBackends:require");
-  assert.throws(() => patch(shadowed), /native config builder shadows require/);
+  assert.equal(applyUnifiedComputerUsePatch(patched), patched);
+});
+
+test("Linux Computer Use fails closed without a verified plugin root", async () => {
+  const api = execute(applyUnifiedComputerUsePatch(fixture));
+  await assert.rejects(() => api.initialize({
+    marketplaces: [{ marketplace: { name: "m" }, plugin: { name: "cua", installed: false, localVersion: "v" } }],
+    sendAppServerRequest: async () => null,
+  }), /trusted plugin root is unavailable/u);
+  const selection = await api.select();
+  await assert.rejects(() => api.resume({ selection, confirmationPolicyConfig: "{}" }),
+    /trusted plugin root is unavailable/u);
+});
+
+test("changed or ambiguous semantic owners fail closed", () => {
+  for (const changed of [
+    fixture + fixture,
+    fixture.replace('o.sky="@oai/sky/service"', 'o.sky="@oai/changed/service"'),
+    fixture.replace("confirmationPolicyConfig:c=", "changedPolicy:c="),
+    fixture.replace('sky:"@oai/sky/service"', 'sky:"@oai/changed/service"'),
+  ]) {
+    assert.throws(() => applyUnifiedComputerUsePatch(changed), /unified Computer Use contract drift/u);
+  }
+});
+
+test("a previous-head patch without startup root publication fails closed", () => {
+  const patched = applyUnifiedComputerUsePatch(fixture);
+  const previousHead = patched.replace(
+    /\/\*codexLinuxUnifiedCuaStartup\*\/\("linux"===f\.runtimePaths\.platform&&f\.computerUse&&\(\(\)=>\{[\s\S]*?\}\)\(\),thread\(\{appServerConnection:e,appVersion:z,selection:f,hostServicesPipePath:null,includePrivateProcessEnv:!1\}\)\)/u,
+    "thread({appServerConnection:e,appVersion:z,selection:f,hostServicesPipePath:null,includePrivateProcessEnv:!1})",
+  );
+  assert.notEqual(previousHead, patched);
+  assert.doesNotMatch(previousHead, /codexLinuxUnifiedCuaStartup/u);
+  assert.throws(() => applyUnifiedComputerUsePatch(previousHead), /partial unified Computer Use patch/u);
+
+  const damagedStartup = patched.replace("f.codexLinuxCuaPluginRoot=(0,plugins.root)",
+    "f.changedRoot=(0,plugins.root)");
+  assert.notEqual(damagedStartup, patched);
+  assert.throws(() => applyUnifiedComputerUsePatch(damagedStartup),
+    /startup verified-root publication matched 0 times/u);
+});
+
+test("startup injection rejects a synchronization-local plugin lookup", () => {
+  const scopedLookup = fixture
+    .replace('function lookup({marketplaces:e,pluginName:t}){return e.find(e=>e.plugin.name===t)}', "")
+    .replace(
+      "async function synchronize(root,e){return root}",
+      'async function synchronize(root,e){function lookup({marketplaces:e,pluginName:t}){return e.find(e=>e.plugin.name===t)}return root}',
+    );
+  assert.throws(() => applyUnifiedComputerUsePatch(scopedLookup),
+    /plugin lookup binding lookup is not accessible from startup owner/u);
+});
+
+test("startup injection rejects a plugin lookup scoped to a later block", () => {
+  for (const declaration of [
+    "function lookup({marketplaces:e,pluginName:t}){return e.find(e=>e.plugin.name===t)}",
+    "let lookup=({marketplaces:e,pluginName:t})=>e.find(e=>e.plugin.name===t);",
+    "const lookup=({marketplaces:e,pluginName:t})=>e.find(e=>e.plugin.name===t);",
+  ]) {
+    const blockScopedLookup = fixture
+      .replace('function lookup({marketplaces:e,pluginName:t}){return e.find(e=>e.plugin.name===t)}', "")
+      .replace(
+        "let x=await async function(e){let p=lookup",
+        `let x;{${declaration}x=await async function(e){let p=lookup`,
+      )
+      .replace(
+        "marketplaces:g});let C=true",
+        "marketplaces:g})};let C=true",
+      );
+    assert.doesNotThrow(() => new vm.Script(blockScopedLookup));
+    assert.throws(() => applyUnifiedComputerUsePatch(blockScopedLookup),
+      /plugin lookup binding lookup is not accessible from startup owner/u);
+  }
+});
+
+test("startup injection rejects an unrelated accessible lookup shadowed by the semantic lookup", () => {
+  const shadowedLookup = fixture
+    .replace(
+      'function lookup({marketplaces:e,pluginName:t}){return e.find(e=>e.plugin.name===t)}',
+      "function lookup(){return null}",
+    )
+    .replace(
+      "let x=await async function(e){let p=lookup",
+      "let x;{const lookup=({marketplaces:e,pluginName:t})=>e.find(e=>e.plugin.name===t);" +
+        "x=await async function(e){let p=lookup",
+    )
+    .replace(
+      "marketplaces:g});let C=true",
+      "marketplaces:g})};let C=true",
+    );
+  assert.doesNotThrow(() => new vm.Script(shadowedLookup));
+  let unchanged = shadowedLookup;
+  assert.throws(() => { unchanged = applyUnifiedComputerUsePatch(shadowedLookup); },
+    /plugin lookup binding lookup does not resolve to the semantic declaration/u);
+  assert.equal(unchanged, shadowedLookup);
+});
+
+const signedApp = process.env.CODEX_SIGNED_EXTRACTED_APP;
+test("signed unified owner patches idempotently with valid JavaScript", { skip: !signedApp }, () => {
+  const directory = path.join(signedApp, ".vite", "build");
+  const owners = fs.readdirSync(directory).filter(name => name.endsWith(".js")).map(name => ({
+    name, source: fs.readFileSync(path.join(directory, name), "utf8"),
+  })).filter(({ source }) => source.includes("cuaReplSurfaces:"));
+  assert.equal(owners.length, 1);
+  const patched = applyUnifiedComputerUsePatch(owners[0].source);
+  assert.notEqual(patched, owners[0].source);
+  assert.equal(applyUnifiedComputerUsePatch(patched), patched);
+  assert.doesNotThrow(() => new vm.Script(patched));
 });

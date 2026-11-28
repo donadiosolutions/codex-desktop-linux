@@ -23,10 +23,13 @@ interpreter metadata beyond the first 2 KiB, where the bundled libc detector
 can no longer see it. The derivation relocates that metadata into verified
 `patchelf` padding so the detector selects glibc without using Electron's
 unsafe report fallback. These checks run against both official architectures.
-Builds apply the required core compatibility patch to `resources/app.asar`;
-the official ELF and native-module payload stays byte-for-byte intact. Optional
-ASAR features follow the public manifest defaults; currently
-`provider-outage-recovery` is enabled. Explicit feature lists replace defaults.
+The shared installer preserves `resources/app.asar` byte-for-byte when no ASAR
+descriptor changes the bundle. Nix store packages enable the internal
+[`nix-store-bundled-marketplace-permissions`](../linux-features/nix-store-bundled-marketplace-permissions/README.md)
+feature to make bundled-plugin copies writable outside the store. Optional ASAR
+features follow the public manifest defaults, which enable
+`provider-outage-recovery`. Explicit feature lists replace those defaults. The
+ELF and native modules come from upstream, with the runtime adjustments above.
 
 ```bash
 nix run github:ilysenko/codex-desktop-linux
@@ -36,6 +39,18 @@ nix build .#codex-desktop
 Supported systems are `x86_64-linux` and `aarch64-linux`. The flake maps these
 to upstream `amd64` and `arm64` packages. It does not replace Electron or build
 upstream native modules.
+
+## Local checkout inputs
+
+In a Git checkout, standard commands such as `nix build .#codex-desktop`
+automatically use a Git input. This excludes `.git/` and untracked files,
+including ignored build output. Tracked files use their current working-tree
+contents; run `git add` for new source files before testing them.
+
+Avoid explicit `path:.` or `path:/absolute/path/to/codex-desktop-linux` inputs:
+they copy the whole directory into the Nix store before `flake.nix` can filter
+derivation sources. When another flake consumes a local checkout, use
+`git+file:///absolute/path/to/codex-desktop-linux` for its input URL.
 
 ## Flake outputs
 
@@ -59,20 +74,14 @@ nix build .#codex-desktop-computer-use-ui
 
 ## Features
 
-Use the NixOS or Home Manager module to customize feature IDs. An omitted
-`linuxFeatures` selects public manifest defaults (`provider-outage-recovery`
-currently); an explicit list replaces them, including `linuxFeatures = [];` to
-disable all public features. The package override `linuxFeatureIds = [];` provides
-the same opt-out. Named convenience outputs add their feature to the defaults.
-The directory installer uses the defaults unless `CODEX_LINUX_FEATURES_CONFIG`
-points to an explicit configuration, where `{"enabled": []}` disables all features.
-Feature resources and required retained helper crates are staged by the
+Use the NixOS or Home Manager module and pass explicit feature IDs. Defaults are
+empty. Feature resources and required retained helper crates are staged by the
 Nix derivation; helpers are release-built as Nix inputs, not during an update.
 
 ```nix
 programs.codexDesktopLinux = {
   enable = true;
-  linuxFeatures = [ "provider-outage-recovery" "read-aloud" ];
+  linuxFeatures = [ "read-aloud" ];
 };
 ```
 

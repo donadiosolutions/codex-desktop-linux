@@ -15,6 +15,13 @@ try {
   if (!Array.isArray(marketplace.plugins) || marketplace.plugins.filter(p => p.name === "unified-computer-use").length !== 1) {
     throw new Error("missing or ambiguous unified marketplace entry");
   }
+  // Our injected banner replaces this initialization; reject upstream changes
+  // rather than silently omitting them from Linux Computer Use sessions.
+  const bannerPath = path.join(process.env.INSTALL_DIR,
+    "resources/cua_node/lib/node_modules/@oai/cua-repl/instructions/banner.js");
+  if (fs.readFileSync(bannerPath, "utf8").trim() !== 'await import("@oai/cua/tinyskyAlt");') {
+    throw new Error("unexpected cua-repl banner");
+  }
   const mcp = JSON.parse(fs.readFileSync(mcpPath, "utf8"));
   manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   if (manifest.name !== "unified-computer-use" || typeof manifest.version !== "string" ||
@@ -28,7 +35,7 @@ try {
 }
 
 // The app materializes bundled plugin caches by version, not resource contents.
-manifest.version = manifest.version.replace(/-linux-native\.\d+$/, "") + "-linux-native.11";
+manifest.version = manifest.version.replace(/-linux-native\.\d+$/, "") + "-linux-native.12";
 fs.mkdirSync(path.join(target, "scripts"), { recursive: true });
 for (const name of ["native-client.mjs", "native-service.mjs", "native-backend-service.mjs", "native-protocol.mjs"]) {
   fs.copyFileSync(path.join(__dirname, name), path.join(target, "scripts", name));
